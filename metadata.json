@@ -1,0 +1,5 @@
+{
+  "name": "Probabilis Sports",
+  "description": "A sophisticated sports prediction engine utilizing Gemini 3 Flash and statistical analysis to forecast game outcomes with real-time search grounding.",
+  "requestFramePermissions": []
+}

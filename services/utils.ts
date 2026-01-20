@@ -1,0 +1,85 @@
+
+import { Sport } from "../types";
+import { CITY_OVERRIDES } from "../data/teams";
+import { ESPN_ENDPOINTS } from "./constants";
+
+export const fetchWithRetry = async (url: string, retries = 3, delay = 1000): Promise<Response> => {
+  for (let i = 0; i < retries; i++) {
+    try {
+      const response = await fetch(url);
+      if (response.ok) return response;
+      if (response.status === 429) { 
+         await new Promise(res => setTimeout(res, delay * Math.pow(2, i)));
+         continue;
+      }
+      if (response.status < 500 && response.status !== 429) return response;
+    } catch (error) {
+      if (i === retries - 1) throw error;
+    }
+    await new Promise(res => setTimeout(res, delay));
+  }
+  throw new Error(`Failed to fetch ${url} after ${retries} retries`);
+};
+
+export const normalizeStat = (val: any): string => {
+    if (val === null || val === undefined) return '-';
+    if (typeof val === 'object') {
+        if (val.displayValue) return String(val.displayValue);
+        if (val.value !== undefined) return String(val.value);
+        return '-';
+    }
+    return String(val);
+};
+
+export const extractNumber = (val: any): number => {
+    if (val === null || val === undefined) return 0;
+    if (typeof val === 'number') return val;
+    if (typeof val === 'string') return parseFloat(val) || 0;
+    if (typeof val === 'object') {
+        return parseFloat(val.value) || 0;
+    }
+    return 0;
+};
+
+export const formatEspnDate = (date: Date): string => {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}${month}${day}`;
+};
+
+export const getUpcomingDateRange = (sport: Sport, fullHistory: boolean): string => {
+    const now = new Date();
+    const start = new Date(now);
+    const end = new Date(now);
+
+    if (fullHistory) {
+        start.setDate(now.getDate() - 14); 
+        end.setDate(now.getDate() + 7);
+    } else {
+        start.setDate(now.getDate() - 1);
+        end.setDate(now.getDate() + 6);
+    }
+
+    return `${formatEspnDate(start)}-${formatEspnDate(end)}`;
+};
+
+export const formatTeamName = (team: any, sport: Sport): string => {
+    if (!team) return 'Unknown Team';
+    if (['NCAAF', 'NCAAM', 'NCAAW'].includes(sport)) {
+        return team.location || team.shortDisplayName || team.displayName || '';
+    }
+    let name = team.displayName;
+    if (!name && team.location && team.name) {
+        name = `${team.location} ${team.name}`;
+    }
+    return (name || team.location || '').replace(' AFC', '').replace(' NFC', '');
+};
+
+export const normalizeLocation = (team: any, sport: Sport): string => {
+    const keys = [team.displayName, team.shortDisplayName, team.name, team.location, team.abbreviation, team.nickname].filter(k => k && typeof k === 'string');
+    for (const key of keys) if (CITY_OVERRIDES[key]) return CITY_OVERRIDES[key];
+    const address = team.venue?.address || team.franchise?.venue?.address;
+    if (address?.city) return address.city;
+    return team.location || '';
+};
