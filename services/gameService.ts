@@ -1,7 +1,7 @@
 
 import { Game, GameDetails, Sport, LineScore, TeamStat, ScoringPlay, Play, GameSituation, TeamBoxScore, TeamGameLeaders, TeamStatItem } from "../types";
 import { ESPN_ENDPOINTS, SPORT_PARAMS, DAILY_CALENDAR_SPORTS } from "./constants";
-import { fetchWithRetry, getUpcomingDateRange, formatTeamName, normalizeStat } from "./utils";
+import { fetchWithRetry, getUpcomingDateRange, formatTeamName, normalizeStat, extractNumber } from "./utils";
 import { mapEventToGame } from "./mappers";
 import { fetchTeamSeasonStats } from "./teamService";
 
@@ -117,6 +117,149 @@ export const fetchGameDetails = async (gameId: string, sport: Sport): Promise<Ga
         if (!response.ok) return null;
         const data = await response.json();
         
+        const competitors = data.header?.competitions?.[0]?.competitors || [];
+        const homeComp = competitors.find((c: any) => c.homeAway === 'home');
+        const awayComp = competitors.find((c: any) => c.homeAway === 'away');
+        const statusState = data.header?.competitions?.[0]?.status?.type?.state; // 'pre', 'in', 'post'
+        const currentPeriod = data.header?.competitions?.[0]?.status?.period || 0;
+
+        // 1. Prepare raw plays early to support fallback for scoringPlays
+        let rawPlays = data.plays || [];
+        if (rawPlays.length === 0 && data.drives) {
+             const drives = [...(data.drives.previous || [])];
+             if (data.drives.current) drives.push(data.drives.current);
+             rawPlays = drives.flatMap((d: any) => d.plays || []);
+        }
+
+        // 2. Extract scoring plays with fallback
+        let sourceScoringPlays = data.scoringPlays || [];
+        const isFallback = sourceScoringPlays.length === 0 && rawPlays.length > 0;
+
+        if (isFallback) {
+            // Fallback: Filter raw plays for scores
+            // Fixed: Only include explicit scoring plays or text matches
+            sourceScoringPlays = rawPlays.filter((p: any) => {
+                const typeText = p.type?.text?.toLowerCase() || '';
+                
+                // Exclude "Goal Kick" explicitly as it often appears in soccer feeds without score change
+                if (typeText.includes('goal kick')) return false;
+
+                const isExplicitScore = p.scoringPlay || 
+                    typeText.includes('score') || 
+                    typeText.includes('touchdown') || 
+                    typeText.includes('goal') || 
+                    typeText.includes('safety') ||
+                    typeText.includes('homerun');
+
+                return isExplicitScore;
+            });
+        }
+
+        const scoringPlays: ScoringPlay[] = sourceScoringPlays.map((p: any) => ({
+            id: p.id,
+            period: p.period?.number || 0,
+            clock: p.clock?.displayValue || '',
+            type: p.type?.text || 'Score',
+            text: p.text,
+            isHome: p.team?.id === homeComp?.team?.id,
+            homeScore: extractNumber(p.homeScore),
+            awayScore: extractNumber(p.awayScore),
+            teamId: p.team?.id
+        }));
+
+        // --- HYBRID LINESCORE ENGINE ---
+        // 1. Calculate Manual/Shadow Linescores from Scoring Plays (Source of Truth for "What happened")
+        const manualLinescores: LineScore[] = [];
+        
+        // Calculate logic whenever the game is active or finished, even if no scoring plays exist (0-0 game)
+        if (statusState !== 'pre' && currentPeriod > 0) {
+            const periodsFromPlays = new Set(scoringPlays.map(p => p.period));
+            // Ensure we calculate up to the current period reported by the header
+            const maxPeriod = Math.max(...Array.from(periodsFromPlays), currentPeriod);
+            
+            // Sort chronologically: Period ASC, then Total Score ASC
+            const sortedSP = [...scoringPlays].sort((a, b) => {
+                if (a.period !== b.period) return a.period - b.period;
+                return (a.homeScore + a.awayScore) - (b.homeScore + b.awayScore);
+            });
+
+            let prevHome = 0;
+            let prevAway = 0;
+
+            for (let p = 1; p <= maxPeriod; p++) {
+                const playsUpToPeriod = sortedSP.filter(sp => sp.period <= p);
+                const lastPlay = playsUpToPeriod[playsUpToPeriod.length - 1];
+                
+                // If we have no plays at all up to this period, score is 0. 
+                // If we have plays, the cumulative score is the score of the latest play.
+                const cumHome = lastPlay ? lastPlay.homeScore : 0;
+                const cumAway = lastPlay ? lastPlay.awayScore : 0;
+                
+                manualLinescores.push({
+                    period: p,
+                    displayValue: String(p),
+                    homeScore: String(cumHome - prevHome),
+                    awayScore: String(cumAway - prevAway)
+                });
+                
+                // Set baseline for next period
+                prevHome = cumHome;
+                prevAway = cumAway;
+            }
+        }
+
+        // 2. Parse API Linescores (Official, but sometimes incomplete)
+        let apiLinescores: LineScore[] = [];
+        const sourceLinescores = homeComp?.linescores || awayComp?.linescores;
+        
+        if (sourceLinescores && Array.isArray(sourceLinescores)) {
+            apiLinescores = sourceLinescores.map((ls: any) => {
+                const period = parseInt(ls.period); 
+                const hLs = homeComp?.linescores?.find((h: any) => parseInt(h.period) === period);
+                const aLs = awayComp?.linescores?.find((a: any) => parseInt(a.period) === period);
+                
+                return {
+                    period: period,
+                    displayValue: ls.displayValue || String(period),
+                    homeScore: hLs ? normalizeStat(hLs) : '-',
+                    awayScore: aLs ? normalizeStat(aLs) : '-'
+                };
+            }).filter((ls: LineScore) => !isNaN(ls.period));
+        }
+
+        // 3. Merge: Prefer API, fill holes with Manual
+        const finalLinescoreMap = new Map<number, LineScore>();
+        
+        // Populate with manual first (so we have full coverage including 0s)
+        manualLinescores.forEach(ls => finalLinescoreMap.set(ls.period, ls));
+        
+        // Overlay API data
+        apiLinescores.forEach(ls => {
+            const hasData = ls.homeScore !== '-' && ls.awayScore !== '-';
+            if (hasData) {
+                // If we are in fallback mode (meaning API didn't provide scoringPlays),
+                // we should mistrust the API linescores if they are just 0-0 placeholders while we found actual goals.
+                if (isFallback) {
+                    const apiTotal = extractNumber(ls.homeScore) + extractNumber(ls.awayScore);
+                    // Only overwrite if API actually has data > 0, OR if our manual calc was also 0.
+                    // This protects a manual "1-0" from being overwritten by an API "0-0".
+                    const manual = finalLinescoreMap.get(ls.period);
+                    const manualTotal = manual ? (extractNumber(manual.homeScore) + extractNumber(manual.awayScore)) : 0;
+                    
+                    if (apiTotal > 0 || manualTotal === 0) {
+                        finalLinescoreMap.set(ls.period, ls);
+                    }
+                } else {
+                    // Standard mode: Trust API linescore as authority
+                    finalLinescoreMap.set(ls.period, ls);
+                }
+            }
+        });
+
+        // 4. Convert back to array
+        const parsedLinescores = Array.from(finalLinescoreMap.values())
+            .sort((a, b) => a.period - b.period);
+        
         const playerSource = data.boxscore?.players || data.rosters || [];
         let teamBoxSource = data.boxscore?.teams;
         
@@ -166,24 +309,6 @@ export const fetchGameDetails = async (gameId: string, sport: Sport): Promise<Ga
                 }))
             }))
         }));
-
-        const competitors = data.header?.competitions?.[0]?.competitors || [];
-        const homeComp = competitors.find((c: any) => c.homeAway === 'home');
-        const awayComp = competitors.find((c: any) => c.homeAway === 'away');
-        
-        let parsedLinescores: LineScore[] = [];
-        if (homeComp?.linescores && awayComp?.linescores) {
-            parsedLinescores = homeComp.linescores.map((hLs: any) => {
-                const period = hLs.period;
-                const aLs = awayComp.linescores.find((a: any) => a.period === period);
-                return { 
-                    period: period, 
-                    displayValue: hLs.displayValue, 
-                    homeScore: normalizeStat(hLs), 
-                    awayScore: normalizeStat(aLs) 
-                };
-            }).sort((a: any, b: any) => a.period - b.period);
-        }
 
         let teamStats: TeamStat[] = [];
         if (teamBoxSource && teamBoxSource.length === 2) {
@@ -292,17 +417,6 @@ export const fetchGameDetails = async (gameId: string, sport: Sport): Promise<Ga
              }
         }
 
-        const scoringPlays: ScoringPlay[] = (data.scoringPlays || []).map((p: any) => ({
-            id: p.id, period: p.period.number, clock: p.clock.displayValue, type: p.type?.text || 'Score', text: p.text, isHome: p.team?.id === homeComp?.team?.id, homeScore: p.homeScore, awayScore: p.awayScore, teamId: p.team?.id
-        }));
-        
-        let rawPlays = data.plays || [];
-        if (rawPlays.length === 0 && data.drives) {
-             const drives = [...(data.drives.previous || [])];
-             if (data.drives.current) drives.push(data.drives.current);
-             rawPlays = drives.flatMap((d: any) => d.plays || []);
-        }
-
         const plays: Play[] = rawPlays.map((p: any) => ({
             id: p.id, period: p.period.number, clock: p.clock.displayValue, type: p.type?.text || 'Play', text: p.text, scoringPlay: p.scoringPlay, homeScore: p.homeScore, awayScore: p.awayScore, teamId: p.team?.id, wallclock: p.wallclock, down: p.start?.down, distance: p.start?.distance, yardLine: p.start?.yardLine, downDistanceText: p.start?.downDistanceText
         }));
@@ -389,11 +503,6 @@ const mergeSeasonStats = (reg: TeamStatItem[], post: TeamStatItem[], defaultRegG
                 let postTotal = vPost;
 
                 // Detect if source is Average or Total
-                // Most APIs return totals for "Points", "Yards". 
-                // But if value is small (< 60 for points, < 15 for yards?), it might be an average already.
-                // NFL Points: > 100 is Total. < 50 is Avg.
-                // NFL Yards: > 1000 is Total. < 500 is Avg.
-                
                 const isRegAvg = Math.abs(vReg) < (labelLower.includes('yards') ? 600 : 70);
                 const isPostAvg = Math.abs(vPost) < (labelLower.includes('yards') ? 600 : 70);
 

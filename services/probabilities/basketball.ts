@@ -1,7 +1,8 @@
 
 import { Game, GameDetails, PredictionStats, FactorComparison, CalculationDetailItem, TeamStat } from "../../types";
-import { normalCDF, parseClockToMinutes } from "./math";
-import { parseComplexStat, parseOverUnder } from "./utils";
+import { normalCDF, parseClockToMinutes, clamp } from "./math";
+import { parseComplexStat, parseOverUnder, calculateStatImpact, findCorrelationConfig } from "./utils";
+import { STAT_CORRELATIONS } from "./correlations";
 
 interface WeightedFactor {
     label: string;
@@ -19,10 +20,12 @@ export const calculateBasketballProbability = (
     factorBreakdown: FactorComparison[]
 ): { prob: number, confidence: number, factors: string[], projectedTotal: number, projectedMargin: number, projectedScoreHome: number, projectedScoreAway: number } => {
     
-    // --- 1. ESTABLISH BASELINE TOTAL ---
+    const sportCorrelations = STAT_CORRELATIONS[game.league] || STAT_CORRELATIONS['NBA'];
+
+    // --- 1. BASELINE TOTAL ---
+    const LEAGUE_MAX_TOTAL = game.league === 'NBA' ? 260 : 200;
     const leagueDefault = game.league === 'NBA' ? 228 : game.league === 'WNBA' ? 165 : 145;
     
-    // Select Source Stats for Prediction:
     const sourceStats = (details?.seasonStats && details.seasonStats.length > 0) 
         ? (details.seasonStats as unknown as TeamStat[]) 
         : details?.stats;
@@ -30,13 +33,8 @@ export const calculateBasketballProbability = (
     let seasonTotal = 0;
     let hasSeasonStats = false;
 
-    // Check for PPG stats
     if (sourceStats) {
-        const ppgStat = sourceStats.find(s => 
-            s.label.toLowerCase().includes('points per game') || 
-            s.label === 'Points' ||
-            s.label === 'PTS'
-        );
+        const ppgStat = sourceStats.find(s => s.label.toLowerCase().includes('points per game') || s.label === 'PTS');
         if (ppgStat) {
             const hPPG = parseComplexStat(ppgStat.homeValue);
             const aPPG = parseComplexStat(ppgStat.awayValue);
@@ -47,102 +45,49 @@ export const calculateBasketballProbability = (
         }
     }
 
-    let projectedTotal = leagueDefault;
-    if (hasSeasonStats) {
-        projectedTotal = seasonTotal;
-    }
-
+    let projectedTotal = hasSeasonStats ? seasonTotal : leagueDefault;
     let margin = 0;
     const keyFactors: string[] = [];
     const allFactors: WeightedFactor[] = [];
 
     // --- 2. ROSTER & CONTEXT ---
-    // Home Court
     if (!game.isNeutral) {
         margin += 3.2; 
-        allFactors.push({
-            label: "Home Court",
-            value: "+3.2 pts",
-            impact: 'positive',
-            description: "Standard HCA",
-            magnitude: 3.2
-        });
+        allFactors.push({ label: "Home Court", value: "+3.2 pts", impact: 'positive', description: "Standard HCA", magnitude: 3.2 });
     }
 
-    // Power Rating (Rank Diff)
     const homeRank = game.homeTeamRank || 50;
     const awayRank = game.awayTeamRank || 50;
     const rankDiff = awayRank - homeRank;
-    const rankImpact = rankDiff * 0.3;
-    
+    const rankImpact = rankDiff * 0.25;
     if (Math.abs(rankImpact) > 0.1) {
         margin += rankImpact;
-        allFactors.push({
-            label: "Power Rating",
-            value: `${rankImpact > 0 ? '+' : ''}${rankImpact.toFixed(1)} pts`,
-            impact: rankImpact > 0 ? 'positive' : 'negative',
-            description: `Rank Diff: #${homeRank} vs #${awayRank}`,
-            magnitude: Math.abs(rankImpact)
-        });
+        allFactors.push({ label: "Power Rating", value: `${rankImpact > 0 ? '+' : ''}${rankImpact.toFixed(1)} pts`, impact: rankImpact > 0 ? 'positive' : 'negative', description: `Rank Diff: #${homeRank} vs #${awayRank}`, magnitude: Math.abs(rankImpact) });
     }
 
-    // --- 3. DEEP STATS (Eight Factors) ---
+    // --- 3. STATS (DATABASE DRIVEN) ---
+    // Scalar to convert normalized unit impact to Point Spread
+    const SPREAD_SCALAR = 0.20;
+
     if (sourceStats) {
-        const getS = (l: string) => {
-            const s = sourceStats.find(x => x.label.toLowerCase().includes(l.toLowerCase()));
-            if (!s) return { h: 0, a: 0, txtH: '', txtA: '' };
-            return { 
-                h: parseComplexStat(s.homeValue), 
-                a: parseComplexStat(s.awayValue),
-                txtH: s.homeValue,
-                txtA: s.awayValue
-            };
-        };
-
-        const factors = [
-            { key: 'Field Goal %', weight: 0.45, label: 'Shooting' }, 
-            { key: 'Three Point %', weight: 0.18, label: 'Perimeter' },
-            { key: 'Free Throw %', weight: 0.05, label: 'Free Throws' },
-            { key: 'Rebounds', weight: 0.3, label: 'Rebounding' },
-            { key: 'Assists', weight: 0.2, label: 'Ball Movement' },
-            { key: 'Steals', weight: 1.5, label: 'Defense (Stls)' },
-            { key: 'Blocks', weight: 1.0, label: 'Rim Protection' },
-            { key: 'Turnovers', weight: -1.6, label: 'Turnovers', invert: true },
-            { key: 'Points in Paint', weight: 0.08, label: 'Inside Scoring' },
-            { key: 'Fast Break Points', weight: 0.1, label: 'Transition' },
-            { key: 'Second Chance Points', weight: 0.12, label: '2nd Chance' },
-            { key: 'Points off Turnovers', weight: 0.12, label: 'TO Points' }
-        ];
-
-        factors.forEach(f => {
-            const stat = getS(f.key);
-            if (stat.txtH !== '' && stat.txtA !== '') {
-                // Margin Adjustment
-                let diff = stat.h - stat.a;
-                if (f.invert) diff = -diff;
+        const processedStats = new Set<string>();
+        
+        sourceStats.forEach(stat => {
+            const config = findCorrelationConfig(stat.label, sportCorrelations);
+            if (config && !processedStats.has(config.id)) {
+                // Calculate impact
+                const { impact, description, magnitude } = calculateStatImpact(stat, config, SPREAD_SCALAR);
                 
-                const impact = diff * f.weight;
-                
-                if (Math.abs(impact) > 0.3) {
+                if (magnitude >= 0.5) { // Filter noise
                     margin += impact;
                     allFactors.push({
-                        label: f.label,
+                        label: config.description,
                         value: `${impact > 0 ? '+' : ''}${impact.toFixed(1)} pts`,
                         impact: impact > 0 ? 'positive' : 'negative',
-                        description: `${f.key} Diff: ${(stat.h - stat.a).toFixed(1)}`,
-                        magnitude: Math.abs(impact)
+                        description: description,
+                        magnitude: magnitude
                     });
-                }
-
-                // Total Score Adjustments based on Offense Stats
-                if (f.key === 'Field Goal %') {
-                    const avgFG = (stat.h + stat.a) / 2;
-                    if (avgFG > 48) projectedTotal += 4;
-                    else if (avgFG < 42) projectedTotal -= 4;
-                }
-                if (f.key === 'Three Point %') {
-                    const avg3P = (stat.h + stat.a) / 2;
-                    if (avg3P > 38) projectedTotal += 3;
+                    processedStats.add(config.id);
                 }
             }
         });
@@ -155,76 +100,118 @@ export const calculateBasketballProbability = (
     if (game.status === 'in_progress') {
         const hScore = parseInt(game.homeScore || '0');
         const aScore = parseInt(game.awayScore || '0');
-        const currentTotal = hScore + aScore;
-        const currentDiff = hScore - aScore;
-        
         const clock = details?.clock || game.clock || '00:00';
         const period = details?.period || game.period || 1;
-        
         const isNCAA = game.league.includes('NCAA');
         const periodLength = isNCAA ? 20 : 12;
         const totalPeriods = isNCAA ? 2 : 4;
-        const totalMins = totalPeriods * periodLength;
+        const regulationMins = totalPeriods * periodLength;
         
         const minsInPeriod = parseClockToMinutes(clock);
-        const elapsedInPeriod = periodLength - minsInPeriod;
-        let elapsed = ((period - 1) * periodLength) + elapsedInPeriod;
         
-        if (period > totalPeriods) {
+        let elapsed = 0;
+        let targetDuration = regulationMins;
+
+        if (period <= totalPeriods) {
+            const elapsedInPeriod = periodLength - minsInPeriod;
+            elapsed = ((period - 1) * periodLength) + elapsedInPeriod;
+        } else {
             const otLength = 5;
-            elapsed = totalMins + ((period - totalPeriods - 1) * otLength) + (otLength - minsInPeriod);
+            const elapsedInOT = otLength - minsInPeriod;
+            const completedOTs = period - totalPeriods - 1;
+            elapsed = regulationMins + (completedOTs * otLength) + elapsedInOT;
+            targetDuration = regulationMins + ((period - totalPeriods) * otLength);
         }
 
-        const remaining = Math.max(0, totalMins - elapsed); 
-        const timeRatio = Math.max(0, remaining / totalMins); 
-
-        const expectedCurrentDiff = margin * (1 - timeRatio);
-        const momentum = currentDiff - expectedCurrentDiff;
-        if (Math.abs(momentum) > 8) {
-            keyFactors.push(momentum > 0 ? "Home Momentum" : "Away Momentum");
-        }
-
-        const safeElapsed = Math.max(elapsed, 5); 
-        const livePace = currentTotal / safeElapsed; 
-        // Use the refined projectedTotal as the pre-game pace expectation
-        const preGamePace = projectedTotal / totalMins;
-
-        const confidenceInLive = Math.min(1, elapsed / (totalMins * 0.5)); 
-        const blendedPace = (livePace * confidenceInLive) + (preGamePace * (1 - confidenceInLive));
+        const remaining = Math.max(0, targetDuration - elapsed);
         
-        const projectedRestOfGame = blendedPace * remaining;
-        const projectedFinalTotal = currentTotal + projectedRestOfGame;
+        // Calculate projected total based on current pace
+        const currentTotal = hScore + aScore;
+        
+        // Live Pace Calculation with Safety Rails
+        let livePaceTotal = projectedTotal;
+        if (elapsed > 3) {
+             const pace = (currentTotal / elapsed) * targetDuration;
+             const minPace = projectedTotal * 0.6;
+             const maxPace = projectedTotal * 1.4;
+             livePaceTotal = clamp(pace, minPace, maxPace);
+        }
+        
+        // Calculate Live Stat Momentum
+        // If team is outperforming historical Shooting or Rebounding in live stats
+        let liveStatMomentum = 0;
+        if (details?.stats) {
+            // Check FG% difference in live stats
+            const liveShooting = details.stats.find(s => s.label.includes('Field Goal %') || s.label.includes('FG%'));
+            const liveConfig = sportCorrelations.find(c => c.id === 'shooting_efficiency');
+            
+            if (liveShooting && liveConfig) {
+                // Apply a stronger scalar for live "hot hand" effect
+                const { impact } = calculateStatImpact(liveShooting, liveConfig, 0.4);
+                liveStatMomentum += impact;
+            }
+        }
 
-        const finalMargin = (margin * timeRatio * 0.5) + currentDiff; 
+        // Weight live pace
+        const timeRatio = elapsed / regulationMins;
+        const paceWeight = clamp(Math.pow(timeRatio, 2), 0, 1);
+        const blendedTotal = (livePaceTotal * paceWeight) + (projectedTotal * (1 - paceWeight));
+        
+        const blendedRate = blendedTotal / targetDuration;
+        const remainingExpected = blendedRate * remaining;
+        
+        // Adjust remaining margin based on pre-game margin PLUS live stat momentum
+        const adjustedMargin = margin + liveStatMomentum;
+        const remainingSpread = adjustedMargin * (remaining / regulationMins);
+        
+        const liveMargin = hScore - aScore;
+        
+        // Fix for early game 0 calculation
+        const safeRemainingExpected = (remaining > 0.5 && remainingExpected < 5) 
+            ? (projectedTotal / targetDuration) * remaining 
+            : remainingExpected;
 
-        projectedTotal = projectedFinalTotal;
-        projHome = (projectedTotal / 2) + (finalMargin / 2);
-        projAway = (projectedTotal / 2) - (finalMargin / 2);
+        projHome = hScore + (safeRemainingExpected / 2) + (remainingSpread / 2);
+        projAway = aScore + (safeRemainingExpected / 2) - (remainingSpread / 2);
+        
+        if (Math.abs(liveStatMomentum) > 1.0) {
+             allFactors.push({
+                label: "Live Shooting Variance",
+                value: `${liveStatMomentum > 0 ? '+' : ''}${liveStatMomentum.toFixed(1)} pts`,
+                impact: liveStatMomentum > 0 ? 'positive' : 'negative',
+                description: `Team is shooting ${liveStatMomentum > 0 ? 'above' : 'below'} expected efficiency`,
+                magnitude: Math.abs(liveStatMomentum)
+            });
+        }
+        
+        if (Math.abs(liveStatMomentum) > 5) keyFactors.push("Shooting Variance");
+        if (Math.abs(liveMargin - (margin * (1-(remaining/regulationMins)))) > 15) keyFactors.push("High Tempo / Momentum");
     }
 
-    // --- 5. FINALIZE FACTORS ---
+    projHome = clamp(projHome, parseInt(game.homeScore || '0'), 250);
+    projAway = clamp(projAway, parseInt(game.awayScore || '0'), 250);
+
     allFactors.sort((a, b) => b.magnitude - a.magnitude);
-    
     allFactors.slice(0, 5).forEach(f => {
-        calculationBreakdown.push({
-            label: f.label,
-            value: f.value,
-            impact: f.impact,
-            description: f.description
-        });
-        if (f.magnitude > 4) keyFactors.push(f.label);
+        calculationBreakdown.push({ label: f.label, value: f.value, impact: f.impact, description: f.description });
+        if (f.magnitude > 5) keyFactors.push(f.label);
     });
+
+    if (game.status === 'finished') {
+        projHome = parseInt(game.homeScore || '0');
+        projAway = parseInt(game.awayScore || '0');
+    }
 
     const stdDev = 11.5;
     const winProb = normalCDF(projHome - projAway, 0, stdDev) * 100;
     
     return {
         prob: winProb,
-        confidence: 60 + (Math.abs(winProb - 50) * 0.4),
+        confidence: clamp(60 + (Math.abs(winProb - 50) * 0.4), 51, 99),
         factors: Array.from(new Set(keyFactors)).slice(0, 3),
-        projectedTotal: projectedTotal,
+        projectedTotal: projHome + projAway,
         projectedMargin: margin,
-        projectedScoreHome: Math.round(Math.max(parseInt(game.homeScore || '0'), projHome)),
-        projectedScoreAway: Math.round(Math.max(parseInt(game.awayScore || '0'), projAway))
+        projectedScoreHome: Math.round(projHome),
+        projectedScoreAway: Math.round(projAway)
     };
 };

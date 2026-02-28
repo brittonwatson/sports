@@ -41,7 +41,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             <div className="w-8 h-8 bg-gradient-to-tr from-slate-700 to-slate-900 rounded-lg flex items-center justify-center text-white font-bold font-display shadow-lg group-hover:shadow-slate-500/25 transition-all">
               P
             </div>
-            <span className="font-bold text-xl font-display tracking-tight block">Probabilis</span>
+            <span className="font-bold text-xl font-display tracking-tight block">Probably</span>
           </div>
 
           {/* Desktop Tabs (Horizontal Scroll) */}

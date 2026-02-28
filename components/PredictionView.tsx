@@ -6,6 +6,7 @@ import { PieChart, Pie, Cell, ResponsiveContainer } from 'recharts';
 import { Brain, TrendingUp, ShieldCheck, List, Sparkles, Activity, Scale, DollarSign, Target, Wind, Hammer, Timer, Gauge, Footprints, BarChart2, TrendingDown, X, Zap, Star, User, Calculator, Loader2 } from 'lucide-react';
 import { GroundingSources } from './GroundingSources';
 import { fetchPlayerProfile } from '../services/playerService';
+import { getTeamColor } from '../services/uiUtils';
 
 interface PredictionViewProps {
   game: Game;
@@ -24,25 +25,13 @@ interface ActivePlayerGameData {
     groupName: string;
 }
 
-const getTeamColor = (primary: string | undefined, alternate: string | undefined, isDarkMode: boolean): string => {
-    const defaultColor = isDarkMode ? '#e5e5e5' : '#171717';
-    if (!primary) return defaultColor;
-    const p = primary.toLowerCase().replace('#', '');
-    const a = alternate ? alternate.toLowerCase().replace('#', '') : null;
-    const isBlack = p === '000000';
-    const isWhite = p === 'ffffff';
-    if (isDarkMode && isBlack) return a && a !== '000000' ? `#${a}` : '#ffffff';
-    if (!isDarkMode && isWhite) return a && a !== 'ffffff' ? `#${a}` : '#000000';
-    return primary;
-};
-
 const getFactorIcon = (label: string) => {
     const l = label.toLowerCase();
     if (l.includes('air') || l.includes('pass')) return <Wind size={14} className="text-sky-500" />;
     if (l.includes('ground') || l.includes('rush')) return <Footprints size={14} className="text-amber-600" />;
     if (l.includes('trench') || l.includes('sack')) return <Hammer size={14} className="text-slate-600 dark:text-slate-400" />;
     if (l.includes('pace') || l.includes('tempo') || l.includes('possession') || l.includes('time')) return <Timer size={14} className="text-indigo-500" />;
-    if (l.includes('red zone')) return <Target size={14} className="text-rose-500" />;
+    if (l.includes('red zone') || l.includes('leverage')) return <Target size={14} className="text-rose-500" />;
     if (l.includes('eff')) return <Gauge size={14} className="text-emerald-500" />;
     if (l.includes('turnover') || l.includes('penalty')) return <TrendingDown size={14} className="text-amber-500" />;
     return <Activity size={14} className="text-slate-400" />;
@@ -124,10 +113,6 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
   const homeAbbr = game.homeTeam.substring(0, 3).toUpperCase();
   const awayAbbr = game.awayTeam.substring(0, 3).toUpperCase();
 
-  // STRICT PREGAME DATA LOGIC:
-  // If game is live/finished, we MUST use seasonStats to represent the "Pregame Outlook".
-  // If seasonStats are missing in a live game, we show nothing rather than showing live stats (which would be confusing in a 'Prediction' view).
-  // If game is scheduled, we prefer seasonStats but fallback to stats (which are usually pregame aggregates or empty).
   const displayStats = useMemo(() => {
       if (gameDetails?.seasonStats && gameDetails.seasonStats.length > 0) {
           return gameDetails.seasonStats;
@@ -135,13 +120,12 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
       if (game.status === 'scheduled') {
           return gameDetails?.stats || [];
       }
-      return []; // Return empty for live/finished games if season stats failed to load, to avoid showing live boxscore.
+      return []; 
   }, [gameDetails, game.status]);
 
   const categorizedStats = useMemo(() => {
       if (!displayStats || displayStats.length === 0) return {} as Record<string, TeamStat[]>;
       
-      // Deduplication helper
       const getNormLabel = (label: string) => {
           return label.toLowerCase()
               .replace('points per game', 'points')
@@ -153,7 +137,6 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
               .trim();
       };
 
-      // Filter duplicates
       const uniqueStats = displayStats.reduce((acc, current) => {
           const norm = getNormLabel(current.label);
           if (!acc.some(s => getNormLabel(s.label) === norm)) {
@@ -165,9 +148,9 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
       const categories: Record<string, TeamStat[]> = {
           'Offense': [],
           'Defense': [],
-          'Shooting': [], // Basketball
-          'Rebounding': [], // Basketball
-          'Ball Control': [], // Basketball
+          'Shooting': [], 
+          'Rebounding': [], 
+          'Ball Control': [], 
           'Passing': [],
           'Rushing': [],
           'Special Teams': [],
@@ -193,7 +176,6 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
                   categories['Other'].push(stat);
               }
           } else {
-              // Football / Other
               if (l.includes('kick') || l.includes('punt') || l.includes('return') || l.includes('field goal') || l.includes('fg')) {
                   categories['Special Teams'].push(stat);
               } else if (l.includes('pass') || l.includes('air') || l.includes('completion') || l.includes('qb')) {
@@ -216,7 +198,6 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
           if (categories[key].length === 0) delete categories[key];
       });
 
-      // Custom Order for Basketball to improve readability
       if (isBasketball) {
           const ordered: Record<string, TeamStat[]> = {};
           if (categories['Offense']) ordered['Offense'] = categories['Offense'];
@@ -224,7 +205,6 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
           if (categories['Defense']) ordered['Defense'] = categories['Defense'];
           if (categories['Rebounding']) ordered['Rebounding'] = categories['Rebounding'];
           if (categories['Ball Control']) ordered['Ball Control'] = categories['Ball Control'];
-          // Add others
           Object.keys(categories).forEach(k => {
               if (!ordered[k]) ordered[k] = categories[k];
           });
@@ -234,7 +214,6 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
       return categories;
   }, [displayStats, isBasketball]);
 
-  // Leaders logic
   const leaderComparisons = useMemo(() => {
       if (hideLeaders || !gameDetails?.leaders || gameDetails.leaders.length < 2) return [];
       
@@ -244,7 +223,6 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
       if (!homeLeaders || !awayLeaders) return [];
 
       const comparisons = [];
-      // Use home categories as the base list
       for (const hCat of homeLeaders.leaders) {
           const aCat = awayLeaders.leaders.find(c => c.name === hCat.name);
           if (aCat && hCat.leaders.length > 0 && aCat.leaders.length > 0) {
@@ -300,11 +278,61 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
         jersey: playerProfile?.jersey || clickedLeader?.jersey
   };
 
+  const getDetailedOutlook = () => {
+    const isHomeFav = stats.winProbabilityHome >= 50;
+    const fav = isHomeFav ? game.homeTeam : game.awayTeam;
+    const prob = Math.max(stats.winProbabilityHome, stats.winProbabilityAway).toFixed(1);
+    
+    const meaningfulFactors = stats.calculationBreakdown
+        .filter(f => f.impact !== 'neutral' && !f.label.includes('Power Rating') && !f.label.includes('Home Court'))
+        .sort((a, b) => parseFloat(b.value) - parseFloat(a.value))
+        .slice(0, 3);
+    
+    let efficiencyText = "";
+    if (stats.factorBreakdown.length > 0) {
+        const biggestMismatch = [...stats.factorBreakdown].sort((a, b) => {
+            const diffA = Math.abs(a.homeValue - a.awayValue);
+            const diffB = Math.abs(b.homeValue - b.awayValue);
+            return diffB - diffA;
+        })[0];
+
+        if (biggestMismatch) {
+            const homeBetter = biggestMismatch.homeValue > biggestMismatch.awayValue;
+            const invert = biggestMismatch.label.includes('Turnover') || biggestMismatch.label.includes('Allowed');
+            const advTeam = (homeBetter && !invert) || (!homeBetter && invert) ? game.homeTeam : game.awayTeam;
+            efficiencyText = `Crucially, ${advTeam} holds a significant statistical advantage in ${biggestMismatch.label} (${biggestMismatch.displayHome} vs ${biggestMismatch.displayAway}), creating a structural mismatch.`;
+        }
+    }
+
+    const factorText = meaningfulFactors.length > 0 
+        ? `Key variables driving this forecast include significant weight on ${meaningfulFactors.map(f => f.label).join(' and ')}.` 
+        : `This prediction relies heavily on ${isHomeFav ? 'historical home field advantage' : 'roster power ratings'} and recent form.`;
+
+    const liveContext = game.status === 'in_progress' 
+        ? `As this match is live, our model is actively blending the pre-game prior with real-time efficiency data. The current pace is ${stats.calculationBreakdown.some(f=>f.label.includes('Tempo')) ? 'accelerating' : 'stabilizing'}, shifting the projected total.` 
+        : `The projected score of ${stats.predictedScoreAway}-${stats.predictedScoreHome} represents the median outcome of our 10,000 stochastic simulations.`;
+
+    return (
+        <div className="space-y-4">
+            <p className="text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
+                Our predictive engine calculates a <strong>{prob}% probability</strong> of victory for the <strong>{fav}</strong>. {factorText}
+            </p>
+            {efficiencyText && (
+                <p className="text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
+                    {efficiencyText}
+                </p>
+            )}
+            <p className="text-sm text-slate-600 dark:text-slate-400 leading-relaxed border-t border-slate-100 dark:border-slate-800 pt-3 mt-3">
+                {liveContext}
+            </p>
+        </div>
+    );
+  };
+
   return (
     <div className="animate-fade-in space-y-6">
       <div className="bg-white dark:bg-slate-900/40 rounded-3xl p-6 sm:p-8 border border-slate-200 dark:border-slate-800 shadow-sm">
         
-        {/* 1. Header */}
         <div className="flex items-center justify-between mb-8">
             <div 
                 className="flex items-center gap-3 cursor-pointer group/outlook"
@@ -318,117 +346,124 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
                         Match Outlook
                     </h3>
                     <span className="text-[10px] font-medium text-slate-400 dark:text-slate-500 group-hover/outlook:text-slate-600 dark:group-hover/outlook:text-slate-300 transition-colors">
-                        Model v1.5 &rarr;
+                        Model v1.6 &rarr;
                     </span>
                 </div>
             </div>
         </div>
 
-        {/* 2. Projected Score & Win Probability (Grid) */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
-            <div className="flex flex-col p-5 rounded-2xl bg-slate-50/50 dark:bg-slate-900/30 border border-slate-100 dark:border-slate-800/50">
-                <div className="flex justify-between items-start mb-4">
-                    <h4 className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider flex items-center gap-2">
-                        <Brain size={14} /> Win Probability
-                    </h4>
-                    <div 
-                        className="flex items-center gap-1.5 px-2 py-0.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-md text-[10px] font-semibold cursor-help transition-colors hover:bg-slate-50 dark:hover:bg-slate-700"
-                        onClick={(e) => { e.stopPropagation(); setShowOutlookHelp(true); }}
-                        title="View Confidence Logic"
-                    >
-                        <ShieldCheck size={12} className={stats.confidence > 70 ? "text-emerald-500" : stats.confidence < 55 ? "text-amber-500" : "text-slate-500"} />
-                        <span className="text-slate-600 dark:text-slate-400">{stats.confidence.toFixed(0)}% Conf</span>
+            <div 
+                onClick={() => setShowOutlookHelp(true)}
+                className="flex flex-col p-5 rounded-2xl bg-slate-50/50 dark:bg-slate-900/30 border border-slate-200 dark:border-slate-800 cursor-pointer hover:border-indigo-300 dark:hover:border-indigo-700 hover:shadow-md transition-all duration-300 group/card relative overflow-hidden"
+            >
+                <div className="absolute inset-0 bg-indigo-50/0 group-hover/card:bg-indigo-50/30 dark:group-hover/card:bg-indigo-900/10 transition-colors" />
+                
+                <div className="relative z-10 flex flex-col h-full">
+                    <div className="flex justify-between items-start mb-4">
+                        <h4 className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider flex items-center gap-2">
+                            <Brain size={14} /> Win Probability
+                        </h4>
+                        <div className="flex items-center gap-1.5 px-2 py-0.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-md text-[10px] font-semibold transition-colors">
+                            <ShieldCheck size={12} className={stats.confidence > 70 ? "text-emerald-500" : stats.confidence < 55 ? "text-amber-500" : "text-slate-500"} />
+                            <span className="text-slate-600 dark:text-slate-400">{stats.confidence.toFixed(0)}% Conf</span>
+                        </div>
                     </div>
-                </div>
 
-                <div className="flex items-center gap-6 flex-1">
-                    <div className="w-[80px] h-[80px] relative shrink-0">
-                        <ResponsiveContainer width="100%" height="100%">
-                        <PieChart>
-                            <Pie
-                            data={winData}
-                            cx="50%"
-                            cy="50%"
-                            innerRadius={25}
-                            outerRadius={40}
-                            paddingAngle={4}
-                            dataKey="value"
-                            stroke="none"
-                            startAngle={90}
-                            endAngle={-270}
-                            >
-                            {winData.map((entry, index) => (
-                                <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                            ))}
-                            </Pie>
-                        </PieChart>
-                        </ResponsiveContainer>
-                        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                            <span className="text-[9px] font-bold text-slate-400 dark:text-slate-500">WIN%</span>
-                        </div>
-                    </div>
-                    
-                    <div className="flex-1 space-y-3">
-                        <div>
-                            <div className="flex justify-between text-xs mb-1">
-                                <span className="font-semibold truncate max-w-[120px] text-slate-700 dark:text-slate-300">{topData.name}</span>
-                                <span className="font-bold font-mono" style={{ color: topData.color }}>{topData.value.toFixed(1)}%</span>
-                            </div>
-                            <div className="w-full bg-slate-200 dark:bg-slate-800 h-1.5 rounded-full overflow-hidden">
-                                <div className="h-full transition-all duration-1000" style={{ width: `${topData.value}%`, backgroundColor: topData.color }}></div>
+                    <div className="flex items-center gap-6 flex-1">
+                        <div className="w-[80px] h-[80px] relative shrink-0">
+                            <ResponsiveContainer width="100%" height="100%">
+                            <PieChart>
+                                <Pie
+                                data={winData}
+                                cx="50%"
+                                cy="50%"
+                                innerRadius={25}
+                                outerRadius={40}
+                                paddingAngle={4}
+                                dataKey="value"
+                                stroke="none"
+                                startAngle={90}
+                                endAngle={-270}
+                                >
+                                {winData.map((entry, index) => (
+                                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                                ))}
+                                </Pie>
+                            </PieChart>
+                            </ResponsiveContainer>
+                            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                                <span className="text-[9px] font-bold text-slate-400 dark:text-slate-500">WIN%</span>
                             </div>
                         </div>
-                        <div>
-                            <div className="flex justify-between text-xs mb-1">
-                                <span className="font-semibold truncate max-w-[120px] text-slate-700 dark:text-slate-300">{bottomData.name}</span>
-                                <span className="font-bold font-mono" style={{ color: bottomData.color }}>{bottomData.value.toFixed(1)}%</span>
+                        
+                        <div className="flex-1 space-y-3">
+                            <div>
+                                <div className="flex justify-between text-xs mb-1">
+                                    <span className="font-semibold truncate max-w-[120px] text-slate-700 dark:text-slate-300">{topData.name}</span>
+                                    <span className="font-bold font-mono" style={{ color: topData.color }}>{topData.value.toFixed(1)}%</span>
+                                </div>
+                                <div className="w-full bg-slate-200 dark:bg-slate-800 h-1.5 rounded-full overflow-hidden">
+                                    <div className="h-full transition-all duration-1000" style={{ width: `${topData.value}%`, backgroundColor: topData.color }}></div>
+                                </div>
                             </div>
-                            <div className="w-full bg-slate-200 dark:bg-slate-800 h-1.5 rounded-full overflow-hidden">
-                                <div className="h-full transition-all duration-1000" style={{ width: `${bottomData.value}%`, backgroundColor: bottomData.color }}></div>
+                            <div>
+                                <div className="flex justify-between text-xs mb-1">
+                                    <span className="font-semibold truncate max-w-[120px] text-slate-700 dark:text-slate-300">{bottomData.name}</span>
+                                    <span className="font-bold font-mono" style={{ color: bottomData.color }}>{bottomData.value.toFixed(1)}%</span>
+                                </div>
+                                <div className="w-full bg-slate-200 dark:bg-slate-800 h-1.5 rounded-full overflow-hidden">
+                                    <div className="h-full transition-all duration-1000" style={{ width: `${bottomData.value}%`, backgroundColor: bottomData.color }}></div>
+                                </div>
                             </div>
                         </div>
                     </div>
                 </div>
             </div>
 
-            <div className="flex flex-col p-5 rounded-2xl bg-slate-50/50 dark:bg-slate-900/30 border border-slate-100 dark:border-slate-800/50">
-                <h4 className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-4 flex items-center gap-2">
-                    <Target size={14} /> Projected Score
-                </h4>
-                <div className="flex items-center justify-between gap-2 px-4 flex-1">
-                     <div className="flex flex-col items-center">
-                         {game.awayTeamLogo ? (
-                             <img src={game.awayTeamLogo} alt={game.awayTeam} className="w-12 h-12 object-contain mb-2 drop-shadow-sm" />
-                         ) : <div className="w-12 h-12 rounded-full bg-slate-200 dark:bg-slate-700 mb-2"></div>}
-                         <span className="text-3xl sm:text-4xl font-mono font-bold text-slate-900 dark:text-white tracking-tighter">
-                             {stats.predictedScoreAway}
-                         </span>
-                         <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wide mt-1 truncate max-w-[100px]">
-                             {game.awayTeam}
-                         </span>
-                     </div>
-                     <div className="h-12 w-px bg-slate-200 dark:bg-slate-700"></div>
-                     <div className="flex flex-col items-center">
-                         {game.homeTeamLogo ? (
-                             <img src={game.homeTeamLogo} alt={game.homeTeam} className="w-12 h-12 object-contain mb-2 drop-shadow-sm" />
-                         ) : <div className="w-12 h-12 rounded-full bg-slate-200 dark:bg-slate-700 mb-2"></div>}
-                         <span className="text-3xl sm:text-4xl font-mono font-bold text-slate-900 dark:text-white tracking-tighter">
-                             {stats.predictedScoreHome}
-                         </span>
-                         <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wide mt-1 truncate max-w-[100px]">
-                             {game.homeTeam}
-                         </span>
-                     </div>
-                </div>
-                <div className="mt-4 text-center">
-                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-[10px] font-mono text-slate-500">
-                        Implied Total: {Math.round(stats.predictedScoreHome + stats.predictedScoreAway)}
-                    </span>
+            <div 
+                onClick={() => setShowOutlookHelp(true)}
+                className="flex flex-col p-5 rounded-2xl bg-slate-50/50 dark:bg-slate-900/30 border border-slate-200 dark:border-slate-800 cursor-pointer hover:border-indigo-300 dark:hover:border-indigo-700 hover:shadow-md transition-all duration-300 group/card relative overflow-hidden"
+            >
+                <div className="absolute inset-0 bg-indigo-50/0 group-hover/card:bg-indigo-50/30 dark:group-hover/card:bg-indigo-900/10 transition-colors" />
+                <div className="relative z-10 flex flex-col h-full">
+                    <h4 className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-4 flex items-center gap-2">
+                        <Target size={14} /> Projected Score
+                    </h4>
+                    <div className="flex items-center justify-between gap-2 px-4 flex-1">
+                        <div className="flex flex-col items-center">
+                            {game.awayTeamLogo ? (
+                                <img src={game.awayTeamLogo} alt={game.awayTeam} className="w-12 h-12 object-contain mb-2 drop-shadow-sm" />
+                            ) : <div className="w-12 h-12 rounded-full bg-slate-200 dark:bg-slate-700 mb-2"></div>}
+                            <span className="text-3xl sm:text-4xl font-mono font-bold text-slate-900 dark:text-white tracking-tighter">
+                                {stats.predictedScoreAway}
+                            </span>
+                            <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wide mt-1 truncate max-w-[100px]">
+                                {game.awayTeam}
+                            </span>
+                        </div>
+                        <div className="h-12 w-px bg-slate-200 dark:bg-slate-700"></div>
+                        <div className="flex flex-col items-center">
+                            {game.homeTeamLogo ? (
+                                <img src={game.homeTeamLogo} alt={game.homeTeam} className="w-12 h-12 object-contain mb-2 drop-shadow-sm" />
+                            ) : <div className="w-12 h-12 rounded-full bg-slate-200 dark:bg-slate-700 mb-2"></div>}
+                            <span className="text-3xl sm:text-4xl font-mono font-bold text-slate-900 dark:text-white tracking-tighter">
+                                {stats.predictedScoreHome}
+                            </span>
+                            <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wide mt-1 truncate max-w-[100px]">
+                                {game.homeTeam}
+                            </span>
+                        </div>
+                    </div>
+                    <div className="mt-4 text-center">
+                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-[10px] font-mono text-slate-500 transition-colors">
+                            Implied Total: {Math.round(stats.predictedScoreHome + stats.predictedScoreAway)}
+                        </span>
+                    </div>
                 </div>
             </div>
         </div>
 
-        {/* 3. Market Odds */}
         {displayOdds && (
             <div className="mb-8 border-t border-slate-100 dark:border-slate-800 pt-6">
                  <h4 className="text-xs font-bold text-slate-400 dark:text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2 font-display">
@@ -455,122 +490,7 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
             </div>
         )}
 
-        {/* 4. Full Matchup Telemetry */}
-        {Object.keys(categorizedStats).length > 0 ? (
-             <div className="mb-8 border-t border-slate-100 dark:border-slate-800 pt-6">
-                 <div className="flex items-center justify-between mb-6">
-                    <h4 className="text-xs font-bold text-slate-400 dark:text-slate-400 uppercase tracking-wider flex items-center gap-2 font-display">
-                        <BarChart2 size={14} /> Full Matchup Telemetry {game.status !== 'scheduled' && <span className="text-[10px] text-slate-400 ml-2">(Regular Season Avg)</span>}
-                    </h4>
-                 </div>
-                 
-                 <div className="space-y-8">
-                    {Object.entries(categorizedStats).map(([category, items]) => (
-                        <div key={category}>
-                            <h5 className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-3 flex items-center gap-2">
-                                <span className="w-1.5 h-1.5 rounded-full bg-slate-300 dark:bg-slate-600"></span>
-                                {category}
-                            </h5>
-                            <div className="space-y-3">
-                                <div className="flex justify-between text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase px-1">
-                                    <span>{game.awayTeam}</span>
-                                    <span>{game.homeTeam}</span>
-                                </div>
-                                {items.map((stat, idx) => {
-                                    const hVal = parseStatValue(stat.homeValue);
-                                    const aVal = parseStatValue(stat.awayValue);
-                                    const max = Math.max(hVal, aVal);
-                                    const hBar = max > 0 ? (hVal / max) * 100 : 0;
-                                    const aBar = max > 0 ? (aVal / max) * 100 : 0;
-                                    
-                                    let hWins = hVal > aVal;
-                                    let aWins = aVal > hVal;
-                                    
-                                    if (category === 'Defense' || stat.label.includes('Turnover') || stat.label.includes('Interception') || stat.label.includes('Penalty')) {
-                                        hWins = hVal < aVal;
-                                        aWins = aVal < hVal;
-                                    }
-                                    
-                                    // Visual Label Overrides for Clarity
-                                    let displayLabel = stat.label;
-                                    if (stat.label === 'Points') displayLabel = 'Points (Total)';
-                                    if (stat.label === 'Points Against' || stat.label === 'Opponent Points') displayLabel = 'Points Against';
-                                    
-                                    return (
-                                        <div key={idx} className="relative group">
-                                            <div className="flex items-center justify-between text-xs font-mono font-bold text-slate-700 dark:text-slate-300 relative z-10 px-1 mb-1">
-                                                <span className={`flex items-center gap-1.5 ${aWins ? 'text-slate-900 dark:text-white' : 'opacity-70'}`}>
-                                                    {stat.awayValue}
-                                                    {stat.awayRank && <span className="text-[9px] bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-1.5 py-0.5 rounded text-slate-500 font-sans tracking-tight">{getOrdinal(stat.awayRank)}</span>}
-                                                </span>
-                                                
-                                                <span className="text-[10px] font-sans text-slate-500 dark:text-slate-400 font-medium text-center absolute left-1/2 -translate-x-1/2 w-full max-w-[50%] truncate">
-                                                    {displayLabel}
-                                                </span>
-                                                
-                                                <span className={`flex items-center gap-1.5 ${hWins ? 'text-slate-900 dark:text-white' : 'opacity-70'}`}>
-                                                    {stat.homeRank && <span className="text-[9px] bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-1.5 py-0.5 rounded text-slate-500 font-sans tracking-tight">{getOrdinal(stat.homeRank)}</span>}
-                                                    {stat.homeValue}
-                                                </span>
-                                            </div>
-                                            
-                                            <div className="flex h-1.5 w-full bg-slate-50 dark:bg-slate-900/50 rounded-full overflow-hidden">
-                                                <div className="flex-1 flex justify-end">
-                                                    <div 
-                                                        style={{ width: `${aBar}%`, backgroundColor: awayColor }} 
-                                                        className="h-full rounded-l-full opacity-60 group-hover:opacity-100 transition-opacity"
-                                                    ></div>
-                                                </div>
-                                                <div className="w-px bg-white dark:bg-slate-950/20 z-10"></div>
-                                                <div className="flex-1 flex justify-start">
-                                                    <div 
-                                                        style={{ width: `${hBar}%`, backgroundColor: homeColor }} 
-                                                        className="h-full rounded-r-full opacity-60 group-hover:opacity-100 transition-opacity"
-                                                    ></div>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    );
-                                })}
-                            </div>
-                        </div>
-                    ))}
-                 </div>
-             </div>
-        ) : (
-            stats.factorBreakdown && stats.factorBreakdown.length > 0 && (
-                 <div className="mb-8 border-t border-slate-100 dark:border-slate-800 pt-6">
-                     <h4 className="text-xs font-bold text-slate-400 dark:text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2 font-display">
-                        <Scale size={14} /> Efficiency Comparison
-                     </h4>
-                     <div className="space-y-4">
-                         {stats.factorBreakdown.map((factor, idx) => {
-                             const total = factor.homeValue + factor.awayValue;
-                             const hPct = total > 0 ? (factor.homeValue / total) * 100 : 50;
-                             return (
-                                 <div key={idx}>
-                                     <div className="flex justify-between items-end mb-1 text-[10px] uppercase font-bold text-slate-500">
-                                         <span>{game.awayTeam}</span>
-                                         <span className="text-slate-400">{factor.label}</span>
-                                         <span>{game.homeTeam}</span>
-                                     </div>
-                                     <div className="flex justify-between items-end mb-1 text-xs font-mono font-bold text-slate-700 dark:text-slate-300">
-                                         <span>{factor.displayAway}</span>
-                                         <span>{factor.displayHome}</span>
-                                     </div>
-                                     <div className="h-1.5 w-full bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden flex">
-                                         <div style={{ width: `${100 - hPct}%`, backgroundColor: awayColor }} className="h-full"></div>
-                                         <div style={{ width: `${hPct}%`, backgroundColor: homeColor }} className="h-full"></div>
-                                     </div>
-                                 </div>
-                             )
-                         })}
-                     </div>
-                 </div>
-            )
-        )}
-
-        {/* 5. Statistical Drivers */}
+        {/* STATISTICAL DRIVERS with Visual Impact Bar */}
         {stats.calculationBreakdown && stats.calculationBreakdown.length > 0 && (
              <div className="mb-8 border-t border-slate-100 dark:border-slate-800 pt-6">
                  <h4 className="text-xs font-bold text-slate-400 dark:text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2 font-display">
@@ -590,25 +510,27 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
                                                 ? 'bg-rose-100 dark:bg-rose-500/20 text-rose-700 dark:text-rose-400'
                                                 : 'bg-slate-100 dark:bg-slate-800 text-slate-500'
                                     }`}>
-                                        {item.impact === 'positive' 
-                                            ? `${homeAbbr} Adv` 
-                                            : item.impact === 'negative' 
-                                                ? `${awayAbbr} Adv` 
-                                                : 'Neutral'}
+                                        {item.impact === 'positive' ? `${homeAbbr} Adv` : item.impact === 'negative' ? `${awayAbbr} Adv` : 'Neutral'}
                                     </span>
                                 </div>
                                 <div className="text-[10px] text-slate-500 dark:text-slate-400 leading-relaxed font-medium">
                                     {item.description}
                                 </div>
                             </div>
-                            <div className="text-right pl-2 border-l border-slate-200 dark:border-slate-800">
-                                <div className={`text-sm font-mono font-bold ${
+                            <div className="text-right pl-3 border-l border-slate-200 dark:border-slate-800 w-24">
+                                <div className={`text-sm font-mono font-bold mb-1 ${
                                     item.impact === 'positive' ? 'text-emerald-600 dark:text-emerald-400' : 
                                     item.impact === 'negative' ? 'text-rose-600 dark:text-rose-400' : 'text-slate-500'
                                 }`}>
                                     {item.value}
                                 </div>
-                                <div className="text-[9px] text-slate-400 font-bold uppercase tracking-wider mt-0.5">Impact</div>
+                                <div className="h-1.5 w-full bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden flex">
+                                    {item.impact === 'positive' ? (
+                                        <div className="h-full bg-emerald-500 w-full animate-[pulse_3s_ease-in-out_infinite]"></div>
+                                    ) : (
+                                        <div className="h-full bg-rose-500 w-full animate-[pulse_3s_ease-in-out_infinite]"></div>
+                                    )}
+                                </div>
                             </div>
                         </div>
                     ))}
@@ -616,7 +538,7 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
              </div>
         )}
 
-        {/* 6. Season Leaders */}
+        {/* Season Leaders */}
         {!hideLeaders && leaderComparisons.length > 0 && (
             <div className="mb-8 border-t border-slate-100 dark:border-slate-800 pt-6">
                 <h4 className="text-xs font-bold text-slate-400 dark:text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2 font-display">
@@ -626,15 +548,12 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
                     {leaderComparisons.map((item, idx) => (
                         <div key={idx} className="bg-slate-50 dark:bg-slate-900/40 rounded-xl p-3 sm:p-4 border border-slate-100 dark:border-slate-800">
                             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 sm:gap-6">
-                                
                                 <div className="sm:hidden flex justify-center -mt-1 mb-2">
                                     <div className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider px-2 py-1 bg-white dark:bg-slate-800 rounded-full border border-slate-100 dark:border-slate-700 whitespace-nowrap shadow-sm">
                                         {item.category}
                                     </div>
                                 </div>
-
                                 <div className="grid grid-cols-2 sm:flex sm:flex-1 items-center gap-4 w-full">
-                                    
                                     <div 
                                         className="flex flex-col sm:flex-row items-center sm:gap-3 flex-1 min-w-0 text-center sm:text-left cursor-pointer hover:bg-white dark:hover:bg-slate-800/60 p-2 rounded-lg -m-2 transition-all group/player"
                                         onClick={() => handlePlayerClick(item.awayPlayer.id)}
@@ -655,16 +574,13 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
                                             <div className="text-sm sm:text-xs font-mono font-bold text-slate-600 dark:text-slate-300">
                                                 {item.awayPlayer.displayValue}
                                             </div>
-                                            <div className="text-[9px] text-slate-400 uppercase sm:hidden mt-0.5">{game.awayTeam}</div>
                                         </div>
                                     </div>
-
                                     <div className="hidden sm:flex justify-center shrink-0">
                                         <div className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider px-2 py-1 bg-white dark:bg-slate-800 rounded border border-slate-100 dark:border-slate-700 whitespace-nowrap">
                                             {item.category}
                                         </div>
                                     </div>
-
                                     <div 
                                         className="flex flex-col sm:flex-row items-center sm:justify-end sm:gap-3 flex-1 min-w-0 text-center sm:text-right cursor-pointer hover:bg-white dark:hover:bg-slate-800/60 p-2 rounded-lg -m-2 transition-all group/player"
                                         onClick={() => handlePlayerClick(item.homePlayer.id)}
@@ -677,7 +593,6 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
                                                 {item.homePlayer.displayValue}
                                             </div>
                                         </div>
-
                                         <div className="w-10 h-10 sm:w-9 sm:h-9 rounded-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 overflow-hidden shrink-0 mb-2 sm:mb-0 shadow-sm">
                                             {item.homePlayer.headshot ? (
                                                 <img src={item.homePlayer.headshot} alt={item.homePlayer.displayName} className="w-full h-full object-cover" />
@@ -687,7 +602,6 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
                                                 </div>
                                             )}
                                         </div>
-
                                         <div className="sm:hidden min-w-0 w-full">
                                             <div className="text-xs font-bold text-slate-900 dark:text-white truncate px-1 group-hover/player:text-indigo-600 dark:group-hover/player:text-indigo-400 transition-colors">
                                                 {item.homePlayer.displayName}
@@ -695,10 +609,8 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
                                             <div className="text-sm sm:text-xs font-mono font-bold text-slate-600 dark:text-slate-300">
                                                 {item.homePlayer.displayValue}
                                             </div>
-                                            <div className="text-[9px] text-slate-400 uppercase sm:hidden mt-0.5">{game.homeTeam}</div>
                                         </div>
                                     </div>
-
                                 </div>
                             </div>
                         </div>
@@ -707,7 +619,6 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
             </div>
         )}
 
-        {/* 7. AI Analysis */}
         {!hideAnalysis && (
             <div className="border-t border-slate-100 dark:border-slate-800 pt-6">
                 <h4 className="text-xs font-bold text-slate-400 dark:text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2 font-display">
@@ -778,34 +689,13 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
                     </div>
                     
                     <div className="flex-1 overflow-y-auto p-0">
-                        {/* New Methodology & Telemetry Explanation Section */}
                         <div className="p-5 border-b border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-950">
                             <div className="space-y-4">
                                 <div>
                                     <h4 className="text-xs font-bold text-slate-900 dark:text-white uppercase tracking-wider mb-2 flex items-center gap-2">
                                         <Brain size={14} className="text-indigo-500" /> Methodology Overview
                                     </h4>
-                                    <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-                                        We utilize a hybrid statistical engine. We establish a "Prior" probability based on historical power ratings, season averages, and market consensus. As live game data flows in, we use Bayesian inference to blend this prior with real-time performance to generate the final win probability and score.
-                                    </p>
-                                </div>
-                                <div>
-                                    <h4 className="text-xs font-bold text-slate-900 dark:text-white uppercase tracking-wider mb-2 flex items-center gap-2">
-                                        <BarChart2 size={14} className="text-emerald-500" /> Telemetry Decoding
-                                    </h4>
-                                    <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed mb-2">
-                                        The model analyzes key efficiency matchups. For example:
-                                    </p>
-                                    <div className="bg-slate-50 dark:bg-slate-900/50 p-3 rounded-lg border border-slate-100 dark:border-slate-800">
-                                        <div className="flex items-center justify-between text-[10px] font-mono font-bold text-slate-600 dark:text-slate-300 mb-1">
-                                            <span>Stat A (Home Offense)</span>
-                                            <span className="text-slate-400">vs</span>
-                                            <span>Stat B (Away Defense)</span>
-                                        </div>
-                                        <p className="text-[10px] text-slate-500 dark:text-slate-400 italic">
-                                            If Home Team averages 6.5 Yards Per Play, but Away Team allows only 4.2 YPP, the projected score is dampened to reflect the defensive mismatch.
-                                        </p>
-                                    </div>
+                                    {getDetailedOutlook()}
                                 </div>
                             </div>
                         </div>
@@ -853,10 +743,6 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
                                 <p className="text-sm text-slate-500 dark:text-slate-400">Detailed calculation breakdown is not available for this game type.</p>
                             </div>
                         )}
-                    </div>
-
-                    <div className="p-4 bg-slate-50 dark:bg-slate-900/50 border-t border-slate-100 dark:border-slate-800 text-[10px] text-slate-400 dark:text-slate-500 leading-relaxed text-center">
-                        These factors are weighted and summed to adjust the baseline projection. A Monte Carlo simulation (10,000 iterations) then determines the final win probability and score distribution.
                     </div>
                 </div>
             </div>,

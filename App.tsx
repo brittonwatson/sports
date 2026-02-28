@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { SPORTS, Sport, Game, PredictionResult, GroundingChunk, StandingsGroup, GameDetails, UserProfile, TeamOption, PredictionStats, StandingsType, TeamProfile, SOCCER_LEAGUES } from './types';
 import { fetchUpcomingGames, fetchBracketGames, fetchGameDetails } from './services/gameService';
-import { fetchStandings, fetchRankings, fetchTeamProfile, fetchTeamSchedule } from './services/teamService';
+import { fetchStandings, fetchRankings, fetchTeamProfile, fetchTeamSchedule, syncFullDatabase } from './services/teamService';
 import { calculateWinProbability } from './services/probabilities/index';
 import { generateAIAnalysis } from './services/aiService';
 import { GameCard } from './components/GameCard';
@@ -14,6 +14,7 @@ import { MethodologyView } from './components/MethodologyView';
 import { TeamDetailView } from './components/TeamDetailView';
 import { CalendarView } from './components/CalendarView';
 import { TeamsListView } from './components/TeamsListView';
+import { LeagueStatsView } from './components/LeagueStatsView';
 import { Calendar, Trophy, CalendarOff, Loader2 } from 'lucide-react';
 import { LOCAL_TEAMS } from './data/teams';
 
@@ -26,7 +27,7 @@ import { SearchModal } from './components/App/SearchModal';
 import { SettingsModal } from './components/App/SettingsModal';
 
 type Tab = Sport | 'HOME' | 'METHODOLOGY';
-type ViewMode = 'LIVE' | 'UPCOMING' | 'SCORES' | 'STANDINGS' | 'BRACKET' | 'RANKINGS' | 'CALENDAR' | 'TEAMS';
+type ViewMode = 'LIVE' | 'UPCOMING' | 'SCORES' | 'STANDINGS' | 'BRACKET' | 'RANKINGS' | 'CALENDAR' | 'TEAMS' | 'LEAGUE_STATS';
 type ThemeMode = 'light' | 'dark' | 'system';
 
 const RANKED_LEAGUES: Sport[] = ['NCAAF', 'NCAAM', 'NCAAW'];
@@ -111,6 +112,58 @@ export const App: React.FC = () => {
     if (savedTheme) {
       setTheme(savedTheme);
     }
+  }, []);
+
+  // Nightly Database Sync Logic
+  useEffect(() => {
+    const checkAndSync = async () => {
+        const lastFullSync = localStorage.getItem('last_full_sync');
+        const now = new Date();
+        const todayString = now.toDateString(); 
+        
+        let needsSync = false;
+        if (!lastFullSync) {
+            needsSync = true;
+        } else {
+            const lastSyncDate = new Date(parseInt(lastFullSync));
+            // If the last sync was yesterday (or earlier), we need to sync today
+            if (lastSyncDate.toDateString() !== todayString) {
+                needsSync = true;
+            }
+        }
+
+        if (needsSync) {
+            console.log("Starting Daily Stats Database Sync...");
+            try {
+                await syncFullDatabase();
+                localStorage.setItem('last_full_sync', Date.now().toString());
+                console.log("Daily Stats Database Sync Completed");
+            } catch (e) {
+                console.error("Daily Stats Database Sync Failed", e);
+            }
+        }
+    };
+
+    // 1. Check immediately on mount
+    checkAndSync();
+
+    // 2. Schedule next check for exactly 12:00 AM tonight
+    const now = new Date();
+    const night = new Date(
+        now.getFullYear(),
+        now.getMonth(),
+        now.getDate() + 1, // Tomorrow
+        0, 0, 0 // 00:00:00
+    );
+    const msToMidnight = night.getTime() - now.getTime();
+
+    const timer = setTimeout(() => {
+        checkAndSync();
+        // After the first midnight execution, we rely on component remounts or just assume the user will reload eventually.
+        // For a truly long-running dashboard, we could set an interval here.
+    }, msToMidnight);
+
+    return () => clearTimeout(timer);
   }, []);
 
   // Initialize Auth & Favorites
@@ -405,7 +458,7 @@ export const App: React.FC = () => {
     if (!isBackground) {
         setIsLoading(true);
         setError(null);
-        if (mode === 'STANDINGS' || mode === 'RANKINGS' || mode === 'TEAMS') setStandings([]);
+        if (mode === 'STANDINGS' || mode === 'RANKINGS' || mode === 'TEAMS' || mode === 'LEAGUE_STATS') setStandings([]);
         if (mode === 'BRACKET') setBracketGames([]);
         if (mode !== 'LIVE' && mode !== 'UPCOMING' && mode !== 'SCORES') setGames([]);
     }
@@ -414,7 +467,7 @@ export const App: React.FC = () => {
         if (mode === 'STANDINGS' && tab !== 'HOME') {
             const standingsData = await fetchStandings(tab, standingsType);
             setStandings(standingsData);
-        } else if (mode === 'TEAMS' && tab !== 'HOME') {
+        } else if ((mode === 'TEAMS' || mode === 'LEAGUE_STATS') && tab !== 'HOME') {
             const standingsData = await fetchStandings(tab, 'DIVISION');
             setStandings(standingsData);
         } else if (mode === 'RANKINGS' && tab !== 'HOME') {
@@ -590,9 +643,13 @@ export const App: React.FC = () => {
     setGameDetails(null);
     activeRequestId.current = null;
     
+    // Auto-refresh logic for Live/Scores
     const intervalId = setInterval(() => {
-        if (!selectedTeam && (viewMode === 'LIVE' || viewMode === 'UPCOMING' || viewMode === 'SCORES') && selectedTab !== 'METHODOLOGY') {
-            loadData(selectedTab, viewMode, true);
+        if (!selectedTeam && selectedTab !== 'METHODOLOGY') {
+            // Only auto-refresh if we are in a view that benefits from live updates
+            if (viewMode === 'LIVE' || viewMode === 'UPCOMING' || viewMode === 'SCORES') {
+                loadData(selectedTab, viewMode, true);
+            }
         }
     }, 15000);
 
@@ -792,7 +849,7 @@ export const App: React.FC = () => {
   const availableConferencesList = useMemo(() => {
       if (!RANKED_LEAGUES.includes(selectedTab as Sport)) return [];
       
-      if (viewMode === 'STANDINGS') {
+      if (viewMode === 'STANDINGS' || viewMode === 'TEAMS' || viewMode === 'LEAGUE_STATS') {
           return standings.map(g => g.name).sort();
       } else {
           if (conferenceMap.size === 0) return [];
@@ -822,7 +879,7 @@ export const App: React.FC = () => {
         .sort((a, b) => new Date(b.dateTime).getTime() - new Date(a.dateTime).getTime());
   }
 
-  if (selectedTab !== 'HOME' && viewMode !== 'STANDINGS' && viewMode !== 'TEAMS') {
+  if (selectedTab !== 'HOME' && viewMode !== 'STANDINGS' && viewMode !== 'TEAMS' && viewMode !== 'LEAGUE_STATS') {
       if (RANKED_LEAGUES.includes(selectedTab as Sport)) {
           if (activeFilter === 'TOP25') {
               finalDisplayGames = finalDisplayGames.filter(g => (g.homeTeamRank && g.homeTeamRank <= 25) || (g.awayTeamRank && g.awayTeamRank <= 25));
@@ -837,7 +894,7 @@ export const App: React.FC = () => {
   }
 
   let displayStandings = standings;
-  if (viewMode === 'STANDINGS' && RANKED_LEAGUES.includes(selectedTab as Sport) && activeFilter !== 'ALL') {
+  if ((viewMode === 'STANDINGS' || viewMode === 'TEAMS' || viewMode === 'LEAGUE_STATS') && RANKED_LEAGUES.includes(selectedTab as Sport) && activeFilter !== 'ALL') {
       if (activeFilter === 'TOP25') {
           displayStandings = standings.map(group => ({
               ...group,
@@ -1008,6 +1065,7 @@ export const App: React.FC = () => {
                              <p className="text-sm text-slate-500 dark:text-slate-400 font-medium">
                                  {selectedTab === 'HOME' ? 'Live & Upcoming Action' : 
                                   viewMode === 'STANDINGS' && SOCCER_LEAGUES.includes(selectedTab as Sport) ? 'League Table' :
+                                  viewMode === 'LEAGUE_STATS' ? 'Season Statistics' :
                                   `${viewMode === 'LIVE' ? 'Live Games' : viewMode === 'UPCOMING' ? 'Scheduled Matchups' : viewMode === 'SCORES' ? 'Final Scores' : viewMode === 'CALENDAR' ? 'Season Calendar' : viewMode === 'TEAMS' ? 'Team Directory' : viewMode.charAt(0) + viewMode.slice(1).toLowerCase()}`}
                              </p>
                          </div>
@@ -1021,12 +1079,12 @@ export const App: React.FC = () => {
                  </div>
 
                  {error && (
-                     <div className="bg-rose-50 dark:bg-rose-900/20 border border-rose-200 dark:border-rose-800 p-4 rounded-xl text-center mb-8">
+                     <div className="bg-rose-50 dark:bg-rose-900/20 border border-rose-200 dark:border-slate-800 p-4 rounded-xl text-center mb-8">
                          <p className="text-rose-600 dark:text-rose-400 text-sm font-medium">{error}</p>
                      </div>
                  )}
 
-                 {RANKED_LEAGUES.includes(selectedTab as Sport) && selectedTab !== 'HOME' && ['LIVE', 'UPCOMING', 'SCORES', 'STANDINGS'].includes(viewMode) && (
+                 {RANKED_LEAGUES.includes(selectedTab as Sport) && selectedTab !== 'HOME' && ['LIVE', 'UPCOMING', 'SCORES', 'STANDINGS', 'LEAGUE_STATS'].includes(viewMode) && (
                      <FilterBar 
                         activeFilter={activeFilter}
                         setActiveFilter={setActiveFilter}
@@ -1134,6 +1192,12 @@ export const App: React.FC = () => {
                         sport={selectedTab as Sport}
                         onTeamClick={handleTeamClick}
                         isLoading={isLoading}
+                     />
+                 ) : viewMode === 'LEAGUE_STATS' ? (
+                     <LeagueStatsView 
+                        groups={displayStandings}
+                        sport={selectedTab as Sport}
+                        onTeamClick={handleTeamClick}
                      />
                  ) : (
                      <div className="relative">

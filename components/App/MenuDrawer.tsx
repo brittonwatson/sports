@@ -1,7 +1,7 @@
 
 import React, { useState } from 'react';
 import { Sport, TeamOption } from '../../types';
-import { X, Search, Star, BookOpen, Settings } from 'lucide-react';
+import { X, Search, Star, BookOpen, Settings, CalendarOff } from 'lucide-react';
 
 interface MenuDrawerProps {
   isOpen: boolean;
@@ -29,6 +29,50 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
   onOpenSettings, menuTeamResults, menuSearchTerm, setMenuSearchTerm, theme, setTheme
 }) => {
   if (!isOpen) return null;
+
+  // Group leagues logic
+  const activeMyLeagues = menuSports.filter(s => favoriteLeagues.has(s) && !inactiveLeagues.has(s));
+  const activeOtherLeagues = menuSports.filter(s => !favoriteLeagues.has(s) && !inactiveLeagues.has(s));
+  const offSeasonLeagues = menuSports.filter(s => inactiveLeagues.has(s));
+
+  const renderLeagueItem = (sport: Sport, isOffSeason = false) => {
+      const isFav = favoriteLeagues.has(sport);
+      const isSelected = selectedTab === sport;
+      
+      let containerClass = "border-slate-100 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700 bg-white dark:bg-slate-900/50";
+      let textClass = "text-slate-600 dark:text-slate-400";
+      
+      if (isSelected) {
+          containerClass = "bg-slate-100 dark:bg-slate-800 border-slate-400 dark:border-slate-600 shadow-md ring-1 ring-slate-400 dark:ring-slate-600";
+          textClass = "text-slate-900 dark:text-white";
+      } else if (isOffSeason) {
+          containerClass = "bg-slate-50 dark:bg-slate-950/50 border-slate-100 dark:border-slate-800/50";
+          textClass = "text-slate-400 dark:text-slate-600";
+      } else if (isFav) {
+          containerClass = "bg-slate-50 dark:bg-slate-900 border-slate-300 dark:border-slate-700 shadow-sm";
+          textClass = "text-slate-800 dark:text-slate-200";
+      }
+
+      return (
+        <div 
+          key={sport} 
+          className={`flex items-center justify-between p-2 rounded-xl border transition-all ${containerClass}`}
+        >
+          <button
+            onClick={() => onNavigate(sport)}
+            className={`flex-1 text-left font-bold text-xs truncate mr-2 ${textClass}`}
+          >
+            {sport}
+          </button>
+          <button
+            onClick={(e) => onToggleFavoriteLeague(sport, e)}
+            className={`p-1.5 rounded-full transition-colors ${isFav ? 'text-slate-900 dark:text-white bg-slate-200 dark:bg-slate-700' : 'text-slate-300 dark:text-slate-700 hover:text-slate-500'}`}
+          >
+            <Star size={12} fill={isFav ? "currentColor" : "none"} />
+          </button>
+        </div>
+      );
+  };
 
   return (
     <div className="fixed inset-0 z-[100] flex justify-end bg-black/50 backdrop-blur-sm animate-fade-in">
@@ -139,76 +183,44 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
           
           <div className="w-full h-px bg-slate-200 dark:bg-slate-800"></div>
           
-          {/* Leagues List */}
-          <div>
-            <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4 px-2">Your Leagues</h3>
-            <div className="grid grid-cols-2 gap-2">
-              {menuSports.filter(s => favoriteLeagues.has(s)).map((sport) => {
-                let containerClass = "bg-slate-50 dark:bg-slate-900 border-slate-300 dark:border-slate-700 shadow-sm";
-                if (selectedTab === sport) {
-                  containerClass = "bg-slate-100 dark:bg-slate-800 border-slate-400 dark:border-slate-600 shadow-md ring-1 ring-slate-400 dark:ring-slate-600";
-                }
-                return (
-                  <div 
-                    key={sport} 
-                    className={`flex items-center justify-between p-2 rounded-xl border transition-all ${containerClass}`}
-                  >
-                    <button
-                      onClick={() => onNavigate(sport)}
-                      className="flex-1 text-left font-bold text-xs truncate mr-2 text-slate-800 dark:text-slate-200"
-                    >
-                      {sport}
-                    </button>
-                    <button
-                      onClick={(e) => onToggleFavoriteLeague(sport, e)}
-                      className="p-1.5 rounded-full transition-colors text-slate-900 dark:text-white bg-slate-200 dark:bg-slate-700"
-                    >
-                      <Star size={12} fill="currentColor" />
-                    </button>
-                  </div>
-                );
-              })}
+          {/* Active Your Leagues */}
+          {activeMyLeagues.length > 0 && (
+            <div>
+              <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4 px-2">Your Leagues</h3>
+              <div className="grid grid-cols-2 gap-2">
+                {activeMyLeagues.map(sport => renderLeagueItem(sport))}
+              </div>
             </div>
-          </div>
-          <div>
-            <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4 px-2">Other Leagues</h3>
-            <div className="grid grid-cols-2 gap-2">
-              {menuSports.filter(s => !favoriteLeagues.has(s)).map((sport) => {
-                const isInactive = inactiveLeagues.has(sport);
-                let containerClass = "border-slate-100 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700";
-                let textClass = "text-slate-600 dark:text-slate-400";
-                let opacityClass = "opacity-100";
-                
-                if (selectedTab === sport) {
-                  containerClass = "bg-slate-50 dark:bg-slate-900 border-slate-300 dark:border-slate-700 shadow-sm";
-                  textClass = "text-slate-900 dark:text-white";
-                } else if (isInactive) {
-                  opacityClass = "opacity-40 grayscale";
-                  textClass = "text-slate-500 dark:text-slate-500";
-                }
-                return (
-                  <div 
-                    key={sport} 
-                    className={`flex items-center justify-between p-2 rounded-xl border transition-all ${containerClass} ${opacityClass}`}
-                  >
-                    <button
-                      onClick={() => onNavigate(sport)}
-                      className={`flex-1 text-left font-bold text-xs truncate mr-2 ${textClass}`}
-                    >
-                      {sport}
-                    </button>
-                    <button
-                      onClick={(e) => onToggleFavoriteLeague(sport, e)}
-                      className="p-1.5 rounded-full transition-colors text-slate-300 hover:text-slate-500"
-                    >
-                      <Star size={12} fill="none" />
-                    </button>
-                  </div>
-                );
-              })}
+          )}
+
+          {/* Active Other Leagues */}
+          {activeOtherLeagues.length > 0 && (
+            <div>
+              <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4 px-2">Other Leagues</h3>
+              <div className="grid grid-cols-2 gap-2">
+                {activeOtherLeagues.map(sport => renderLeagueItem(sport))}
+              </div>
             </div>
-          </div>
+          )}
+
+          {/* Off-Season Leagues */}
+          {offSeasonLeagues.length > 0 && (
+            <>
+              <div className="flex items-center gap-3 py-2">
+                  <div className="h-px bg-slate-200 dark:bg-slate-800 flex-1"></div>
+                  <span className="text-[10px] font-bold text-slate-300 dark:text-slate-600 uppercase tracking-wider flex items-center gap-1.5">
+                      <CalendarOff size={10} /> Off-Season
+                  </span>
+                  <div className="h-px bg-slate-200 dark:bg-slate-800 flex-1"></div>
+              </div>
+              <div className="grid grid-cols-2 gap-2 opacity-60 hover:opacity-100 transition-opacity duration-300 grayscale hover:grayscale-0">
+                {offSeasonLeagues.map(sport => renderLeagueItem(sport, true))}
+              </div>
+            </>
+          )}
+
           <div className="w-full h-px bg-slate-200 dark:bg-slate-800"></div>
+          
           <div className="space-y-2">
             <button 
               onClick={() => { onNavigate('METHODOLOGY'); onClose(); }}
@@ -225,7 +237,8 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
               Settings & Profile
             </button>
           </div>
-          {/* Theme Toggles in Menu (duplicated from settings for ease) */}
+          
+          {/* Theme Toggles */}
           <div className="grid grid-cols-3 gap-2 bg-slate-100 dark:bg-slate-900 p-1 rounded-xl border border-slate-200 dark:border-slate-800 mt-2">
             {(['light', 'system', 'dark'] as const).map(m => (
               <button

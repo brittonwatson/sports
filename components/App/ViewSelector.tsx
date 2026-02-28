@@ -3,7 +3,7 @@ import React from 'react';
 import { Sport, SOCCER_LEAGUES } from '../../types';
 import { Radio } from 'lucide-react';
 
-type ViewMode = 'LIVE' | 'UPCOMING' | 'SCORES' | 'STANDINGS' | 'BRACKET' | 'RANKINGS' | 'CALENDAR' | 'TEAMS';
+type ViewMode = 'LIVE' | 'UPCOMING' | 'SCORES' | 'STANDINGS' | 'BRACKET' | 'RANKINGS' | 'CALENDAR' | 'TEAMS' | 'LEAGUE_STATS';
 
 interface ViewSelectorProps {
   viewMode: ViewMode;
@@ -64,6 +64,17 @@ export const ViewSelector: React.FC<ViewSelectorProps> = ({ viewMode, selectedTa
                 }`}
           >
             {SOCCER_LEAGUES.includes(selectedTab as Sport) ? 'Table' : 'Standings'}
+          </button>
+
+          <button
+            onClick={() => setViewMode('LEAGUE_STATS')}
+            className={`px-4 py-2 rounded-lg text-xs font-bold uppercase tracking-wider transition-all whitespace-nowrap flex items-center justify-center flex-1
+                ${viewMode === 'LEAGUE_STATS' 
+                    ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-sm' 
+                    : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'
+                }`}
+          >
+            Stats
           </button>
           
           <button

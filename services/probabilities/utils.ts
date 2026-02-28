@@ -1,10 +1,8 @@
 
-import { Sport } from "../../types";
+import { Sport, TeamStat, StatCorrelation } from "../../types";
 import { fetchWithRetry, normalizeStat, extractNumber } from "../utils";
 
-// Re-export common utils to maintain interface for existing consumers if necessary, 
-// or simply let them import from the new location. 
-// For this file's internal usage, we import them.
+// Re-export common utils
 export { fetchWithRetry, normalizeStat, extractNumber };
 
 // Parses "34:12" (Time), "5-15" (Ratio), "45%" (Percent) into normalized floats
@@ -88,4 +86,37 @@ export const parseRecord = (record: string | undefined): { wins: number, losses:
     const t = parts[2] || 0;
     const total = w + l + t;
     return { wins: w, losses: l, winPct: total === 0 ? 0.5 : (w + (t * 0.5)) / total };
+};
+
+// --- NEW CORRELATION UTILS ---
+
+export const findCorrelationConfig = (statLabel: string, configs: StatCorrelation[]): StatCorrelation | undefined => {
+    const labelLower = statLabel.toLowerCase();
+    return configs.find(c => c.labels.some(l => labelLower.includes(l.toLowerCase())));
+};
+
+export const calculateStatImpact = (
+    stat: TeamStat, 
+    config: StatCorrelation, 
+    baseScalar: number = 1.0
+): { impact: number, description: string, magnitude: number } => {
+    const hVal = parseComplexStat(stat.homeValue);
+    const aVal = parseComplexStat(stat.awayValue);
+    
+    // Delta
+    const diff = hVal - aVal;
+    
+    // Normalize based on benchmark (e.g. 100 yards vs 50 yards benchmark = 2.0 units)
+    const normalizedDiff = config.benchmark > 0 ? diff / config.benchmark : 0;
+    
+    // Apply Correlation (Direction) and Weight (Importance)
+    // Positive correlation + Positive Diff (Home better) -> Positive Impact (Points/Prob for Home)
+    // Negative correlation (TOs) + Positive Diff (Home has more TOs) -> Negative Impact
+    const impact = normalizedDiff * config.correlation * config.weight * baseScalar;
+    
+    return {
+        impact,
+        description: `${config.description}: ${stat.homeValue} vs ${stat.awayValue}`,
+        magnitude: Math.abs(impact)
+    };
 };

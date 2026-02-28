@@ -36,7 +36,9 @@ export const extractNumber = (val: any): number => {
     if (typeof val === 'number') return val;
     if (typeof val === 'string') return parseFloat(val) || 0;
     if (typeof val === 'object') {
-        return parseFloat(val.value) || 0;
+        // Prioritize value, fallback to displayValue
+        if (val.value !== undefined) return parseFloat(val.value) || 0;
+        if (val.displayValue !== undefined) return parseFloat(val.displayValue) || 0;
     }
     return 0;
 };
@@ -66,9 +68,19 @@ export const getUpcomingDateRange = (sport: Sport, fullHistory: boolean): string
 
 export const formatTeamName = (team: any, sport: Sport): string => {
     if (!team) return 'Unknown Team';
+    
+    // For NCAA, prioritize Location (School Name)
     if (['NCAAF', 'NCAAM', 'NCAAW'].includes(sport)) {
         return team.location || team.shortDisplayName || team.displayName || '';
     }
+
+    // For Major Pro Leagues, use Team Name (Mascot)
+    if (['NFL', 'NBA', 'NHL', 'MLB', 'WNBA', 'MLS'].includes(sport)) {
+        if (team.name) return team.name;
+        if (team.shortDisplayName) return team.shortDisplayName;
+    }
+
+    // Fallback logic
     let name = team.displayName;
     if (!name && team.location && team.name) {
         name = `${team.location} ${team.name}`;

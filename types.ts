@@ -1,4 +1,10 @@
 
+export interface TeamStatItem {
+  label: string;
+  value: string;
+  rank?: number;
+  category?: string; // Added for grouping in detail view
+}
 
 export interface GameSituation {
   down?: number;
@@ -27,6 +33,16 @@ export interface GameOdds {
   moneyLineHome?: string;
   moneyLineAway?: string;
   provider?: string; // e.g., "ESPN BET" or "Consensus"
+}
+
+export interface StatCorrelation {
+    id: string;
+    labels: string[]; // Variations of the stat name from API (e.g. "Points", "PTS", "Points Per Game")
+    category: 'OFFENSE' | 'DEFENSE' | 'EFFICIENCY' | 'MISC';
+    correlation: number; // -1.0 to 1.0 (Negative means lower is better, e.g., Turnovers)
+    weight: number; // 1.0 to 10.0 Importance Factor
+    benchmark: number; // The unit size for normalization (e.g. 50 yards, 1 turnover, 0.5 runs)
+    description: string; // Explainer text for the UI
 }
 
 export interface Game {
@@ -303,12 +319,6 @@ export interface TeamOption {
   league: Sport;
 }
 
-export interface TeamStatItem {
-  label: string;
-  value: string;
-  rank?: number;
-}
-
 export interface StatCategory {
     name: string;
     displayName: string;
@@ -339,6 +349,16 @@ export interface TeamProfile {
   seasonStats?: TeamStatItem[];
   conferenceRank?: string;
   conferenceName?: string;
+}
+
+export interface LeagueStatRow {
+    team: {
+        id: string;
+        name: string;
+        logo?: string;
+    };
+    stats: Record<string, string>; // label -> value
+    ranks: Record<string, number>; // label -> calculated rank
 }
 
 export type StandingsType = 'PLAYOFF' | 'DIVISION';

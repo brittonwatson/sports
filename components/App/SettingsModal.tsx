@@ -1,7 +1,8 @@
 
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 import { UserProfile } from '../../types';
-import { X, User as UserIcon, LogOut, Monitor, Sun, Moon } from 'lucide-react';
+import { X, User as UserIcon, LogOut, Monitor, Sun, Moon, Database, RefreshCw, CheckCircle2, Loader2 } from 'lucide-react';
+import { syncFullDatabase } from '../../services/teamService';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -17,6 +18,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   isOpen, onClose, user, onLogout, theme, setTheme, isDarkMode
 }) => {
   const googleButtonRef = useRef<HTMLDivElement>(null);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<'idle' | 'success' | 'error'>('idle');
+  const [progress, setProgress] = useState(0);
 
   useEffect(() => {
     if (isOpen && !user && googleButtonRef.current) {
@@ -31,6 +35,22 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       }
     }
   }, [isOpen, user, isDarkMode]);
+
+  const handleManualSync = async () => {
+      setIsSyncing(true);
+      setSyncStatus('idle');
+      setProgress(0);
+      try {
+          await syncFullDatabase((p) => setProgress(p));
+          setSyncStatus('success');
+          setProgress(100);
+      } catch (e) {
+          console.error(e);
+          setSyncStatus('error');
+      } finally {
+          setIsSyncing(false);
+      }
+  };
 
   if (!isOpen) return null;
 
@@ -68,6 +88,46 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               </div>
             )}
           </div>
+          
+          <div className="space-y-4">
+            <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-2">
+              <Database size={14} /> Data Management
+            </h3>
+            <div className="bg-slate-50 dark:bg-slate-900 p-4 rounded-xl border border-slate-100 dark:border-slate-800">
+                <div className="flex items-center justify-between">
+                    <div>
+                        <p className="text-sm font-bold text-slate-900 dark:text-white">Statistics Database</p>
+                        <p className="text-xs text-slate-500 mt-1">Force refresh all team stats from API.</p>
+                    </div>
+                    <button 
+                        onClick={handleManualSync}
+                        disabled={isSyncing || syncStatus === 'success'}
+                        className={`px-4 py-2 rounded-lg text-xs font-bold uppercase tracking-wider flex items-center gap-2 transition-all ${
+                            syncStatus === 'success'
+                                ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400 cursor-default'
+                                : isSyncing 
+                                    ? 'bg-slate-200 dark:bg-slate-800 text-slate-500 cursor-not-allowed' 
+                                    : 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-md hover:shadow-lg'
+                        }`}
+                    >
+                        {syncStatus === 'success' ? (
+                            <>
+                                <CheckCircle2 size={16} /> 100%
+                            </>
+                        ) : isSyncing ? (
+                            <>
+                                <Loader2 size={14} className="animate-spin" /> {progress}%
+                            </>
+                        ) : (
+                            <>
+                                <RefreshCw size={14} /> Update Now
+                            </>
+                        )}
+                    </button>
+                </div>
+            </div>
+          </div>
+
           <div className="space-y-4">
             <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-2">
               <Monitor size={14} /> Appearance
