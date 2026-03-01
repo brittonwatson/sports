@@ -528,6 +528,10 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({ game, gameDetails, p
                               {sortedPlays.map((play) => {
                                   const teamInfo = getPlayTeamInfo(play.teamId);
                                   const pointsStr = getScoringPlayPoints(play, game.league);
+                                  const explicitScoring =
+                                      ('scoringPlay' in play && play.scoringPlay) ||
+                                      ('isHome' in play && !showAllPlays);
+                                  const shouldShowScoringBadge = Boolean(pointsStr) || explicitScoring;
                                   return (
                                       <div key={play.id} className="p-4 hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors flex gap-4 items-start">
                                           <div className="flex flex-col items-center min-w-[40px] pt-1">
@@ -567,7 +571,7 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({ game, gameDetails, p
                                                   </div>
                                               )}
                                               <p className="text-xs text-slate-700 dark:text-slate-300 leading-relaxed font-medium">{play.text}</p>
-                                              {((('scoringPlay' in play) && play.scoringPlay) || ('isHome' in play) || play.type?.toLowerCase().includes('score') || play.type?.toLowerCase().includes('goal') || pointsStr) && (
+                                              {shouldShowScoringBadge && (
                                                   <div className="mt-1.5 inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-emerald-100 dark:bg-emerald-900/30 text-[10px] font-bold text-emerald-700 dark:text-emerald-400 uppercase tracking-wide">
                                                       <Target size={10} />
                                                       {play.type || 'Score'}

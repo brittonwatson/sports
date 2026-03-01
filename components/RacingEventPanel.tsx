@@ -175,6 +175,12 @@ const deriveLapsSincePit = (statMap: Map<string, string>): string => {
   return String(Math.round(delta));
 };
 
+const getCoverageThreshold = (sessionType: ReturnType<typeof inferSessionType>): number => {
+  if (sessionType === "qualifying") return 0.18;
+  if (sessionType === "practice") return 0.22;
+  return 0.25;
+};
+
 const chooseVisibleColumns = (session: RacingSessionResult): SessionColumn[] => {
   const sessionType = inferSessionType(session.name);
   const priorityColumns = sessionType === "qualifying"
@@ -183,6 +189,9 @@ const chooseVisibleColumns = (session: RacingSessionResult): SessionColumn[] => 
       ? PRACTICE_PRIORITY_COLUMNS
       : RACE_PRIORITY_COLUMNS;
   const present = new Map<string, { key: string; label: string }>();
+  const populatedCounts = new Map<string, number>();
+  const driverCount = Math.max(1, session.competitors.length);
+  const minCoverage = getCoverageThreshold(sessionType);
 
   session.competitors.forEach((competitor) => {
     competitor.stats.forEach((stat) => {
@@ -190,6 +199,7 @@ const chooseVisibleColumns = (session: RacingSessionResult): SessionColumn[] => 
       const value = String(stat.value || "").trim();
       const normalizedKey = normalizeKey(key);
       if (!normalizedKey || !hasMeaningfulValue(value)) return;
+      populatedCounts.set(normalizedKey, (populatedCounts.get(normalizedKey) || 0) + 1);
       if (!present.has(normalizedKey)) {
         present.set(normalizedKey, {
           key,
@@ -198,6 +208,9 @@ const chooseVisibleColumns = (session: RacingSessionResult): SessionColumn[] => 
       }
     });
   });
+
+  const coverageForKey = (normalizedKey: string): number =>
+    (populatedCounts.get(normalizedKey) || 0) / driverCount;
 
   const ordered: SessionColumn[] = [];
   const usedKeys = new Set<string>();
@@ -208,6 +221,7 @@ const chooseVisibleColumns = (session: RacingSessionResult): SessionColumn[] => 
       .find((entry): entry is { key: string; label: string } => Boolean(entry));
     if (!match) return;
     const normalizedKey = normalizeKey(match.key);
+    if (coverageForKey(normalizedKey) < minCoverage) return;
     if (usedKeys.has(normalizedKey)) return;
     usedKeys.add(normalizedKey);
     ordered.push({
@@ -218,18 +232,27 @@ const chooseVisibleColumns = (session: RacingSessionResult): SessionColumn[] => 
     });
   });
 
-  const hasLapsSincePitData = present.has("lapscompleted") && present.has("lastpitlap");
+  const hasLapsSincePitData = (
+    present.has("lapscompleted") &&
+    present.has("lastpitlap") &&
+    coverageForKey("lapscompleted") >= minCoverage &&
+    coverageForKey("lastpitlap") >= minCoverage
+  );
   if (hasLapsSincePitData) {
     ordered.push({ kind: "derived", key: "lapsSincePit", label: "Since Pit" });
   }
 
-  const hasStatusText = session.competitors.some((competitor) => hasMeaningfulValue(competitor.statusText || ""));
+  const statusCoverage = session.competitors
+    .filter((competitor) => hasMeaningfulValue(competitor.statusText || ""))
+    .length / driverCount;
+  const hasStatusText = statusCoverage >= Math.min(0.35, minCoverage + 0.08);
   if (hasStatusText) {
     ordered.push({ kind: "status", key: "statusText", label: "Status" });
   }
 
   present.forEach((entry, normalizedKey) => {
     if (usedKeys.has(normalizedKey) || HIDDEN_COLUMN_KEYS.has(normalizedKey)) return;
+    if (coverageForKey(normalizedKey) < minCoverage) return;
     usedKeys.add(normalizedKey);
     ordered.push({
       kind: "stat",
@@ -254,6 +277,18 @@ const resolveColumnValue = (
     return competitor.statusText || "-";
   }
   return statMap.get(column.normalizedKey) || "-";
+};
+
+const getSessionDataNote = (session: RacingSessionResult, columns: SessionColumn[]): string | null => {
+  if (session.competitors.length === 0) return null;
+  const statColumns = columns.filter((column) => column.kind !== "status");
+  if (statColumns.length === 0) {
+    return "Detailed telemetry is not provided by the ESPN feed for this session yet.";
+  }
+  if (statColumns.length <= 2) {
+    return "This session has limited telemetry from the feed; showing only populated fields.";
+  }
+  return null;
 };
 
 export const RacingEventPanel: React.FC<RacingEventPanelProps> = ({
@@ -296,6 +331,9 @@ export const RacingEventPanel: React.FC<RacingEventPanelProps> = ({
             <h3 className="text-lg font-display font-bold text-slate-900 dark:text-white">{event.shortName}</h3>
             <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
               {event.venue || "Venue TBD"}{event.location ? `, ${event.location}` : ""}
+            </p>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+              Session stats show only fields populated by the live feed.
             </p>
           </div>
           <div className="text-right">
@@ -369,6 +407,7 @@ export const RacingEventPanel: React.FC<RacingEventPanelProps> = ({
 
       {sessions.map((session) => {
         const columns = chooseVisibleColumns(session);
+        const sessionDataNote = getSessionDataNote(session, columns);
         return (
           <section
             key={session.id}
@@ -475,6 +514,11 @@ export const RacingEventPanel: React.FC<RacingEventPanelProps> = ({
               <div className="p-4 text-sm text-slate-500 dark:text-slate-400 flex items-center gap-2">
                 <Timer size={14} />
                 Session entries are not posted yet.
+              </div>
+            )}
+            {sessionDataNote && session.competitors.length > 0 && (
+              <div className="px-4 py-3 text-xs text-amber-700 dark:text-amber-300 border-t border-amber-200/60 dark:border-amber-700/50 bg-amber-50/70 dark:bg-amber-950/20">
+                {sessionDataNote}
               </div>
             )}
           </section>

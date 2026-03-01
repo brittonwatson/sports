@@ -26,6 +26,9 @@ const STANDINGS_CACHE_TTL_MS = 5 * 60 * 1000;
 const CALENDAR_CACHE_TTL_MS = 5 * 60 * 1000;
 const DRIVER_SEASON_CACHE_TTL_MS = 5 * 60 * 1000;
 const SEASON_DATA_CACHE_TTL_MS = 10 * 60 * 1000;
+const COMPLETED_EVENT_STORAGE_KEY = "sports_internal_racing_completed_events_v1";
+const MAX_COMPLETED_EVENTS_PER_SPORT = 240;
+const COMPLETED_EVENT_RETENTION_MS = 540 * 24 * 60 * 60 * 1000; // ~18 months
 
 const eventCache = new Map<string, { fetchedAt: number; data: RacingEventBundle }>();
 const standingsCache = new Map<string, { fetchedAt: number; data: RacingStandingsPayload }>();
@@ -33,6 +36,8 @@ const calendarCache = new Map<string, { fetchedAt: number; data: RacingCalendarP
 const driverSeasonCache = new Map<string, { fetchedAt: number; data: RacingDriverSeasonResults }>();
 const seasonDataCache = new Map<string, { fetchedAt: number; data: SeasonDataSnapshot }>();
 const coreRefCache = new Map<string, any>();
+const completedEventStore = new Map<string, RacingEventBundle>();
+let completedEventStoreLoaded = false;
 
 const RACING_SPORTS = new Set<Sport>(["F1", "INDYCAR", "NASCAR"]);
 const F1_ONLY_SESSION_TYPES = new Set(["practice", "free practice", "qualifying", "sprint shootout", "sprint", "race"]);
@@ -144,6 +149,91 @@ const shouldShowStatValue = (value: string): boolean => {
 
 const normalizeKey = (value: string): string => String(value || "").trim().toLowerCase();
 
+const canUseLocalStorage = (): boolean =>
+  typeof window !== "undefined" && typeof window.localStorage !== "undefined";
+
+const completedEventStorageKeyFor = (sport: Sport, eventId: string): string => `${sport}:${eventId}`;
+
+const loadCompletedEventStore = (): void => {
+  if (completedEventStoreLoaded || !canUseLocalStorage()) return;
+  completedEventStoreLoaded = true;
+  try {
+    const raw = window.localStorage.getItem(COMPLETED_EVENT_STORAGE_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    Object.entries(parsed || {}).forEach(([key, value]) => {
+      if (!value || typeof value !== "object") return;
+      const bundle = value as RacingEventBundle;
+      if (!bundle?.sport || !bundle?.eventId || !Array.isArray(bundle?.sessions)) return;
+      completedEventStore.set(key, bundle);
+    });
+  } catch {
+    // Ignore malformed storage payloads.
+  }
+};
+
+const persistCompletedEventStore = (): void => {
+  if (!canUseLocalStorage()) return;
+  try {
+    const serializable: Record<string, RacingEventBundle> = {};
+    completedEventStore.forEach((bundle, key) => {
+      serializable[key] = bundle;
+    });
+    window.localStorage.setItem(COMPLETED_EVENT_STORAGE_KEY, JSON.stringify(serializable));
+  } catch {
+    // Ignore quota/private mode failures.
+  }
+};
+
+const getStoredCompletedEvent = (sport: Sport, eventId: string): RacingEventBundle | null => {
+  loadCompletedEventStore();
+  return completedEventStore.get(completedEventStorageKeyFor(sport, eventId)) || null;
+};
+
+const isCompletedRaceEvent = (bundle: RacingEventBundle): boolean => {
+  const raceSession = bundle.sessions.find((session) => normalizeKey(session.name).includes("race"));
+  if (raceSession) return raceSession.status === "finished";
+  if (bundle.sessions.length === 0) return false;
+  return bundle.sessions.every((session) => session.status === "finished");
+};
+
+const pruneCompletedEventStore = (): void => {
+  const nowMs = Date.now();
+  const grouped = new Map<Sport, Array<{ key: string; bundle: RacingEventBundle; dateMs: number }>>();
+
+  completedEventStore.forEach((bundle, key) => {
+    const sport = bundle.sport;
+    if (!sport) return;
+    const dateMs = new Date(bundle.date).getTime();
+    if (!grouped.has(sport)) grouped.set(sport, []);
+    grouped.get(sport)!.push({ key, bundle, dateMs });
+  });
+
+  grouped.forEach((entries) => {
+    entries.sort((a, b) => {
+      const aMs = Number.isFinite(a.dateMs) ? a.dateMs : 0;
+      const bMs = Number.isFinite(b.dateMs) ? b.dateMs : 0;
+      return bMs - aMs;
+    });
+
+    entries.forEach((entry, index) => {
+      const isTooOld = Number.isFinite(entry.dateMs) && entry.dateMs < (nowMs - COMPLETED_EVENT_RETENTION_MS);
+      if (index >= MAX_COMPLETED_EVENTS_PER_SPORT || isTooOld) {
+        completedEventStore.delete(entry.key);
+      }
+    });
+  });
+};
+
+const recordCompletedEventBundle = (bundle: RacingEventBundle): void => {
+  if (!bundle?.sport || !bundle?.eventId || !isCompletedRaceEvent(bundle)) return;
+  loadCompletedEventStore();
+  const key = completedEventStorageKeyFor(bundle.sport, bundle.eventId);
+  completedEventStore.set(key, bundle);
+  pruneCompletedEventStore();
+  persistCompletedEventStore();
+};
+
 const dedupeStats = (stats: RacingStatValue[]): RacingStatValue[] => {
   const map = new Map<string, RacingStatValue>();
   stats.forEach((stat) => {
@@ -186,6 +276,59 @@ const parseStatValues = (statsPayload: any): RacingStatValue[] => {
   });
 
   return dedupeStats(parsed);
+};
+
+const readNested = (source: any, path: string): unknown => {
+  if (!source) return undefined;
+  const segments = path.split(".");
+  let current: any = source;
+  for (const segment of segments) {
+    if (current == null || typeof current !== "object") return undefined;
+    current = current[segment];
+  }
+  return current;
+};
+
+const INLINE_COMPETITOR_STAT_FIELDS: Array<{
+  key: string;
+  label: string;
+  abbreviation?: string;
+  paths: string[];
+}> = [
+  { key: "totalTime", label: "Total Time", abbreviation: "TIME", paths: ["totalTime", "time"] },
+  { key: "behindTime", label: "Gap", abbreviation: "GAP", paths: ["behindTime", "timeBehind", "interval"] },
+  { key: "gapToLeader", label: "Gap", abbreviation: "GAP", paths: ["gapToLeader"] },
+  { key: "behindLaps", label: "Laps Down", abbreviation: "LD", paths: ["behindLaps", "lapsDown"] },
+  { key: "lapsCompleted", label: "Laps", abbreviation: "LAPS", paths: ["lapsCompleted", "completedLaps"] },
+  { key: "lapsLead", label: "Laps Led", abbreviation: "LED", paths: ["lapsLead", "lapsLed"] },
+  { key: "pitsTaken", label: "Pit Stops", abbreviation: "PIT", paths: ["pitsTaken", "pitStops"] },
+  { key: "lastPitLap", label: "Last Pit", abbreviation: "LAST PIT", paths: ["lastPitLap", "lastPit"] },
+  { key: "fastestLap", label: "Fastest Lap", abbreviation: "FAST", paths: ["fastestLap", "bestLap"] },
+  { key: "fastestLapNum", label: "Fast Lap #", abbreviation: "FAST#", paths: ["fastestLapNum", "fastestLapNumber"] },
+  { key: "championshipPts", label: "Points", abbreviation: "PTS", paths: ["championshipPts"] },
+  { key: "points", label: "Points", abbreviation: "PTS", paths: ["points"] },
+  { key: "qual1TimeMS", label: "Q1", abbreviation: "Q1", paths: ["qual1TimeMS", "q1"] },
+  { key: "qual2TimeMS", label: "Q2", abbreviation: "Q2", paths: ["qual2TimeMS", "q2"] },
+  { key: "qual3TimeMS", label: "Q3", abbreviation: "Q3", paths: ["qual3TimeMS", "q3"] },
+  { key: "bestLap", label: "Best Lap", abbreviation: "BEST", paths: ["bestLap"] },
+];
+
+const parseInlineCompetitorStats = (competitor: any): RacingStatValue[] => {
+  const stats: RacingStatValue[] = [];
+  INLINE_COMPETITOR_STAT_FIELDS.forEach((field) => {
+    const value = field.paths
+      .map((path) => readNested(competitor, path))
+      .map((candidate) => safeStatValue(candidate))
+      .find((candidate) => shouldShowStatValue(candidate));
+    if (!value) return;
+    stats.push({
+      key: field.key,
+      label: field.label,
+      abbreviation: field.abbreviation,
+      value,
+    });
+  });
+  return stats;
 };
 
 const parseEntitySummary = (payload: any): EntitySummary => ({
@@ -873,7 +1016,9 @@ const toSessionResult = (
       const entity = entityByRef.get(athleteRef);
       const competitorId = getCompetitorId(competitor) || entity?.id || "";
       const statsKey = `${competition?.id || "comp"}:${competitorId}`;
-      const stats = statsByCompetitorKey.get(statsKey) || [];
+      const refStats = statsByCompetitorKey.get(statsKey) || [];
+      const inlineStats = parseInlineCompetitorStats(competitor);
+      const stats = dedupeStats([...refStats, ...inlineStats]);
       const statusText = String(competitor?.status?.type?.description || "").trim();
 
       return {
@@ -1324,10 +1469,17 @@ export const fetchRacingEventBundle = async (sport: Sport, eventId: string): Pro
   if (cached && (Date.now() - cached.fetchedAt) < EVENT_CACHE_TTL_MS) {
     return cached.data;
   }
+  const storedCompleted = getStoredCompletedEvent(sport, eventId);
 
   const eventUrl = buildCoreLeagueUrl(sport, `events/${eventId}`);
   const event = await fetchJsonSafe(eventUrl);
-  if (!event) return null;
+  if (!event) {
+    if (storedCompleted) {
+      eventCache.set(cacheKey, { fetchedAt: Date.now(), data: storedCompleted });
+      return storedCompleted;
+    }
+    return null;
+  }
 
   const competitions = Array.isArray(event.competitions) ? event.competitions : [];
   const athleteRefs = new Set<string>();
@@ -1405,6 +1557,9 @@ export const fetchRacingEventBundle = async (sport: Sport, eventId: string): Pro
     prediction,
   };
 
+  if (isCompletedRaceEvent(result)) {
+    recordCompletedEventBundle(result);
+  }
   eventCache.set(cacheKey, { fetchedAt: Date.now(), data: result });
   return result;
 };

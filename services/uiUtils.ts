@@ -95,26 +95,61 @@ export const getRankColor = (rank: number | undefined) => {
 export const getScoringPlayPoints = (play: ScoringPlay | Play, league: string): string | null => {
     const type = (play.type || '').toLowerCase();
     const text = (play.text || '').toLowerCase();
+    const combined = `${type} ${text}`;
+    const explicitScoringFlag = (('scoringPlay' in play) && Boolean(play.scoringPlay)) || (('isHome' in play) && Boolean(play.isHome !== undefined));
+
+    const hasAny = (...patterns: RegExp[]): boolean => patterns.some((pattern) => pattern.test(combined));
+    const hasNoScoreContext = hasAny(
+        /\btimeout\b/,
+        /\bout of bounds\b/,
+        /\brebound\b/,
+        /\bturnover\b/,
+        /\bst(e|ea)al\b/,
+        /\bblock\b/,
+        /\bfoul\b/,
+        /\bjump ball\b/,
+        /\bviolation\b/,
+        /\bend of\b/,
+        /\bstart of\b/,
+        /\bmiss(?:es|ed)?\b/,
+        /\bno goal\b/,
+    );
+    if (!explicitScoringFlag && hasNoScoreContext) return null;
 
     if (league === 'NFL' || league === 'NCAAF') {
-        if (type.includes('touchdown')) return '+6';
-        if (type.includes('field goal') && !type.includes('miss') && !type.includes('blocked')) return '+3';
-        if (type.includes('safety')) return '+2';
-        if (type.includes('extra point') && (text.includes('good') || text.includes('made'))) return '+1';
-        if (type.includes('conversion') && text.includes('good')) return '+2';
+        if (hasAny(/\btouchdown\b/)) return '+6';
+        if (hasAny(/\bfield goal\b/) && !hasAny(/\bmiss(?:es|ed)?\b/, /\bblocked\b/, /\bno good\b/)) return '+3';
+        if (hasAny(/\bsafety\b/)) return '+2';
+        if (hasAny(/\bextra point\b/) && hasAny(/\bgood\b/, /\bmade\b/)) return '+1';
+        if (hasAny(/\btwo[-\s]?point conversion\b/, /\b2[-\s]?pt conversion\b/) && hasAny(/\bgood\b/, /\bsuccess(?:ful)?\b/)) return '+2';
     } else if (['NBA', 'NCAAM', 'NCAAW', 'WNBA'].includes(league)) {
-        if (text.includes('three point') || text.includes('3-pointer')) return '+3';
-        if (text.includes('free throw')) return '+1';
-        return '+2'; 
+        const madeThree = hasAny(
+            /\bmake(?:s|d)?\b.*\b(three|3[-\s]?pt|3[-\s]?pointer|three[-\s]?pointer)\b/,
+            /\bhit(?:s)?\b.*\b(three|3[-\s]?pt|3[-\s]?pointer|three[-\s]?pointer)\b/,
+        );
+        if (madeThree) return '+3';
+
+        const madeFreeThrow = hasAny(/\bfree throw\b/) && hasAny(/\bmake(?:s|d)?\b/, /\bgood\b/, /\bhit(?:s)?\b/);
+        if (madeFreeThrow) return '+1';
+
+        const madeTwo = hasAny(
+            /\bmake(?:s|d)?\b.*\b(layup|dunk|jumper|jump shot|hook shot|bank shot|shot)\b/,
+            /\bhit(?:s)?\b.*\b(layup|dunk|jumper|jump shot|hook shot|bank shot|shot)\b/,
+        ) && !madeThree;
+        if (madeTwo) return '+2';
+        return null;
     } else if (league === 'MLB') {
-        if (type.includes('homerun') || type.includes('home run')) {
-            if (text.includes('grand slam')) return '+4';
-            if (text.includes('3-run')) return '+3';
-            if (text.includes('2-run')) return '+2';
+        if (hasAny(/\bhome run\b/, /\bhomerun\b/)) {
+            if (hasAny(/\bgrand slam\b/)) return '+4';
+            if (hasAny(/\b3[-\s]?run\b/)) return '+3';
+            if (hasAny(/\b2[-\s]?run\b/)) return '+2';
             return '+1';
         }
-        return '+1';
+        if (hasAny(/\bscores\b/, /\bwalk[-\s]?off\b/, /\bsacrifice fly\b/, /\brbi\b/)) return '+1';
+        return null;
     } else if (SOCCER_LEAGUES.includes(league as Sport) || league === 'NHL') {
+        if (!explicitScoringFlag && !hasAny(/\bgoal\b/, /\bown goal\b/, /\bpenalty scored\b/)) return null;
+        if (hasAny(/\bno goal\b/, /\boffside\b/, /\bsaved\b/)) return null;
         return '+1';
     }
     return null;
