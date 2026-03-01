@@ -1,6 +1,6 @@
 
 import React from 'react';
-import { Game, SOCCER_LEAGUES, Sport } from '../types';
+import { Game, RACING_LEAGUES, SOCCER_LEAGUES, Sport } from '../types';
 import { Calendar, Clock, ChevronDown, Radio, Tv, MapPin, CloudSun, Bell, BellRing } from 'lucide-react';
 
 interface GameCardProps {
@@ -16,12 +16,32 @@ export const GameCard: React.FC<GameCardProps> = ({ game, onSelect, isSelected, 
   const isLive = game.status === 'in_progress';
   const isFinished = game.status === 'finished';
   const isSoccer = SOCCER_LEAGUES.includes(game.league as Sport);
+  const isRacing = RACING_LEAGUES.includes(game.league as Sport);
   const isPreseason = game.seasonType === 1;
   const contextText = (game.context || '').trim();
   const contextLower = contextText.toLowerCase();
   const showContext = !!contextText &&
     contextText !== game.gameStatus &&
     !(isPreseason && contextLower.includes('preseason'));
+  const hasRacingOrder = isRacing && (isLive || isFinished);
+  const racingOrderRows = hasRacingOrder
+    ? [
+        {
+          key: `${game.homeTeamId || 'home'}-${game.homeScore || ''}`,
+          name: game.homeTeam,
+          logo: game.homeTeamLogo,
+          abbreviation: game.homeTeamAbbreviation,
+          position: game.homeScore || '1',
+        },
+        {
+          key: `${game.awayTeamId || 'away'}-${game.awayScore || ''}`,
+          name: game.awayTeam,
+          logo: game.awayTeamLogo,
+          abbreviation: game.awayTeamAbbreviation,
+          position: game.awayScore || '2',
+        },
+      ].filter((row, index, rows) => row.name && rows.findIndex((candidate) => candidate.name === row.name) === index)
+    : [];
 
   const handleTeamClick = (e: React.MouseEvent, teamId: string | undefined) => {
       e.stopPropagation();
@@ -155,16 +175,68 @@ export const GameCard: React.FC<GameCardProps> = ({ game, onSelect, isSelected, 
             </div>
         </div>
 
-        {/* Teams & Scores */}
+        {/* Teams / Racing Order */}
         <div className="flex-1">
-            <div className="flex flex-col gap-3 sm:gap-4 mb-4">
-            {/* For Soccer: Home First. For US Sports: Away First */}
-            {isSoccer ? HomeTeamRow : AwayTeamRow}
-            
-            <div className="w-full h-px bg-slate-100 dark:bg-slate-700/50"></div>
-            
-            {isSoccer ? AwayTeamRow : HomeTeamRow}
-            </div>
+            {isRacing ? (
+                <div className="flex flex-col gap-3 mb-4">
+                    <div className="rounded-xl border border-slate-200 dark:border-slate-700/60 bg-slate-50 dark:bg-slate-900/50 px-3 py-2.5">
+                        <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">Race Event</p>
+                        <p className="text-sm sm:text-base font-semibold text-slate-900 dark:text-white mt-1">
+                            {contextText || game.gameStatus || game.leagueName || 'Session'}
+                        </p>
+                    </div>
+
+                    {racingOrderRows.length > 0 ? (
+                        <div className="rounded-xl border border-slate-200 dark:border-slate-700/60 overflow-hidden">
+                            <div className="px-3 py-2 bg-slate-50 dark:bg-slate-900/60 text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                                {isFinished ? 'Final Order Snapshot' : 'Live Order Snapshot'}
+                            </div>
+                            <div className="divide-y divide-slate-100 dark:divide-slate-800/70">
+                                {racingOrderRows.map((row) => (
+                                    <div key={row.key} className="flex items-center justify-between px-3 py-2.5">
+                                        <div className="flex items-center gap-3 min-w-0">
+                                            <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 w-8">
+                                                P{row.position}
+                                            </span>
+                                            {row.logo && (
+                                                <div className="w-6 h-6 flex items-center justify-center">
+                                                    <img
+                                                        src={row.logo}
+                                                        alt=""
+                                                        className="w-full h-full object-contain"
+                                                        loading="lazy"
+                                                    />
+                                                </div>
+                                            )}
+                                            <span className="text-sm sm:text-base font-semibold text-slate-900 dark:text-white truncate">
+                                                {row.name}
+                                            </span>
+                                        </div>
+                                        {row.abbreviation && (
+                                            <span className="text-[10px] sm:text-xs font-bold tracking-wider text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-900/80 px-2 py-1 rounded-md">
+                                                {row.abbreviation}
+                                            </span>
+                                        )}
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    ) : (
+                        <div className="rounded-xl border border-slate-200 dark:border-slate-700/60 bg-slate-50 dark:bg-slate-900/40 px-3 py-2 text-xs text-slate-600 dark:text-slate-300">
+                            Full-field order, gap, and pit telemetry load when you expand this event.
+                        </div>
+                    )}
+                </div>
+            ) : (
+                <div className="flex flex-col gap-3 sm:gap-4 mb-4">
+                    {/* For Soccer: Home First. For US Sports: Away First */}
+                    {isSoccer ? HomeTeamRow : AwayTeamRow}
+                    
+                    <div className="w-full h-px bg-slate-100 dark:bg-slate-700/50"></div>
+                    
+                    {isSoccer ? AwayTeamRow : HomeTeamRow}
+                </div>
+            )}
 
             {/* Footer: Date/Time/Clock + Network */}
             <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400 pt-2 w-full gap-2 flex-wrap sm:flex-nowrap">

@@ -1,5 +1,5 @@
 
-import { Game, GameDetails, Sport, LineScore, TeamStat, ScoringPlay, Play, GameSituation, TeamBoxScore, TeamGameLeaders, TeamStatItem } from "../types";
+import { Game, GameDetails, Sport, LineScore, TeamStat, ScoringPlay, Play, GameSituation, TeamBoxScore, TeamGameLeaders, TeamStatItem, SeasonState } from "../types";
 import { ESPN_ENDPOINTS, SPORT_PARAMS, DAILY_CALENDAR_SPORTS } from "./constants";
 import {
     fetchWithRetry,
@@ -29,6 +29,21 @@ interface OddsBackfillCacheEntry {
     odds: Game["odds"] | null;
 }
 
+interface SeasonContext {
+    seasonState: SeasonState;
+    nextEventDate?: string;
+    hasLiveEvent: boolean;
+}
+
+interface UpcomingGamesResponse {
+    games: Game[];
+    groundingChunks: any[];
+    isSeasonActive: boolean;
+    seasonState: SeasonState;
+    nextEventDate?: string;
+    hasLiveEvent: boolean;
+}
+
 const liveRefreshCache = new Map<string, LiveRefreshCacheEntry>();
 const oddsBackfillCache = new Map<string, OddsBackfillCacheEntry>();
 const LIVE_REFRESH_TTL_MS = 60 * 1000;
@@ -36,6 +51,9 @@ const STALE_LIVE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const ODDS_BACKFILL_TTL_MS = 10 * 60 * 1000;
 const ODDS_BACKFILL_LOOKAHEAD_MS = 12 * 24 * 60 * 60 * 1000;
 const ODDS_BACKFILL_MAX_REQUESTS = 64;
+const RACING_SEASON_CONTEXT_TTL_MS = 10 * 60 * 1000;
+const RACING_SPORTS = new Set<Sport>(["NASCAR", "INDYCAR", "F1"]);
+const racingSeasonContextCache = new Map<Sport, { fetchedAt: number; context: SeasonContext }>();
 
 const sortGamesByDateTime = (games: Game[]): Game[] =>
     [...games].sort((a, b) => {
@@ -59,6 +77,90 @@ const hasNearSeasonActivity = (games: Game[], now: Date = new Date()): boolean =
         if (!Number.isFinite(gameMs)) return false;
         return gameMs >= (nowMs - lookbackMs) && gameMs <= (nowMs + lookaheadMs);
     });
+};
+
+const extractNextEventDate = (games: Game[], now: Date): string | undefined => {
+    const nowMs = now.getTime();
+    return games
+        .filter((game) => game.status === "scheduled")
+        .map((game) => ({ game, time: new Date(game.dateTime).getTime() }))
+        .filter((entry) => Number.isFinite(entry.time) && entry.time >= nowMs)
+        .sort((a, b) => a.time - b.time)[0]?.game?.dateTime;
+};
+
+const buildSeasonStateFromWindow = (
+    startDate: string | undefined,
+    endDate: string | undefined,
+    now: Date,
+    preseasonBufferDays: number,
+): SeasonState => {
+    const start = startDate ? new Date(startDate) : null;
+    const end = endDate ? new Date(new Date(endDate).getTime() + 86400000) : null;
+    if (!start || Number.isNaN(start.getTime()) || !end || Number.isNaN(end.getTime())) {
+        return "offseason";
+    }
+    if (now >= start && now <= end) return "in_season";
+    if (now < start) {
+        const preseasonStart = new Date(start);
+        preseasonStart.setDate(preseasonStart.getDate() - preseasonBufferDays);
+        if (now >= preseasonStart) return "preseason";
+    }
+    return "offseason";
+};
+
+const inferSeasonStateFromLeagueSeason = (
+    leagueSeason: any,
+    sport: Sport,
+    now: Date,
+): SeasonState => {
+    const seasonTypeCode = Number(leagueSeason?.type?.type ?? leagueSeason?.type?.id);
+    const seasonTypeName = String(leagueSeason?.type?.name || leagueSeason?.type?.abbreviation || "").toLowerCase();
+    if (seasonTypeCode === 4 || seasonTypeName.includes("off")) return "offseason";
+    if (seasonTypeCode === 1 || seasonTypeName.includes("pre")) return "preseason";
+    const preseasonBufferDays = RACING_SPORTS.has(sport) ? 45 : 21;
+    return buildSeasonStateFromWindow(leagueSeason?.startDate, leagueSeason?.endDate, now, preseasonBufferDays);
+};
+
+const fetchRacingSeasonContext = async (sport: Sport, now: Date): Promise<SeasonContext | null> => {
+    if (!RACING_SPORTS.has(sport)) return null;
+    const cached = racingSeasonContextCache.get(sport);
+    if (cached && (Date.now() - cached.fetchedAt) < RACING_SEASON_CONTEXT_TTL_MS) {
+        return cached.context;
+    }
+
+    const endpoint = ESPN_ENDPOINTS[sport];
+    const baseUrl = `https://site.api.espn.com/apis/site/v2/sports/${endpoint}/scoreboard`;
+    const start = new Date(now);
+    const end = new Date(now);
+    start.setDate(start.getDate() - 30);
+    end.setDate(end.getDate() + 180);
+    const params = new URLSearchParams(SPORT_PARAMS[sport] || "");
+    params.set("dates", `${formatEspnDate(start)}-${formatEspnDate(end)}`);
+    params.set("limit", "1000");
+
+    try {
+        const response = await fetchWithRetry(`${baseUrl}?${params.toString()}`);
+        if (!response.ok) return null;
+        const data = await response.json();
+        const leagueLogo = data.leagues?.[0]?.logos?.[0]?.href;
+        const events = Array.isArray(data.events) ? data.events : [];
+        const games = events.map((event: any) => mapEventToGame(event, sport, leagueLogo));
+        const leagueSeason = data.leagues?.[0]?.season;
+
+        let seasonState = inferSeasonStateFromLeagueSeason(leagueSeason, sport, now);
+        if (seasonState === "offseason" && hasNearSeasonActivity(games, now)) {
+            seasonState = "in_season";
+        }
+        const context: SeasonContext = {
+            seasonState,
+            nextEventDate: extractNextEventDate(games, now),
+            hasLiveEvent: games.some((game) => game.status === "in_progress"),
+        };
+        racingSeasonContextCache.set(sport, { fetchedAt: Date.now(), context });
+        return context;
+    } catch {
+        return null;
+    }
 };
 
 const isLikelyPausedGame = (statusText?: string): boolean => {
@@ -252,15 +354,20 @@ const fetchFreshGamesWindow = async (sport: Sport, start: Date, end: Date): Prom
     }
 };
 
-export const fetchUpcomingGames = async (sport: Sport, fullHistory = false): Promise<{ games: Game[], groundingChunks: any[], isSeasonActive: boolean }> => {
+export const fetchUpcomingGames = async (sport: Sport, fullHistory = false): Promise<UpcomingGamesResponse> => {
     await ensureInternalSportLoaded(sport);
     const internalGames = getInternalGamesBySport(sport);
     const now = new Date();
     if (internalGames.length > 0) {
         const displayStart = new Date(now);
         const displayEnd = new Date(now);
-        displayStart.setDate(displayStart.getDate() - 1);
-        displayEnd.setDate(displayEnd.getDate() + 6);
+        if (RACING_SPORTS.has(sport)) {
+            displayStart.setDate(displayStart.getDate() - 7);
+            displayEnd.setDate(displayEnd.getDate() + 21);
+        } else {
+            displayStart.setDate(displayStart.getDate() - 1);
+            displayEnd.setDate(displayEnd.getDate() + 6);
+        }
 
         let games = fullHistory
             ? sortGamesByDateTime(internalGames)
@@ -286,9 +393,30 @@ export const fetchUpcomingGames = async (sport: Sport, fullHistory = false): Pro
             games = await backfillMissingOdds(sport, games);
         }
 
-        const internalSeasonActive = hasNearSeasonActivity(internalGames, now);
+        let internalSeasonActive = hasNearSeasonActivity(internalGames, now);
+        let seasonState: SeasonState = internalSeasonActive ? "in_season" : "offseason";
+        let nextEventDate = extractNextEventDate(internalGames, now);
+        let hasLiveEvent = internalGames.some((game) => game.status === "in_progress");
+        if (RACING_SPORTS.has(sport)) {
+            const racingContext = await fetchRacingSeasonContext(sport, now);
+            if (racingContext) {
+                seasonState = racingContext.seasonState;
+                nextEventDate = racingContext.nextEventDate || nextEventDate;
+                hasLiveEvent = hasLiveEvent || racingContext.hasLiveEvent;
+                if (racingContext.seasonState !== "offseason") {
+                    internalSeasonActive = true;
+                }
+            }
+        }
         if (games.length > 0) {
-            return { games: sortGamesByDateTime(games), groundingChunks: [], isSeasonActive: internalSeasonActive || games.length > 0 };
+            return {
+                games: sortGamesByDateTime(games),
+                groundingChunks: [],
+                isSeasonActive: internalSeasonActive || games.length > 0,
+                seasonState,
+                nextEventDate,
+                hasLiveEvent,
+            };
         }
     }
 
@@ -313,9 +441,10 @@ export const fetchUpcomingGames = async (sport: Sport, fullHistory = false): Pro
             games = await backfillMissingOdds(sport, games);
         }
         const leagueSeason = data.leagues?.[0]?.season;
-        const seasonTypeCode = Number(leagueSeason?.type?.type ?? leagueSeason?.type?.id);
-        const seasonTypeName = String(leagueSeason?.type?.name || leagueSeason?.type?.abbreviation || '').toLowerCase();
-        const isOffSeason = seasonTypeCode === 4 || seasonTypeName.includes('off');
+        let seasonState = inferSeasonStateFromLeagueSeason(leagueSeason, sport, now);
+        const isOffSeason = seasonState === "offseason";
+        let nextEventDate = extractNextEventDate(games, now);
+        let hasLiveEvent = games.some((game) => game.status === "in_progress");
 
         let isSeasonActive = hasNearSeasonActivity(games, now);
         if (!isSeasonActive && !isOffSeason && leagueSeason?.startDate && leagueSeason?.endDate) {
@@ -324,10 +453,52 @@ export const fetchUpcomingGames = async (sport: Sport, fullHistory = false): Pro
             isSeasonActive = now >= start && now <= end;
         }
 
-        if (games.length > 0 && !isOffSeason) isSeasonActive = true;
-        return { games: sortGamesByDateTime(games), groundingChunks: [], isSeasonActive };
+        if (RACING_SPORTS.has(sport)) {
+            const racingContext = await fetchRacingSeasonContext(sport, now);
+            if (racingContext) {
+                seasonState = racingContext.seasonState;
+                nextEventDate = racingContext.nextEventDate || nextEventDate;
+                hasLiveEvent = hasLiveEvent || racingContext.hasLiveEvent;
+                if (racingContext.seasonState !== "offseason") {
+                    isSeasonActive = true;
+                }
+            }
+        }
+
+        if (games.length > 0 && seasonState !== "offseason") isSeasonActive = true;
+        if (!isSeasonActive && seasonState === "preseason") {
+            isSeasonActive = true;
+        }
+        return {
+            games: sortGamesByDateTime(games),
+            groundingChunks: [],
+            isSeasonActive,
+            seasonState,
+            nextEventDate,
+            hasLiveEvent,
+        };
     } catch (e) {
-        return { games: [], groundingChunks: [], isSeasonActive: false };
+        if (RACING_SPORTS.has(sport)) {
+            const racingContext = await fetchRacingSeasonContext(sport, now);
+            if (racingContext) {
+                return {
+                    games: [],
+                    groundingChunks: [],
+                    isSeasonActive: racingContext.seasonState !== "offseason",
+                    seasonState: racingContext.seasonState,
+                    nextEventDate: racingContext.nextEventDate,
+                    hasLiveEvent: racingContext.hasLiveEvent,
+                };
+            }
+        }
+        return {
+            games: [],
+            groundingChunks: [],
+            isSeasonActive: false,
+            seasonState: "offseason",
+            nextEventDate: undefined,
+            hasLiveEvent: false,
+        };
     }
 };
 

@@ -1,6 +1,6 @@
 
-import React, { useState } from 'react';
-import { Sport, TeamOption } from '../../types';
+import React from 'react';
+import { Sport, TeamOption, RACING_LEAGUES, SeasonState } from '../../types';
 import { X, Search, Star, BookOpen, Settings, CalendarOff } from 'lucide-react';
 
 interface MenuDrawerProps {
@@ -10,6 +10,7 @@ interface MenuDrawerProps {
   menuSports: Sport[];
   favoriteLeagues: Set<Sport>;
   inactiveLeagues: Set<Sport>;
+  leagueActivity: Partial<Record<Sport, { seasonState: SeasonState; hasLiveEvent: boolean; nextEventDate?: string }>>;
   selectedTab: Sport | 'HOME' | 'METHODOLOGY';
   onNavigate: (sport: Sport | 'HOME' | 'METHODOLOGY') => void;
   onTeamClick: (team: TeamOption) => void;
@@ -25,17 +26,43 @@ interface MenuDrawerProps {
 
 export const MenuDrawer: React.FC<MenuDrawerProps> = ({
   isOpen, onClose, favoriteTeams, menuSports, favoriteLeagues, inactiveLeagues,
+  leagueActivity,
   selectedTab, onNavigate, onTeamClick, onToggleFavoriteTeam, onToggleFavoriteLeague,
   onOpenSettings, menuTeamResults, menuSearchTerm, setMenuSearchTerm, theme, setTheme
 }) => {
   if (!isOpen) return null;
 
-  // Group leagues logic
-  const activeMyLeagues = menuSports.filter(s => favoriteLeagues.has(s) && !inactiveLeagues.has(s));
-  const activeOtherLeagues = menuSports.filter(s => !favoriteLeagues.has(s) && !inactiveLeagues.has(s));
-  const offSeasonLeagues = menuSports.filter(s => inactiveLeagues.has(s));
+  const getSeasonState = (sport: Sport): SeasonState => {
+      const explicit = leagueActivity[sport]?.seasonState;
+      if (explicit) return explicit;
+      return inactiveLeagues.has(sport) ? 'offseason' : 'in_season';
+  };
 
-  const renderLeagueItem = (sport: Sport, isOffSeason = false) => {
+  const formatNextEventDate = (value?: string): string => {
+      if (!value) return '';
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return '';
+      return date.toLocaleString(undefined, {
+          month: 'short',
+          day: 'numeric',
+          hour: 'numeric',
+          minute: '2-digit',
+      });
+  };
+
+  // Group leagues logic (non-racing)
+  const nonRacingLeagues = menuSports.filter(s => !RACING_LEAGUES.includes(s));
+  const activeMyLeagues = nonRacingLeagues.filter(s => favoriteLeagues.has(s) && getSeasonState(s) !== 'offseason');
+  const activeOtherLeagues = nonRacingLeagues.filter(s => !favoriteLeagues.has(s) && getSeasonState(s) !== 'offseason');
+  const offSeasonLeagues = nonRacingLeagues.filter(s => getSeasonState(s) === 'offseason');
+  const racingLeagues = menuSports.filter(s => RACING_LEAGUES.includes(s));
+
+  const renderLeagueItem = (
+      sport: Sport,
+      opts?: { isOffSeason?: boolean; statusLabel?: string; nextEventDate?: string; isRacing?: boolean; isLive?: boolean },
+  ) => {
+      const isOffSeason = Boolean(opts?.isOffSeason);
+      const isRacing = Boolean(opts?.isRacing);
       const isFav = favoriteLeagues.has(sport);
       const isSelected = selectedTab === sport;
       
@@ -60,9 +87,31 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
         >
           <button
             onClick={() => onNavigate(sport)}
-            className={`flex-1 text-left font-bold text-xs truncate mr-2 ${textClass}`}
+            className={`flex-1 text-left mr-2 ${textClass}`}
           >
-            {sport}
+            <div className="flex items-center gap-2">
+              <span className="font-bold text-xs truncate">{sport}</span>
+              {opts?.statusLabel && (
+                <span
+                  className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full border ${
+                    opts?.isLive
+                      ? 'bg-rose-500/20 text-rose-500 border-rose-500/30'
+                      : opts.statusLabel === 'Preseason'
+                        ? 'bg-cyan-500/10 text-cyan-500 border-cyan-500/30'
+                        : opts.statusLabel === 'In Season'
+                          ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/30'
+                          : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-700'
+                  }`}
+                >
+                  {opts?.isLive ? 'Live' : opts.statusLabel}
+                </span>
+              )}
+            </div>
+            {isRacing && opts?.nextEventDate && (
+              <div className="text-[10px] mt-1 text-slate-500 dark:text-slate-400 font-medium">
+                Next: {formatNextEventDate(opts.nextEventDate)}
+              </div>
+            )}
           </button>
           <button
             onClick={(e) => onToggleFavoriteLeague(sport, e)}
@@ -181,6 +230,34 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
           </div>
           
           <div className="w-full h-px bg-slate-200 dark:bg-slate-800"></div>
+
+          {/* Racing Series */}
+          {racingLeagues.length > 0 && (
+            <div>
+              <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4 px-2">Racing Series</h3>
+              <div className="grid grid-cols-1 gap-2">
+                {racingLeagues.map((sport) => {
+                  const state = getSeasonState(sport);
+                  const live = Boolean(leagueActivity[sport]?.hasLiveEvent);
+                  const statusLabel =
+                    state === 'preseason'
+                      ? 'Preseason'
+                      : state === 'in_season'
+                        ? 'In Season'
+                        : 'Off-Season';
+                  return renderLeagueItem(sport, {
+                    isOffSeason: state === 'offseason',
+                    isRacing: true,
+                    isLive: live,
+                    statusLabel,
+                    nextEventDate: leagueActivity[sport]?.nextEventDate,
+                  });
+                })}
+              </div>
+            </div>
+          )}
+
+          <div className="w-full h-px bg-slate-200 dark:bg-slate-800"></div>
           
           {/* Active Your Leagues */}
           {activeMyLeagues.length > 0 && (
@@ -213,7 +290,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                   <div className="h-px bg-slate-200 dark:bg-slate-800 flex-1"></div>
               </div>
               <div className="grid grid-cols-2 gap-2 opacity-60 hover:opacity-100 transition-opacity duration-300 grayscale hover:grayscale-0">
-                {offSeasonLeagues.map(sport => renderLeagueItem(sport, true))}
+                {offSeasonLeagues.map(sport => renderLeagueItem(sport, { isOffSeason: true }))}
               </div>
             </>
           )}

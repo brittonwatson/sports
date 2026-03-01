@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { SPORTS, Sport, Game, PredictionResult, GroundingChunk, StandingsGroup, GameDetails, UserProfile, TeamOption, PredictionStats, StandingsType, TeamProfile, SOCCER_LEAGUES, RACING_LEAGUES, RacingEventBundle, RacingStandingsPayload } from './types';
+import { SPORTS, Sport, Game, PredictionResult, GroundingChunk, StandingsGroup, GameDetails, UserProfile, TeamOption, PredictionStats, StandingsType, TeamProfile, SOCCER_LEAGUES, RACING_LEAGUES, RacingEventBundle, RacingStandingsPayload, SeasonState } from './types';
 import { fetchUpcomingGames, fetchBracketGames, fetchGameDetails } from './services/gameService';
 import { fetchStandings, fetchRankings, fetchTeamProfile, fetchTeamSchedule, syncFullDatabase } from './services/teamService';
 import { fetchRacingEventBundle, fetchRacingStandingsPayload } from './services/racingService';
@@ -44,6 +44,12 @@ interface NavState {
   gameId: string | null;
 }
 
+interface LeagueActivityState {
+  seasonState: SeasonState;
+  hasLiveEvent: boolean;
+  nextEventDate?: string;
+}
+
 const RANKED_LEAGUES: Sport[] = ['NCAAF', 'NCAAM', 'NCAAW'];
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID?.trim() || '';
 const ENABLE_RUNTIME_SYNC = import.meta.env.VITE_ENABLE_RUNTIME_SYNC === 'true';
@@ -59,6 +65,19 @@ const loadProbabilityModule = async (): Promise<ProbabilityModule> => {
     probabilityModulePromise = import('./services/probabilities/index');
   }
   return probabilityModulePromise;
+};
+
+const hasRenderableGameDetails = (details: GameDetails | null | undefined): boolean => {
+  if (!details) return false;
+  return (
+    (details.linescores?.length || 0) > 0 ||
+    (details.stats?.length || 0) > 0 ||
+    (details.scoringPlays?.length || 0) > 0 ||
+    (details.plays?.length || 0) > 0 ||
+    (details.boxscore?.some((team) => (team.groups || []).some((group) => (group.players || []).length > 0)) || false) ||
+    (details.leaders?.length || 0) > 0 ||
+    (details.injuries?.length || 0) > 0
+  );
 };
 
 const getOnboardingStorageKey = (userSub?: string): string =>
@@ -269,6 +288,7 @@ export const App: React.FC = () => {
   // Menu Organization State
   const [menuSports, setMenuSports] = useState<Sport[]>(SPORTS);
   const [inactiveLeagues, setInactiveLeagues] = useState<Set<Sport>>(new Set());
+  const [leagueActivity, setLeagueActivity] = useState<Partial<Record<Sport, LeagueActivityState>>>({});
 
   // Loading/Error State
   const [isLoading, setIsLoading] = useState(false);
@@ -836,6 +856,7 @@ export const App: React.FC = () => {
             upsertGamesInRegistry(bracketData);
         } else {
             let fetchedGames: Game[] = [];
+            const leagueActivityUpdates: Partial<Record<Sport, LeagueActivityState>> = {};
       
             if (tab === 'HOME') {
               const active: Sport[] = [];
@@ -853,7 +874,13 @@ export const App: React.FC = () => {
                   
                   chunkResults.forEach((result, idx) => {
                       const sportName = chunk[idx];
-                      if (result.games.length > 0 || result.isSeasonActive) {
+                      const seasonState: SeasonState = result.seasonState || (result.isSeasonActive ? 'in_season' : 'offseason');
+                      leagueActivityUpdates[sportName] = {
+                          seasonState,
+                          hasLiveEvent: Boolean(result.hasLiveEvent || result.games.some((game) => game.status === 'in_progress')),
+                          nextEventDate: result.nextEventDate,
+                      };
+                      if (seasonState !== 'offseason') {
                           active.push(sportName);
                       } else {
                           inactive.push(sportName);
@@ -934,12 +961,20 @@ export const App: React.FC = () => {
       
             } else {
               const needsFullHistory = mode === 'SCORES' || mode === 'LEAGUE_STATS';
-              const { games } = await fetchUpcomingGames(tab as Sport, needsFullHistory);
-              fetchedGames = games;
+              const response = await fetchUpcomingGames(tab as Sport, needsFullHistory);
+              fetchedGames = response.games;
+              leagueActivityUpdates[tab as Sport] = {
+                  seasonState: response.seasonState || (response.isSeasonActive ? 'in_season' : 'offseason'),
+                  hasLiveEvent: Boolean(response.hasLiveEvent || response.games.some((game) => game.status === 'in_progress')),
+                  nextEventDate: response.nextEventDate,
+              };
             }
       
             setGames(fetchedGames);
             upsertGamesInRegistry(fetchedGames);
+            if (Object.keys(leagueActivityUpdates).length > 0) {
+                setLeagueActivity((prev) => ({ ...prev, ...leagueActivityUpdates }));
+            }
 
 	            if (isTabSwitch.current && !isBackground) {
 	                const hasLive = fetchedGames.some(g => g.status === 'in_progress');
@@ -1109,24 +1144,32 @@ export const App: React.FC = () => {
               return;
           }
 
-          if (predictionCache.current.has(game.id)) {
-              const cached = predictionCache.current.get(game.id);
+          const cached = predictionCache.current.get(game.id);
+          const cachedDetails = cached?.details || null;
+
+          if (cached) {
               setPrediction(cached?.prediction || null);
-              setGameDetails(cached?.details || null);
+              setGameDetails(cachedDetails);
               
-              if (cached?.details?.odds) {
-                  setSelectedGame(prev => prev ? { ...prev, odds: cached.details!.odds } : null);
+              if (cachedDetails?.odds) {
+                  setSelectedGame(prev => prev ? { ...prev, odds: cachedDetails.odds } : null);
               }
               
               // Force recomputation for scheduled/finished games when model version changed
               // so stale predictions cannot persist across probability-engine updates.
               const cacheIsCurrent = cached?.modelVersion === PREDICTION_MODEL_VERSION;
-              if (game.status !== 'in_progress' && cacheIsCurrent) return;
+              const hasUsableFinishedDetails = hasRenderableGameDetails(cachedDetails);
+              const canSkipFetch =
+                  game.status !== 'in_progress' &&
+                  cacheIsCurrent &&
+                  (game.status !== 'finished' || hasUsableFinishedDetails);
+              if (canSkipFetch) return;
           }
 
           setIsPredicting(true);
           try {
-              const details = await fetchGameDetails(game.id, game.league as Sport);
+              const fetchedDetails = await fetchGameDetails(game.id, game.league as Sport);
+              const details = fetchedDetails || cachedDetails;
               setGameDetails(details);
               
               if (details) {
@@ -1193,6 +1236,9 @@ export const App: React.FC = () => {
               }
           } catch (e) {
               console.error(e);
+              if (activeRequestId.current === game.id && cachedDetails) {
+                  setGameDetails(cachedDetails);
+              }
           } finally {
               if (activeRequestId.current === game.id) {
                   setIsPredicting(false);
@@ -2098,6 +2144,7 @@ export const App: React.FC = () => {
         menuSports={menuSports}
         favoriteLeagues={favoriteLeagues}
         inactiveLeagues={inactiveLeagues}
+        leagueActivity={leagueActivity}
         selectedTab={selectedTab}
         onNavigate={handleTabChange}
         onTeamClick={navigateToTeam}

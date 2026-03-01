@@ -1,5 +1,5 @@
 import React, { useMemo } from "react";
-import { RacingEventBundle, RacingSessionResult } from "../types";
+import { RacingCompetitorResult, RacingEventBundle, RacingSessionResult } from "../types";
 import { Flag, Timer, Trophy } from "lucide-react";
 
 interface RacingEventPanelProps {
@@ -7,18 +7,69 @@ interface RacingEventPanelProps {
   isLoading?: boolean;
 }
 
-const PRIORITY_STAT_KEYS = [
-  "totalTime",
-  "behindTime",
-  "fastestLap",
-  "lapsCompleted",
-  "lapsLead",
-  "championshipPts",
-  "qual1TimeMS",
-  "qual2TimeMS",
-  "qual3TimeMS",
-  "place",
+type SessionColumn =
+  | { kind: "stat"; key: string; normalizedKey: string; label: string }
+  | { kind: "derived"; key: "lapsSincePit"; label: string }
+  | { kind: "status"; key: "statusText"; label: string };
+
+const FRIENDLY_LABELS: Record<string, string> = {
+  totaltime: "Total Time",
+  behindtime: "Gap",
+  gaptoleader: "Gap",
+  behindlaps: "Laps Down",
+  lapscompleted: "Laps",
+  lapslead: "Laps Led",
+  pitstaken: "Pit Stops",
+  lastpitlap: "Last Pit",
+  fastestlap: "Fastest Lap",
+  fastestlapnum: "Fast Lap #",
+  championshippts: "Pts",
+  points: "Pts",
+  q1: "Q1",
+  q2: "Q2",
+  q3: "Q3",
+  qual1timems: "Q1",
+  qual2timems: "Q2",
+  qual3timems: "Q3",
+  tire: "Tire",
+  tirestatus: "Tire",
+  tirecompound: "Tire",
+};
+
+const PRIORITY_COLUMNS: Array<{ label: string; aliases: string[] }> = [
+  { label: "Gap", aliases: ["behindTime", "gapToLeader", "gap", "interval", "timeBehind"] },
+  { label: "Laps Down", aliases: ["behindLaps", "lapsDown", "lapDown"] },
+  { label: "Laps", aliases: ["lapsCompleted", "laps"] },
+  { label: "Laps Led", aliases: ["lapsLead", "lapsLed"] },
+  { label: "Pit Stops", aliases: ["pitsTaken", "pitStops", "stops"] },
+  { label: "Last Pit", aliases: ["lastPitLap", "lastPit"] },
+  { label: "Tire", aliases: ["tireStatus", "tire", "tireCompound", "compound"] },
+  { label: "Fastest Lap", aliases: ["fastestLap", "bestLap", "lapTime"] },
+  { label: "Fast Lap #", aliases: ["fastestLapNum", "fastestLapNumber"] },
+  { label: "Pts", aliases: ["championshipPts", "points"] },
+  { label: "Q1", aliases: ["qual1TimeMS", "q1"] },
+  { label: "Q2", aliases: ["qual2TimeMS", "q2"] },
+  { label: "Q3", aliases: ["qual3TimeMS", "q3"] },
+  { label: "Total Time", aliases: ["totalTime"] },
 ];
+
+const HIDDEN_COLUMN_KEYS = new Set([
+  "place",
+  "position",
+  "order",
+  "startorder",
+  "startposition",
+  "wins",
+  "top5",
+  "top10",
+]);
+
+const normalizeKey = (value: string): string => String(value || "").trim().toLowerCase();
+
+const hasMeaningfulValue = (value: string): boolean => {
+  const normalized = String(value || "").trim();
+  return !!normalized && normalized !== "-" && normalized !== "--";
+};
 
 const formatDateTime = (value: string): string => {
   if (!value) return "TBD";
@@ -38,29 +89,106 @@ const sessionLabelClass = (status: RacingSessionResult["status"]): string => {
   return "text-slate-300 bg-slate-700/40 border-slate-600";
 };
 
-const chooseVisibleStatKeys = (session: RacingSessionResult): Array<{ key: string; label: string }> => {
-  const present = new Map<string, string>();
+const buildStatValueMap = (competitor: RacingCompetitorResult): Map<string, string> => {
+  const map = new Map<string, string>();
+  competitor.stats.forEach((stat) => {
+    const normalizedKey = normalizeKey(stat.key);
+    if (!normalizedKey) return;
+    map.set(normalizedKey, String(stat.value || "").trim());
+  });
+  return map;
+};
+
+const parseNumeric = (value: string | undefined): number | null => {
+  if (!value) return null;
+  const sanitized = String(value).replace(/[^\d.-]/g, "");
+  const num = Number(sanitized);
+  if (!Number.isFinite(num)) return null;
+  return num;
+};
+
+const deriveLapsSincePit = (statMap: Map<string, string>): string => {
+  const completed = parseNumeric(statMap.get("lapscompleted"));
+  const lastPit = parseNumeric(statMap.get("lastpitlap"));
+  if (completed === null || lastPit === null) return "-";
+  const delta = completed - lastPit;
+  if (!Number.isFinite(delta) || delta < 0) return "-";
+  return String(Math.round(delta));
+};
+
+const chooseVisibleColumns = (session: RacingSessionResult): SessionColumn[] => {
+  const present = new Map<string, { key: string; label: string }>();
+
   session.competitors.forEach((competitor) => {
     competitor.stats.forEach((stat) => {
       const key = String(stat.key || "").trim();
       const value = String(stat.value || "").trim();
-      if (!key || !value || value === "-" || value === "--") return;
-      if (!present.has(key)) present.set(key, stat.abbreviation || stat.label || key);
+      const normalizedKey = normalizeKey(key);
+      if (!normalizedKey || !hasMeaningfulValue(value)) return;
+      if (!present.has(normalizedKey)) {
+        present.set(normalizedKey, {
+          key,
+          label: String(stat.label || stat.abbreviation || key),
+        });
+      }
     });
   });
 
-  const ordered: Array<{ key: string; label: string }> = [];
-  PRIORITY_STAT_KEYS.forEach((key) => {
-    const label = present.get(key);
-    if (label) ordered.push({ key, label });
+  const ordered: SessionColumn[] = [];
+  const usedKeys = new Set<string>();
+
+  PRIORITY_COLUMNS.forEach((priorityColumn) => {
+    const match = priorityColumn.aliases
+      .map((alias) => present.get(normalizeKey(alias)))
+      .find((entry): entry is { key: string; label: string } => Boolean(entry));
+    if (!match) return;
+    const normalizedKey = normalizeKey(match.key);
+    if (usedKeys.has(normalizedKey)) return;
+    usedKeys.add(normalizedKey);
+    ordered.push({
+      kind: "stat",
+      key: match.key,
+      normalizedKey,
+      label: priorityColumn.label,
+    });
   });
 
-  present.forEach((label, key) => {
-    if (ordered.some((item) => item.key === key)) return;
-    ordered.push({ key, label });
+  const hasLapsSincePitData = present.has("lapscompleted") && present.has("lastpitlap");
+  if (hasLapsSincePitData) {
+    ordered.push({ kind: "derived", key: "lapsSincePit", label: "Since Pit" });
+  }
+
+  const hasStatusText = session.competitors.some((competitor) => hasMeaningfulValue(competitor.statusText || ""));
+  if (hasStatusText) {
+    ordered.push({ kind: "status", key: "statusText", label: "Status" });
+  }
+
+  present.forEach((entry, normalizedKey) => {
+    if (usedKeys.has(normalizedKey) || HIDDEN_COLUMN_KEYS.has(normalizedKey)) return;
+    usedKeys.add(normalizedKey);
+    ordered.push({
+      kind: "stat",
+      key: entry.key,
+      normalizedKey,
+      label: FRIENDLY_LABELS[normalizedKey] || entry.label || entry.key,
+    });
   });
 
-  return ordered.slice(0, 3);
+  return ordered;
+};
+
+const resolveColumnValue = (
+  competitor: RacingCompetitorResult,
+  statMap: Map<string, string>,
+  column: SessionColumn,
+): string => {
+  if (column.kind === "derived") {
+    return deriveLapsSincePit(statMap);
+  }
+  if (column.kind === "status") {
+    return competitor.statusText || "-";
+  }
+  return statMap.get(column.normalizedKey) || "-";
 };
 
 export const RacingEventPanel: React.FC<RacingEventPanelProps> = ({ event, isLoading = false }) => {
@@ -103,7 +231,7 @@ export const RacingEventPanel: React.FC<RacingEventPanelProps> = ({ event, isLoa
       </section>
 
       {sessions.map((session) => {
-        const statColumns = chooseVisibleStatKeys(session);
+        const columns = chooseVisibleColumns(session);
         return (
           <section
             key={session.id}
@@ -129,8 +257,8 @@ export const RacingEventPanel: React.FC<RacingEventPanelProps> = ({ event, isLoa
                     <th className="px-3 py-2 text-left">Team</th>
                     <th className="px-3 py-2 text-left">#</th>
                     <th className="px-3 py-2 text-left">Start</th>
-                    {statColumns.map((column) => (
-                      <th key={`${session.id}-${column.key}`} className="px-3 py-2 text-left">
+                    {columns.map((column, columnIndex) => (
+                      <th key={`${session.id}-${column.key}-${columnIndex}`} className="px-3 py-2 text-left">
                         {column.label}
                       </th>
                     ))}
@@ -138,10 +266,13 @@ export const RacingEventPanel: React.FC<RacingEventPanelProps> = ({ event, isLoa
                 </thead>
                 <tbody>
                   {session.competitors.map((competitor) => {
-                    const position = competitor.finishPosition || competitor.startPosition || "-";
-                    const bestStat = (key: string) => (
-                      competitor.stats.find((item) => item.key === key)?.value || "-"
-                    );
+                    const statMap = buildStatValueMap(competitor);
+                    const placeStat = parseNumeric(statMap.get("place"));
+                    const position =
+                      competitor.finishPosition ||
+                      (placeStat !== null && placeStat > 0 ? Math.trunc(placeStat) : undefined) ||
+                      competitor.startPosition ||
+                      "-";
                     return (
                       <tr key={`${session.id}-${competitor.competitorId}`} className="border-t border-slate-100 dark:border-slate-800/70">
                         <td className="px-3 py-2 font-semibold text-slate-800 dark:text-slate-200">
@@ -174,9 +305,12 @@ export const RacingEventPanel: React.FC<RacingEventPanelProps> = ({ event, isLoa
                         </td>
                         <td className="px-3 py-2 text-slate-700 dark:text-slate-300">{competitor.vehicleNumber || "-"}</td>
                         <td className="px-3 py-2 text-slate-700 dark:text-slate-300">{competitor.startPosition || "-"}</td>
-                        {statColumns.map((column) => (
-                          <td key={`${session.id}-${competitor.competitorId}-${column.key}`} className="px-3 py-2 text-slate-700 dark:text-slate-300">
-                            {bestStat(column.key)}
+                        {columns.map((column, columnIndex) => (
+                          <td
+                            key={`${session.id}-${competitor.competitorId}-${column.key}-${columnIndex}`}
+                            className="px-3 py-2 text-slate-700 dark:text-slate-300"
+                          >
+                            {resolveColumnValue(competitor, statMap, column)}
                           </td>
                         ))}
                       </tr>
@@ -198,4 +332,3 @@ export const RacingEventPanel: React.FC<RacingEventPanelProps> = ({ event, isLoa
     </div>
   );
 };
-

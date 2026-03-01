@@ -315,6 +315,8 @@ export interface RacingStandingsPayload {
   tables: RacingStandingsTable[];
 }
 
+export type SeasonState = 'in_season' | 'preseason' | 'offseason';
+
 export interface GameInfo {
   weather?: string;
   venue?: string;

@@ -54,13 +54,25 @@ export const getUpcomingDateRange = (sport: Sport, fullHistory: boolean): string
     const now = new Date();
     const start = new Date(now);
     const end = new Date(now);
+    const isRacing = sport === 'NASCAR' || sport === 'INDYCAR' || sport === 'F1';
 
     if (fullHistory) {
-        start.setDate(now.getDate() - 14); 
-        end.setDate(now.getDate() + 7);
+        if (isRacing) {
+            start.setDate(now.getDate() - 45);
+            end.setDate(now.getDate() + 45);
+        } else {
+            start.setDate(now.getDate() - 14);
+            end.setDate(now.getDate() + 7);
+        }
     } else {
-        start.setDate(now.getDate() - 1);
-        end.setDate(now.getDate() + 6);
+        if (isRacing) {
+            // Racing weekends span multiple sessions and series can have wider gaps.
+            start.setDate(now.getDate() - 7);
+            end.setDate(now.getDate() + 21);
+        } else {
+            start.setDate(now.getDate() - 1);
+            end.setDate(now.getDate() + 6);
+        }
     }
 
     return `${formatEspnDate(start)}-${formatEspnDate(end)}`;
