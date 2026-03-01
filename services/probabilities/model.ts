@@ -2138,10 +2138,11 @@ const finalizeConfidence = (
     else confidence = game.status === "in_progress"
         ? clamp(confidence, 35, 98)
         : clamp(confidence, 32, 96);
+    const confidenceRounded = Math.round(confidence);
 
     const summary = game.status === "finished"
         ? "Final game result is deterministic."
-        : `Coverage ${Math.round(coverageSignal * 100)}%, top-outcome gap ${decisiveness.toFixed(1)} pts (${topOutcome.value.toFixed(1)} vs ${runnerUpOutcome.value.toFixed(1)}), evidence strength ${Math.round(evidenceStrength * 100)}%${game.status === "in_progress" ? `, live progress ${Math.round(liveProgress * 100)}%` : ""}.`;
+        : `Confidence is ${confidenceRounded}%. We found ${Math.round(coverageSignal * 100)}% of key matchup signals. The top result leads by ${decisiveness.toFixed(1)} points (${topOutcome.value.toFixed(1)}% vs ${runnerUpOutcome.value.toFixed(1)}%). Signal strength is ${Math.round(evidenceStrength * 100)}%${game.status === "in_progress" ? `, with ${Math.round(liveProgress * 100)}% game progress already reflected.` : "."}`;
 
     return {
         value: confidence,

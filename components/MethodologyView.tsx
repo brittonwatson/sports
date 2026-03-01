@@ -114,7 +114,7 @@ export const MethodologyView = () => {
                     <h3 className="text-xl font-bold font-display text-slate-900 dark:text-white mb-2">Confidence Index</h3>
                     <div className="h-1 w-12 bg-rose-500 rounded-full mb-4"></div>
                     <p className="text-sm text-slate-500 dark:text-slate-400 leading-relaxed">
-                        A composite score from model coverage, decisiveness between top outcomes, evidence strength, and live progress.
+                        A single score showing how sure the model is right now, based on data quality and how clear the matchup edge is.
                     </p>
                 </div>
                 <div className="md:w-2/3 space-y-4">
@@ -124,9 +124,9 @@ export const MethodologyView = () => {
                             Statistical Certainty
                         </h4>
                         <p className="text-sm text-slate-600 dark:text-slate-400 leading-relaxed mt-2">
-                            Confidence is computed as:
-                            <span className="font-mono"> 34 + coverage*30 + decisiveness*24 + evidence*8 + liveProgress*20</span>.
-                            Coverage reflects how many matchup signals were found, decisiveness is the gap between top and runner-up outcome probabilities, and live progress only applies in active games.
+                            We start with a base score, then add points for:
+                            data coverage, separation between the top two outcomes, strength of the biggest matchup edges, and live-game progress.
+                            <span className="font-mono"> 34 + coverage*30 + decisiveness*24 + evidence*8 + liveProgress*20</span>
                         </p>
                     </div>
                 </div>

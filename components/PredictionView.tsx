@@ -125,6 +125,7 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
   const homeAbbr = getGameTeamAbbreviation(game, 'home');
   const awayAbbr = getGameTeamAbbreviation(game, 'away');
   const confidenceBreakdown = stats.confidenceBreakdown;
+  const confidencePct = Math.round(stats.confidence);
   const confidenceTopLabel = confidenceBreakdown
       ? (confidenceBreakdown.topOutcome === 'home'
             ? game.homeTeam
@@ -133,7 +134,7 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
                 : 'Draw')
       : null;
   const confidenceQuickSummary = confidenceBreakdown
-      ? `Coverage ${Math.round(confidenceBreakdown.coverage * 100)}% | Gap ${confidenceBreakdown.decisiveness.toFixed(1)} pts${game.status === 'in_progress' ? ` | Live ${Math.round(confidenceBreakdown.liveProgress * 100)}%` : ''}`
+      ? `We found ${Math.round(confidenceBreakdown.coverage * 100)}% of key matchup signals. The top result is ahead by ${confidenceBreakdown.decisiveness.toFixed(1)} probability points.${game.status === 'in_progress' ? ` Live progress contribution: ${Math.round(confidenceBreakdown.liveProgress * 100)}%.` : ''}`
       : null;
 
   const getImpactMeta = (impact: CalculationDetailItem['impact']) => {
@@ -467,13 +468,13 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
                         </h4>
                         <div className="flex items-center gap-1.5 px-2 py-0.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-600 rounded-md text-[10px] font-semibold transition-colors">
                             <ShieldCheck size={12} className={stats.confidence > 70 ? "text-emerald-500" : stats.confidence < 55 ? "text-amber-500" : "text-slate-500"} />
-                            <span className="text-slate-700 dark:text-slate-100">{stats.confidence.toFixed(0)}% Conf</span>
+                            <span className="text-slate-700 dark:text-slate-100">{confidencePct}% Conf</span>
                         </div>
                     </div>
                     {confidenceBreakdown && (
                         <div className="mb-4 rounded-lg border border-slate-200 dark:border-slate-700 bg-white/70 dark:bg-slate-900/40 px-3 py-2">
                             <div className="text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-300">
-                                Confidence Driver: {confidenceTopLabel} ({confidenceBreakdown.topOutcomeProbability.toFixed(1)}%)
+                                Confidence Score: {confidencePct}% | Most Likely Result: {confidenceTopLabel} ({confidenceBreakdown.topOutcomeProbability.toFixed(1)}%)
                             </div>
                             <div className="text-[10px] text-slate-500 dark:text-slate-400 mt-1">
                                 {confidenceQuickSummary}
@@ -895,37 +896,44 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
                                         <h4 className="text-xs font-bold text-slate-900 dark:text-white uppercase tracking-wider flex items-center gap-2">
                                             <ShieldCheck size={14} className="text-emerald-500" /> Confidence Calculation
                                         </h4>
+                                        <div className="text-[11px] text-slate-600 dark:text-slate-300">
+                                            Confidence score for this game: <span className="font-mono font-bold text-slate-900 dark:text-white">{confidencePct}%</span>
+                                        </div>
                                         <div className="grid grid-cols-2 gap-2 text-[11px]">
                                             <div className="rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 py-1.5">
-                                                <div className="text-slate-500 dark:text-slate-400 uppercase tracking-wider text-[9px] font-bold">Coverage</div>
+                                                <div className="text-slate-500 dark:text-slate-400 uppercase tracking-wider text-[9px] font-bold">Data Coverage</div>
                                                 <div className="font-mono font-bold text-slate-800 dark:text-slate-200">
                                                     {Math.round(confidenceBreakdown.coverage * 100)}% ({confidenceBreakdown.coveragePoints.toFixed(1)} pts)
                                                 </div>
+                                                <div className="text-[9px] text-slate-500 dark:text-slate-400 mt-0.5">How much matchup data we found.</div>
                                             </div>
                                             <div className="rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 py-1.5">
-                                                <div className="text-slate-500 dark:text-slate-400 uppercase tracking-wider text-[9px] font-bold">Decisiveness</div>
+                                                <div className="text-slate-500 dark:text-slate-400 uppercase tracking-wider text-[9px] font-bold">Outcome Separation</div>
                                                 <div className="font-mono font-bold text-slate-800 dark:text-slate-200">
                                                     {confidenceBreakdown.decisiveness.toFixed(1)} ({confidenceBreakdown.decisivenessPoints.toFixed(1)} pts)
                                                 </div>
+                                                <div className="text-[9px] text-slate-500 dark:text-slate-400 mt-0.5">Gap between the top two results.</div>
                                             </div>
                                             <div className="rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 py-1.5">
-                                                <div className="text-slate-500 dark:text-slate-400 uppercase tracking-wider text-[9px] font-bold">Evidence</div>
+                                                <div className="text-slate-500 dark:text-slate-400 uppercase tracking-wider text-[9px] font-bold">Signal Strength</div>
                                                 <div className="font-mono font-bold text-slate-800 dark:text-slate-200">
                                                     {Math.round(confidenceBreakdown.evidenceStrength * 100)}% ({confidenceBreakdown.evidencePoints.toFixed(1)} pts)
                                                 </div>
+                                                <div className="text-[9px] text-slate-500 dark:text-slate-400 mt-0.5">How strong the biggest edges are.</div>
                                             </div>
                                             <div className="rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 py-1.5">
-                                                <div className="text-slate-500 dark:text-slate-400 uppercase tracking-wider text-[9px] font-bold">Live Progress</div>
+                                                <div className="text-slate-500 dark:text-slate-400 uppercase tracking-wider text-[9px] font-bold">Game Progress</div>
                                                 <div className="font-mono font-bold text-slate-800 dark:text-slate-200">
                                                     {Math.round(confidenceBreakdown.liveProgress * 100)}% ({confidenceBreakdown.livePoints.toFixed(1)} pts)
                                                 </div>
+                                                <div className="text-[9px] text-slate-500 dark:text-slate-400 mt-0.5">Only matters while the game is live.</div>
                                             </div>
                                         </div>
                                         <div className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
                                             {confidenceBreakdown.summary}
                                         </div>
                                         <div className="text-[10px] text-slate-400 dark:text-slate-500 font-mono">
-                                            Formula: {confidenceBreakdown.formula}
+                                            Score build: {confidenceBreakdown.formula}
                                         </div>
                                     </div>
                                 )}
