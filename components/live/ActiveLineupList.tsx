@@ -1,6 +1,6 @@
 
 import React, { useState } from 'react';
-import { GameSituation, Game, GameDetails, Player } from '../../types';
+import { GameSituation, Game, GameDetails, Player, Sport } from '../../types';
 import { User as UserIcon, BarChart2 } from 'lucide-react';
 
 interface ActiveLineupListProps {
@@ -11,10 +11,11 @@ interface ActiveLineupListProps {
     gameDetails?: GameDetails | null;
     type: 'BASKETBALL' | 'HOCKEY' | 'SOCCER';
     onPlayerClick?: (playerId: string) => void;
+    onTeamClick?: (teamId: string, league: Sport) => void;
     isDarkMode: boolean;
 }
 
-export const ActiveLineupList: React.FC<ActiveLineupListProps> = ({ situation, homeTeam, awayTeam, game, gameDetails, type, onPlayerClick }) => {
+export const ActiveLineupList: React.FC<ActiveLineupListProps> = ({ situation, homeTeam, awayTeam, game, gameDetails, type, onPlayerClick, onTeamClick }) => {
     const [viewTeam, setViewTeam] = useState<'home' | 'away'>('away');
     const isBasketball = type === 'BASKETBALL';
     const isHockey = type === 'HOCKEY';
@@ -42,8 +43,30 @@ export const ActiveLineupList: React.FC<ActiveLineupListProps> = ({ situation, h
              <div className="flex flex-col gap-3 px-5 py-3 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50">
                  <div className="flex items-center gap-2"><UserIcon size={14} className="text-slate-500 dark:text-slate-300" /><span className="text-xs font-bold uppercase tracking-wider text-slate-600 dark:text-slate-200">Active Lineup</span></div>
                  <div className="flex bg-slate-200 dark:bg-slate-800 rounded-lg p-0.5 w-full">
-                     <button onClick={() => setViewTeam('away')} className={`flex-1 px-3 py-1.5 text-[10px] font-bold uppercase rounded-md transition-all truncate min-w-0 ${viewTeam === 'away' ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm' : 'text-slate-600 dark:text-slate-300 hover:text-slate-800 dark:hover:text-slate-100'}`}>{awayTeam}</button>
-                     <button onClick={() => setViewTeam('home')} className={`flex-1 px-3 py-1.5 text-[10px] font-bold uppercase rounded-md transition-all truncate min-w-0 ${viewTeam === 'home' ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm' : 'text-slate-600 dark:text-slate-300 hover:text-slate-800 dark:hover:text-slate-100'}`}>{homeTeam}</button>
+                     <button onClick={() => setViewTeam('away')} className={`flex-1 px-3 py-1.5 text-[10px] font-bold uppercase rounded-md transition-all truncate min-w-0 ${viewTeam === 'away' ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm' : 'text-slate-600 dark:text-slate-300 hover:text-slate-800 dark:hover:text-slate-100'}`}>
+                        <span
+                            className={onTeamClick && game.awayTeamId ? 'hover:underline cursor-pointer' : ''}
+                            onClick={(e) => {
+                                if (!onTeamClick || !game.awayTeamId) return;
+                                e.stopPropagation();
+                                onTeamClick(game.awayTeamId, game.league as Sport);
+                            }}
+                        >
+                            {awayTeam}
+                        </span>
+                     </button>
+                     <button onClick={() => setViewTeam('home')} className={`flex-1 px-3 py-1.5 text-[10px] font-bold uppercase rounded-md transition-all truncate min-w-0 ${viewTeam === 'home' ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm' : 'text-slate-600 dark:text-slate-300 hover:text-slate-800 dark:hover:text-slate-100'}`}>
+                        <span
+                            className={onTeamClick && game.homeTeamId ? 'hover:underline cursor-pointer' : ''}
+                            onClick={(e) => {
+                                if (!onTeamClick || !game.homeTeamId) return;
+                                e.stopPropagation();
+                                onTeamClick(game.homeTeamId, game.league as Sport);
+                            }}
+                        >
+                            {homeTeam}
+                        </span>
+                     </button>
                  </div>
              </div>
              {sortedPlayers.length === 0 ? (

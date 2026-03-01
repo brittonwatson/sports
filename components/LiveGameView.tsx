@@ -146,6 +146,14 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({ game, gameDetails, p
 
   const displayOdds = stats?.marketOdds || game.odds;
 
+  const handleTeamNavigate = (e: React.MouseEvent, side: 'home' | 'away') => {
+      if (!onTeamClick) return;
+      const teamId = side === 'home' ? game.homeTeamId : game.awayTeamId;
+      if (!teamId) return;
+      e.stopPropagation();
+      onTeamClick(teamId, game.league as Sport);
+  };
+
   const renderProjectedScoreRow = (type: 'home' | 'away') => {
       const isHome = type === 'home';
       const logo = isHome ? game.homeTeamLogo : game.awayTeamLogo;
@@ -154,7 +162,13 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({ game, gameDetails, p
       const teamId = isHome ? game.homeTeamId : game.awayTeamId;
       return (
         <div className="flex items-center justify-between">
-            <div className={`flex items-center gap-3 ${onTeamClick && teamId ? 'cursor-pointer hover:opacity-80' : ''}`} onClick={(e) => { if (onTeamClick && teamId) { e.stopPropagation(); onTeamClick(teamId, game.league as Sport); } }}>{logo ? (<img src={logo} alt={name} className="w-6 h-6 object-contain" />) : (<div className="w-6 h-6 rounded-full bg-slate-200 dark:bg-slate-700"></div>)}<span className="font-bold text-slate-700 dark:text-slate-200 text-sm font-display">{name}</span></div>
+            <div
+                className={`flex items-center gap-3 ${onTeamClick && teamId ? 'cursor-pointer hover:opacity-80' : ''}`}
+                onClick={onTeamClick && teamId ? (e) => handleTeamNavigate(e, isHome ? 'home' : 'away') : undefined}
+            >
+                {logo ? (<img src={logo} alt={name} className="w-6 h-6 object-contain" />) : (<div className="w-6 h-6 rounded-full bg-slate-200 dark:bg-slate-700"></div>)}
+                <span className="font-bold text-slate-700 dark:text-slate-200 text-sm font-display">{name}</span>
+            </div>
             <span className="text-lg font-bold text-slate-900 dark:text-white font-mono">{score}</span>
         </div>
       );
@@ -243,7 +257,8 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({ game, gameDetails, p
                       awayTeam={awayAbbr} 
                       game={game} 
                       isDarkMode={isDarkMode}
-                      gameDetails={gameDetails} 
+                      gameDetails={gameDetails}
+                      onTeamClick={onTeamClick}
                   />
               )}
               
@@ -266,7 +281,7 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({ game, gameDetails, p
                      </h4>
                      <div className="flex-1 flex flex-col justify-center">
                         {shouldShowScoreboard ? (
-                            <ScoreboardTable game={game} gameDetails={gameDetails} />
+                            <ScoreboardTable game={game} gameDetails={gameDetails} onTeamClick={onTeamClick} />
                         ) : (
                             <div className="space-y-4">
                                 {renderProjectedScoreRow('away')}
@@ -288,6 +303,7 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({ game, gameDetails, p
                         isDarkMode={isDarkMode} 
                         type={isBasketball ? 'BASKETBALL' : isHockey ? 'HOCKEY' : 'SOCCER'}
                         onPlayerClick={(pid) => setSelectedPlayerId(pid)}
+                        onTeamClick={onTeamClick}
                      />
                  </div>
               </div>
@@ -298,6 +314,7 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({ game, gameDetails, p
                       game={game}
                       gameDetails={gameDetails}
                       onPlayerClick={(pid) => setSelectedPlayerId(pid)}
+                      onTeamClick={onTeamClick}
                   />
               )}
 
@@ -382,7 +399,16 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({ game, gameDetails, p
                                           {/* Team Logo Column */}
                                           <div className="flex-shrink-0 w-8 flex justify-center pt-0.5">
                                               {teamInfo?.logo ? (
-                                                  <img src={teamInfo.logo} alt={teamInfo.abbr} className="w-6 h-6 object-contain" />
+                                                  <img
+                                                      src={teamInfo.logo}
+                                                      alt={teamInfo.abbr}
+                                                      className={`w-6 h-6 object-contain ${onTeamClick && play.teamId ? 'cursor-pointer hover:opacity-80' : ''}`}
+                                                      onClick={(e) => {
+                                                          if (!onTeamClick || !play.teamId) return;
+                                                          e.stopPropagation();
+                                                          onTeamClick(play.teamId, game.league as Sport);
+                                                      }}
+                                                  />
                                               ) : (
                                                   <div className="w-6" /> // spacer
                                               )}
@@ -390,7 +416,16 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({ game, gameDetails, p
 
                                           <div className="flex-1">
                                               {teamInfo && (
-                                                  <div className="text-[10px] font-bold text-slate-600 dark:text-slate-300 mb-0.5">{teamInfo.name}</div>
+                                                  <div
+                                                      className={`text-[10px] font-bold text-slate-600 dark:text-slate-300 mb-0.5 ${onTeamClick && play.teamId ? 'cursor-pointer hover:underline' : ''}`}
+                                                      onClick={(e) => {
+                                                          if (!onTeamClick || !play.teamId) return;
+                                                          e.stopPropagation();
+                                                          onTeamClick(play.teamId, game.league as Sport);
+                                                      }}
+                                                  >
+                                                      {teamInfo.name}
+                                                  </div>
                                               )}
                                               <p className="text-xs text-slate-700 dark:text-slate-300 leading-relaxed font-medium">{play.text}</p>
                                               {((('scoringPlay' in play) && play.scoringPlay) || ('isHome' in play) || play.type?.toLowerCase().includes('score') || play.type?.toLowerCase().includes('goal') || pointsStr) && (
@@ -436,8 +471,18 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({ game, gameDetails, p
                          <div>
                              <div className="text-[10px] font-bold text-slate-400 uppercase mb-1">Moneyline</div>
                              <div className="text-xs font-mono font-bold text-slate-600 dark:text-slate-400 flex flex-col justify-center h-full">
-                                 <span>{awayAbbr} {displayOdds.moneyLineAway || '-'}</span>
-                                 <span>{homeAbbr} {displayOdds.moneyLineHome || '-'}</span>
+                                 <span
+                                    className={onTeamClick && game.awayTeamId ? 'cursor-pointer hover:underline' : ''}
+                                    onClick={onTeamClick && game.awayTeamId ? (e) => handleTeamNavigate(e, 'away') : undefined}
+                                 >
+                                    {awayAbbr} {displayOdds.moneyLineAway || '-'}
+                                 </span>
+                                 <span
+                                    className={onTeamClick && game.homeTeamId ? 'cursor-pointer hover:underline' : ''}
+                                    onClick={onTeamClick && game.homeTeamId ? (e) => handleTeamNavigate(e, 'home') : undefined}
+                                 >
+                                    {homeAbbr} {displayOdds.moneyLineHome || '-'}
+                                 </span>
                              </div>
                          </div>
                      </div>
@@ -458,6 +503,7 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({ game, gameDetails, p
                       gameDetails={gameDetails}
                       hideAnalysis={true} 
                       hideLeaders={true}
+                      onTeamClick={onTeamClick}
                   />
               )}
 

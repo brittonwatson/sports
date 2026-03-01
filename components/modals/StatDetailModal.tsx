@@ -15,6 +15,7 @@ interface StatDetailModalProps {
     teamName: string;
     sport: Sport;
     initialView?: 'DETAILS' | 'LEADERBOARD';
+    onTeamClick?: (teamId: string, league: Sport) => void;
 }
 
 interface LeaderboardRow {
@@ -126,6 +127,7 @@ export const StatDetailModal: React.FC<StatDetailModalProps> = ({
     teamName,
     sport,
     initialView = 'DETAILS',
+    onTeamClick,
 }) => {
     const [view, setView] = useState<'DETAILS' | 'LEADERBOARD'>(initialView);
     const [leaderboardRows, setLeaderboardRows] = useState<LeaderboardRow[]>([]);
@@ -386,7 +388,12 @@ export const StatDetailModal: React.FC<StatDetailModalProps> = ({
                                                 row.isCurrentTeam
                                                     ? 'bg-indigo-50 dark:bg-indigo-900/20 border-indigo-500 ring-2 ring-indigo-200 dark:ring-indigo-800/50'
                                                     : 'bg-white dark:bg-slate-900/30 border-slate-100 dark:border-slate-800'
-                                            }`}
+                                            } ${onTeamClick ? 'cursor-pointer hover:border-indigo-300 dark:hover:border-indigo-700 hover:bg-indigo-50/60 dark:hover:bg-indigo-900/25' : ''}`}
+                                            onClick={() => {
+                                                if (!onTeamClick) return;
+                                                onTeamClick(row.teamId, sport);
+                                                onClose();
+                                            }}
                                         >
                                             <div className="flex items-center gap-3 min-w-0">
                                                 <div

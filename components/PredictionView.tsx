@@ -17,6 +17,7 @@ interface PredictionViewProps {
   gameDetails?: GameDetails | null;
   hideAnalysis?: boolean;
   hideLeaders?: boolean;
+  onTeamClick?: (teamId: string, league: Sport) => void;
 }
 
 interface ActivePlayerGameData {
@@ -61,7 +62,8 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
     onGenerateAnalysis, 
     gameDetails,
     hideAnalysis = false,
-    hideLeaders = false
+    hideLeaders = false,
+    onTeamClick
 }) => {
   const { stats, analysis, groundingChunks } = prediction;
   const isSoccer = SOCCER_LEAGUES.includes(game.league as Sport);
@@ -110,6 +112,14 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
           onGenerateAnalysis();
           setTimeout(() => setIsGenerating(false), 8000); 
       }
+  };
+
+  const handleTeamNavigate = (e: React.MouseEvent, side: 'home' | 'away') => {
+      if (!onTeamClick) return;
+      const teamId = side === 'home' ? game.homeTeamId : game.awayTeamId;
+      if (!teamId) return;
+      e.stopPropagation();
+      onTeamClick(teamId, game.league as Sport);
   };
 
   const homeAbbr = getGameTeamAbbreviation(game, 'home');
@@ -478,17 +488,25 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
                         </div>
                         
                         <div className="flex-1 space-y-3">
-                            {probabilityRows.map((row) => (
+                            {probabilityRows.map((row) => {
+                                const side = row.id === 'home' ? 'home' : row.id === 'away' ? 'away' : null;
+                                const clickable = !!side && !!onTeamClick && !!(side === 'home' ? game.homeTeamId : game.awayTeamId);
+                                return (
                                 <div key={row.id}>
                                     <div className="flex justify-between text-xs mb-1">
-                                        <span className="font-semibold truncate max-w-[120px] text-slate-700 dark:text-slate-100">{row.name}</span>
+                                        <span
+                                            className={`font-semibold truncate max-w-[120px] text-slate-700 dark:text-slate-100 ${clickable ? 'cursor-pointer hover:underline' : ''}`}
+                                            onClick={side ? (e) => handleTeamNavigate(e, side) : undefined}
+                                        >
+                                            {row.name}
+                                        </span>
                                         <span className="font-bold font-mono" style={{ color: row.color }}>{row.value.toFixed(1)}%</span>
                                     </div>
                                     <div className="w-full bg-slate-200 dark:bg-slate-700 h-1.5 rounded-full overflow-hidden">
                                         <div className="h-full transition-all duration-1000" style={{ width: `${Math.max(0, Math.min(100, row.value))}%`, backgroundColor: row.color }}></div>
                                     </div>
                                 </div>
-                            ))}
+                            )})}
                         </div>
                     </div>
                 </div>
@@ -504,7 +522,10 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
                         <Target size={14} /> Projected Score
                     </h4>
                     <div className="flex items-center justify-between gap-2 px-4 flex-1">
-                        <div className="flex flex-col items-center">
+                        <div
+                            className={`flex flex-col items-center ${onTeamClick && game.awayTeamId ? 'cursor-pointer hover:opacity-85 transition-opacity' : ''}`}
+                            onClick={onTeamClick && game.awayTeamId ? (e) => handleTeamNavigate(e, 'away') : undefined}
+                        >
                             {game.awayTeamLogo ? (
                                 <img src={game.awayTeamLogo} alt={game.awayTeam} className="w-12 h-12 object-contain mb-2 drop-shadow-sm" />
                             ) : <div className="w-12 h-12 rounded-full bg-slate-200 dark:bg-slate-700 mb-2"></div>}
@@ -516,7 +537,10 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
                             </span>
                         </div>
                         <div className="h-12 w-px bg-slate-200 dark:bg-slate-700"></div>
-                        <div className="flex flex-col items-center">
+                        <div
+                            className={`flex flex-col items-center ${onTeamClick && game.homeTeamId ? 'cursor-pointer hover:opacity-85 transition-opacity' : ''}`}
+                            onClick={onTeamClick && game.homeTeamId ? (e) => handleTeamNavigate(e, 'home') : undefined}
+                        >
                             {game.homeTeamLogo ? (
                                 <img src={game.homeTeamLogo} alt={game.homeTeam} className="w-12 h-12 object-contain mb-2 drop-shadow-sm" />
                             ) : <div className="w-12 h-12 rounded-full bg-slate-200 dark:bg-slate-700 mb-2"></div>}
@@ -551,8 +575,18 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
                      <div className="flex flex-col items-center justify-center border-x border-slate-200 dark:border-slate-700/50">
                          <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1">Moneyline</span>
                          <div className="flex flex-col items-center text-xs font-mono font-medium text-slate-600 dark:text-slate-400 leading-tight">
-                             <span>{awayAbbr} {displayOdds.moneyLineAway || '-'}</span>
-                             <span>{homeAbbr} {displayOdds.moneyLineHome || '-'}</span>
+                             <span
+                                className={onTeamClick && game.awayTeamId ? 'cursor-pointer hover:underline' : ''}
+                                onClick={onTeamClick && game.awayTeamId ? (e) => handleTeamNavigate(e, 'away') : undefined}
+                             >
+                                {awayAbbr} {displayOdds.moneyLineAway || '-'}
+                             </span>
+                             <span
+                                className={onTeamClick && game.homeTeamId ? 'cursor-pointer hover:underline' : ''}
+                                onClick={onTeamClick && game.homeTeamId ? (e) => handleTeamNavigate(e, 'home') : undefined}
+                             >
+                                {homeAbbr} {displayOdds.moneyLineHome || '-'}
+                             </span>
                          </div>
                      </div>
                      <div className="flex flex-col items-center justify-center">
@@ -623,7 +657,10 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
                 </h4>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div className="rounded-xl border border-emerald-200 dark:border-emerald-900/40 bg-emerald-50/50 dark:bg-emerald-950/20 p-4">
-                        <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-300 mb-3">
+                        <div
+                            className={`text-[10px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-300 mb-3 ${onTeamClick && game.homeTeamId ? 'cursor-pointer hover:underline' : ''}`}
+                            onClick={onTeamClick && game.homeTeamId ? (e) => handleTeamNavigate(e, 'home') : undefined}
+                        >
                             {game.homeTeam} Positive Factors
                         </div>
                         {matchupEdgeReport.homeEdges.length > 0 ? (
@@ -639,7 +676,10 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
                         )}
                     </div>
                     <div className="rounded-xl border border-blue-200 dark:border-blue-900/40 bg-blue-50/50 dark:bg-blue-950/20 p-4">
-                        <div className="text-[10px] font-bold uppercase tracking-wider text-blue-700 dark:text-blue-300 mb-3">
+                        <div
+                            className={`text-[10px] font-bold uppercase tracking-wider text-blue-700 dark:text-blue-300 mb-3 ${onTeamClick && game.awayTeamId ? 'cursor-pointer hover:underline' : ''}`}
+                            onClick={onTeamClick && game.awayTeamId ? (e) => handleTeamNavigate(e, 'away') : undefined}
+                        >
                             {game.awayTeam} Positive Factors
                         </div>
                         {matchupEdgeReport.awayEdges.length > 0 ? (

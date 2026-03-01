@@ -1251,6 +1251,7 @@ export const App: React.FC = () => {
                                         isDarkMode={isDarkMode} 
                                         onGenerateAnalysis={handleGenerateAnalysis}
                                         gameDetails={gameDetails}
+                                        onTeamClick={handleTeamClick}
                                      />
                                 ) : (
                                      <LiveGameView 
@@ -1312,6 +1313,7 @@ export const App: React.FC = () => {
                         isPredicting={isPredicting}
                         isDarkMode={isDarkMode}
                         onGenerateAnalysis={handleGenerateAnalysis}
+                        onTeamClick={handleTeamClick}
                     />
                 ) : (
                     <div className="text-center py-20 text-slate-500">Failed to load team data.</div>
@@ -1386,7 +1388,8 @@ export const App: React.FC = () => {
                          <BracketView 
                             games={bracketGames} 
                             onGameSelect={handleGameToggle} 
-                            selectedGameId={selectedGame?.id} 
+                            selectedGameId={selectedGame?.id}
+                            onTeamClick={handleTeamClick}
                          />
                          
                          {selectedGame && (
@@ -1427,6 +1430,7 @@ export const App: React.FC = () => {
                                                     isDarkMode={isDarkMode} 
                                                     onGenerateAnalysis={handleGenerateAnalysis}
                                                     gameDetails={gameDetails}
+                                                    onTeamClick={handleTeamClick}
                                                  />
                                             ) : (
                                                  <LiveGameView 

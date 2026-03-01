@@ -7,6 +7,7 @@ interface BracketViewProps {
   games: Game[];
   onGameSelect?: (game: Game) => void;
   selectedGameId?: string | null;
+  onTeamClick?: (teamId: string, league: Sport) => void;
 }
 
 // Helper to determine NCAAF Round based on date (Fallback for when API text is just "Rose Bowl")
@@ -100,7 +101,7 @@ const getRoundInfo = (game: Game): { rank: number; name: string } => {
     return { rank: 0, name: 'Playoffs' };
 };
 
-export const BracketView: React.FC<BracketViewProps> = ({ games, onGameSelect, selectedGameId }) => {
+export const BracketView: React.FC<BracketViewProps> = ({ games, onGameSelect, selectedGameId, onTeamClick }) => {
     const scrollContainerRef = useRef<HTMLDivElement>(null);
 
     // Group series by Matchup Key (Dedup logic)
@@ -212,10 +213,19 @@ export const BracketView: React.FC<BracketViewProps> = ({ games, onGameSelect, s
                                     const name = isHome ? game.homeTeam : game.awayTeam;
                                     const logo = isHome ? game.homeTeamLogo : game.awayTeamLogo;
                                     const score = isHome ? game.homeScore : game.awayScore;
+                                    const teamId = isHome ? game.homeTeamId : game.awayTeamId;
+                                    const clickable = !!onTeamClick && !!teamId;
                                     
                                     return (
                                         <div className={`flex justify-between items-center p-1.5 -mx-1.5 rounded ${win ? 'bg-green-50/50 dark:bg-green-900/10' : ''} ${cls}`}>
-                                            <div className="flex items-center gap-2 overflow-hidden">
+                                            <div
+                                                className={`flex items-center gap-2 overflow-hidden ${clickable ? 'cursor-pointer hover:underline' : ''}`}
+                                                onClick={(e) => {
+                                                    if (!onTeamClick || !teamId) return;
+                                                    e.stopPropagation();
+                                                    onTeamClick(teamId, game.league as Sport);
+                                                }}
+                                            >
                                                 {rank && (
                                                     <span className="flex items-center justify-center w-5 h-5 rounded-md bg-slate-100 dark:bg-slate-800 text-[10px] font-bold text-slate-600 dark:text-slate-400 shrink-0 border border-slate-200 dark:border-slate-700">
                                                         {rank}

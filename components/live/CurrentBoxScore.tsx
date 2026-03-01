@@ -1,12 +1,13 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Table } from 'lucide-react';
-import { Game, GameDetails, TeamBoxScore } from '../../types';
+import { Game, GameDetails, TeamBoxScore, Sport } from '../../types';
 import { getGameTeamAbbreviation } from '../../services/teamAbbreviation';
 
 interface CurrentBoxScoreProps {
     game: Game;
     gameDetails: GameDetails | null;
     onPlayerClick?: (playerId: string) => void;
+    onTeamClick?: (teamId: string, league: Sport) => void;
 }
 
 const resolveTeamBox = (game: Game, boxscore: TeamBoxScore[]) => {
@@ -47,7 +48,7 @@ const getDefaultGroupIndex = (groups: TeamBoxScore['groups']) => {
     return 0;
 };
 
-export const CurrentBoxScore: React.FC<CurrentBoxScoreProps> = ({ game, gameDetails, onPlayerClick }) => {
+export const CurrentBoxScore: React.FC<CurrentBoxScoreProps> = ({ game, gameDetails, onPlayerClick, onTeamClick }) => {
     const teamBoxes = gameDetails?.boxscore || [];
     const { away: awayTeamBox, home: homeTeamBox } = useMemo(() => resolveTeamBox(game, teamBoxes), [game, teamBoxes]);
     const awayShort = getGameTeamAbbreviation(game, 'away');
@@ -109,12 +110,27 @@ export const CurrentBoxScore: React.FC<CurrentBoxScoreProps> = ({ game, gameDeta
                                         : 'text-slate-600 dark:text-slate-300 hover:text-slate-800 dark:hover:text-slate-100 disabled:opacity-40'
                                 }`}
                             >
-                                <span className="flex items-center justify-center gap-1.5 min-w-0">
+                                <span
+                                    className={`flex items-center justify-center gap-1.5 min-w-0 ${onTeamClick && game.awayTeamId ? 'cursor-pointer' : ''}`}
+                                    onClick={(e) => {
+                                        if (!onTeamClick || !game.awayTeamId) return;
+                                        e.stopPropagation();
+                                        onTeamClick(game.awayTeamId, game.league as Sport);
+                                    }}
+                                >
                                     {game.awayTeamLogo ? (
-                                        <img src={game.awayTeamLogo} alt={`${game.awayTeam} logo`} className="w-4 h-4 object-contain shrink-0" />
+                                        <img
+                                            src={game.awayTeamLogo}
+                                            alt={`${game.awayTeam} logo`}
+                                            className={`w-4 h-4 object-contain shrink-0 ${onTeamClick && game.awayTeamId ? 'hover:opacity-80' : ''}`}
+                                        />
                                     ) : null}
-                                    <span className="sm:hidden truncate">{awayShort}</span>
-                                    <span className="hidden sm:inline truncate">{game.awayTeam}</span>
+                                    <span className={`sm:hidden truncate ${onTeamClick && game.awayTeamId ? 'hover:underline' : ''}`}>
+                                        {awayShort}
+                                    </span>
+                                    <span className={`hidden sm:inline truncate ${onTeamClick && game.awayTeamId ? 'hover:underline' : ''}`}>
+                                        {game.awayTeam}
+                                    </span>
                                 </span>
                             </button>
                             <button
@@ -126,12 +142,27 @@ export const CurrentBoxScore: React.FC<CurrentBoxScoreProps> = ({ game, gameDeta
                                         : 'text-slate-600 dark:text-slate-300 hover:text-slate-800 dark:hover:text-slate-100 disabled:opacity-40'
                                 }`}
                             >
-                                <span className="flex items-center justify-center gap-1.5 min-w-0">
+                                <span
+                                    className={`flex items-center justify-center gap-1.5 min-w-0 ${onTeamClick && game.homeTeamId ? 'cursor-pointer' : ''}`}
+                                    onClick={(e) => {
+                                        if (!onTeamClick || !game.homeTeamId) return;
+                                        e.stopPropagation();
+                                        onTeamClick(game.homeTeamId, game.league as Sport);
+                                    }}
+                                >
                                     {game.homeTeamLogo ? (
-                                        <img src={game.homeTeamLogo} alt={`${game.homeTeam} logo`} className="w-4 h-4 object-contain shrink-0" />
+                                        <img
+                                            src={game.homeTeamLogo}
+                                            alt={`${game.homeTeam} logo`}
+                                            className={`w-4 h-4 object-contain shrink-0 ${onTeamClick && game.homeTeamId ? 'hover:opacity-80' : ''}`}
+                                        />
                                     ) : null}
-                                    <span className="sm:hidden truncate">{homeShort}</span>
-                                    <span className="hidden sm:inline truncate">{game.homeTeam}</span>
+                                    <span className={`sm:hidden truncate ${onTeamClick && game.homeTeamId ? 'hover:underline' : ''}`}>
+                                        {homeShort}
+                                    </span>
+                                    <span className={`hidden sm:inline truncate ${onTeamClick && game.homeTeamId ? 'hover:underline' : ''}`}>
+                                        {game.homeTeam}
+                                    </span>
                                 </span>
                             </button>
                         </div>

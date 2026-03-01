@@ -5,9 +5,10 @@ import { Game, GameDetails, SOCCER_LEAGUES, Sport } from '../../types';
 interface ScoreboardTableProps { 
     game: Game;
     gameDetails: GameDetails | null;
+    onTeamClick?: (teamId: string, league: Sport) => void;
 }
 
-export const ScoreboardTable: React.FC<ScoreboardTableProps> = ({ game, gameDetails }) => {
+export const ScoreboardTable: React.FC<ScoreboardTableProps> = ({ game, gameDetails, onTeamClick }) => {
     if (!gameDetails) return null;
     
     const { league } = game;
@@ -67,11 +68,18 @@ export const ScoreboardTable: React.FC<ScoreboardTableProps> = ({ game, gameDeta
                 </thead>
                 <tbody>
                     {[
-                        { name: game.awayTeam, logo: game.awayTeamLogo, score: game.awayScore, isHome: false }, 
-                        { name: game.homeTeam, logo: game.homeTeamLogo, score: game.homeScore, isHome: true }
+                        { name: game.awayTeam, logo: game.awayTeamLogo, score: game.awayScore, isHome: false, teamId: game.awayTeamId }, 
+                        { name: game.homeTeam, logo: game.homeTeamLogo, score: game.homeScore, isHome: true, teamId: game.homeTeamId }
                     ].map((teamObj) => (
                         <tr key={teamObj.name} className="border-b border-slate-200/80 dark:border-slate-700/60 last:border-none group">
-                            <td className="px-2 py-2.5 text-left font-display font-bold text-slate-700 dark:text-slate-200 flex items-center gap-2 sticky left-0 bg-white dark:bg-slate-900 z-10 shadow-[2px_0_5px_rgba(0,0,0,0.05)] dark:shadow-[2px_0_5px_rgba(0,0,0,0.2)]">
+                            <td
+                                className={`px-2 py-2.5 text-left font-display font-bold text-slate-700 dark:text-slate-200 flex items-center gap-2 sticky left-0 bg-white dark:bg-slate-900 z-10 shadow-[2px_0_5px_rgba(0,0,0,0.05)] dark:shadow-[2px_0_5px_rgba(0,0,0,0.2)] ${onTeamClick && teamObj.teamId ? 'cursor-pointer hover:underline' : ''}`}
+                                onClick={(e) => {
+                                    if (!onTeamClick || !teamObj.teamId) return;
+                                    e.stopPropagation();
+                                    onTeamClick(teamObj.teamId, game.league as Sport);
+                                }}
+                            >
                                 {teamObj.logo ? (
                                     <img src={teamObj.logo} alt="" className="w-4 h-4 object-contain" />
                                 ) : (
