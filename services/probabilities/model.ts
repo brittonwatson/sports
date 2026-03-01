@@ -149,6 +149,25 @@ interface LiveTrajectoryProjection {
     awayShare: number;
 }
 
+interface SoccerLiveStatSignals {
+    homeShotsOnTarget: number | null;
+    awayShotsOnTarget: number | null;
+    homeShots: number | null;
+    awayShots: number | null;
+    homePossession: number | null;
+    awayPossession: number | null;
+    homeRedCards: number | null;
+    awayRedCards: number | null;
+}
+
+interface SoccerDrawPrior {
+    teamDrawRate: number;
+    h2hDrawRate: number;
+    weightedDrawRate: number;
+    sampleWeight: number;
+    sampleGames: number;
+}
+
 const FOOTBALL_PROFILE: SportProfile = {
     family: "football",
     baseTotal: 45,
@@ -313,13 +332,16 @@ const SOCCER_PROFILE: SportProfile = {
         },
     ],
     directAxes: [
+        { label: "Chance Creation", aliases: ["shots on target", "shots on goal", "sot"], better: "high", weight: 0.85, scale: 1.8 },
         { label: "Possession Control", aliases: ["possession"], better: "high", weight: 0.45, scale: 9.0 },
         { label: "Passing Security", aliases: ["pass %", "passing %", "pass completion"], better: "high", weight: 0.45, scale: 6.0 },
         { label: "Defensive Discipline", aliases: ["clean sheets"], better: "high", weight: 0.6, scale: 0.5 },
     ],
     liveAxes: [
-        { label: "Live Shot Edge", aliases: ["shots on target", "shots on goal"], better: "high", weight: 0.9, scale: 2.0 },
+        { label: "Live Shot Edge", aliases: ["shots on target", "shots on goal"], better: "high", weight: 1.0, scale: 1.7 },
+        { label: "Live Shot Volume", aliases: ["total shots", "shots"], better: "high", weight: 0.55, scale: 3.5 },
         { label: "Live Possession Edge", aliases: ["possession"], better: "high", weight: 0.4, scale: 10.0 },
+        { label: "Live Card Discipline", aliases: ["red cards"], better: "low", weight: 0.9, scale: 1.0 },
     ],
 };
 
@@ -1293,6 +1315,212 @@ const getElapsedFraction = (game: Game, details: GameDetails | null, profile: Sp
     return clamp(elapsed / Math.max(targetDuration, elapsed, 1), 0, 1);
 };
 
+const getSoccerIntensityAtMinute = (minute: number): number => {
+    if (minute < 15) return 0.88;
+    if (minute < 30) return 0.95;
+    if (minute < 45) return 1.0;
+    if (minute < 60) return 1.03;
+    if (minute < 75) return 1.1;
+    if (minute < 90) return 1.2;
+    if (minute < 105) return 1.26;
+    return 1.34;
+};
+
+const getSoccerRemainingIntensityShare = (elapsedMinutes: number, targetMinutes: number): number => {
+    const safeTarget = Math.max(1, targetMinutes);
+    const safeElapsed = clamp(elapsedMinutes, 0, safeTarget);
+    if (safeElapsed >= safeTarget) return 0;
+
+    let fullIntensity = 0;
+    let remainingIntensity = 0;
+    for (let minute = 0; minute < safeTarget; minute += 1) {
+        const centerMinute = minute + 0.5;
+        const intensity = getSoccerIntensityAtMinute(centerMinute);
+        fullIntensity += intensity;
+        if (centerMinute >= safeElapsed) remainingIntensity += intensity;
+    }
+
+    if (fullIntensity <= 0) return clamp((safeTarget - safeElapsed) / safeTarget, 0, 1);
+    return clamp(remainingIntensity / fullIntensity, 0, 1);
+};
+
+const extractSoccerLiveSignals = (stats: TeamStat[], sport: Sport): SoccerLiveStatSignals => {
+    const signals: SoccerLiveStatSignals = {
+        homeShotsOnTarget: null,
+        awayShotsOnTarget: null,
+        homeShots: null,
+        awayShots: null,
+        homePossession: null,
+        awayPossession: null,
+        homeRedCards: null,
+        awayRedCards: null,
+    };
+
+    stats.forEach((stat) => {
+        const label = normalizeLabel(canonicalizeStatLabel(sport, stat.label));
+        const homeVal = parseComplexStat(stat.homeValue);
+        const awayVal = parseComplexStat(stat.awayValue);
+        if (!Number.isFinite(homeVal) || !Number.isFinite(awayVal)) return;
+
+        if (signals.homeShotsOnTarget === null && (
+            label.includes("shots on target") ||
+            label.includes("shots on goal") ||
+            label === "sot"
+        )) {
+            signals.homeShotsOnTarget = homeVal;
+            signals.awayShotsOnTarget = awayVal;
+            return;
+        }
+
+        const isGenericShots = label.includes("shots") && !label.includes("target") && !label.includes("goal");
+        if (signals.homeShots === null && (label.includes("total shots") || isGenericShots)) {
+            signals.homeShots = homeVal;
+            signals.awayShots = awayVal;
+            return;
+        }
+
+        if (signals.homePossession === null && label.includes("possession")) {
+            signals.homePossession = homeVal;
+            signals.awayPossession = awayVal;
+            return;
+        }
+
+        if (signals.homeRedCards === null && label.includes("red card")) {
+            signals.homeRedCards = homeVal;
+            signals.awayRedCards = awayVal;
+        }
+    });
+
+    return signals;
+};
+
+const getSoccerSignalShareDelta = (signals: SoccerLiveStatSignals): { delta: number; weight: number; detail: string } => {
+    let delta = 0;
+    let contributors = 0;
+    const parts: string[] = [];
+
+    if (signals.homeShotsOnTarget !== null && signals.awayShotsOnTarget !== null) {
+        const diff = signals.homeShotsOnTarget - signals.awayShotsOnTarget;
+        delta += diff * 0.028;
+        contributors += 1;
+        parts.push(`SOT ${signals.homeShotsOnTarget}-${signals.awayShotsOnTarget}`);
+    }
+    if (signals.homeShots !== null && signals.awayShots !== null) {
+        const diff = signals.homeShots - signals.awayShots;
+        delta += diff * 0.008;
+        contributors += 1;
+        parts.push(`Shots ${signals.homeShots}-${signals.awayShots}`);
+    }
+    if (signals.homePossession !== null && signals.awayPossession !== null) {
+        const diff = signals.homePossession - signals.awayPossession;
+        delta += diff * 0.0025;
+        contributors += 1;
+        parts.push(`Poss ${signals.homePossession.toFixed(0)}-${signals.awayPossession.toFixed(0)}`);
+    }
+    if (signals.homeRedCards !== null && signals.awayRedCards !== null) {
+        const diff = signals.homeRedCards - signals.awayRedCards;
+        delta -= diff * 0.12;
+        contributors += 1;
+        parts.push(`Red ${signals.homeRedCards}-${signals.awayRedCards}`);
+    }
+
+    const weight = clamp(contributors / 4, 0, 1);
+    return {
+        delta: clamp(delta, -0.28, 0.28),
+        weight,
+        detail: parts.join(" | "),
+    };
+};
+
+const computeSoccerDrawPrior = (
+    game: Game,
+    cutoffMs: number,
+): SoccerDrawPrior => {
+    const homeId = String(game.homeTeamId || "");
+    const awayId = String(game.awayTeamId || "");
+    if (!homeId || !awayId) {
+        return {
+            teamDrawRate: 0.27,
+            h2hDrawRate: 0.27,
+            weightedDrawRate: 0.27,
+            sampleWeight: 0,
+            sampleGames: 0,
+        };
+    }
+
+    const sport = game.league as Sport;
+    const allGames = getInternalHistoricalGamesBySport(sport).filter((entry) => {
+        if (entry.status !== "finished") return false;
+        if (!entry.homeTeamId || !entry.awayTeamId) return false;
+        const dateMs = new Date(entry.dateTime).getTime();
+        return Number.isFinite(dateMs) && dateMs < cutoffMs && entry.id !== game.id;
+    });
+
+    const weightedDrawRateForTeam = (teamId: string): { rate: number; games: number } => {
+        const teamGames = allGames
+            .filter((entry) => String(entry.homeTeamId) === teamId || String(entry.awayTeamId) === teamId)
+            .sort((a, b) => new Date(b.dateTime).getTime() - new Date(a.dateTime).getTime())
+            .slice(0, 80);
+
+        if (teamGames.length === 0) return { rate: 0.27, games: 0 };
+
+        let weightedDraw = 0;
+        let weightedTotal = 0;
+        teamGames.forEach((entry) => {
+            const dateMs = new Date(entry.dateTime).getTime();
+            const ageDays = Math.max(0, (cutoffMs - dateMs) / 86400000);
+            const recency = Math.exp(-ageDays / 150);
+            const seasonWeight = game.seasonYear && entry.seasonYear && Number(entry.seasonYear) !== Number(game.seasonYear) ? 0.72 : 1;
+            const weight = recency * seasonWeight;
+            if (weight <= 0) return;
+            const isDraw = parseScore(entry.homeScore) === parseScore(entry.awayScore);
+            weightedDraw += (isDraw ? 1 : 0) * weight;
+            weightedTotal += weight;
+        });
+
+        if (weightedTotal <= 0) return { rate: 0.27, games: teamGames.length };
+        return { rate: clamp(weightedDraw / weightedTotal, 0.04, 0.72), games: teamGames.length };
+    };
+
+    const homeDraw = weightedDrawRateForTeam(homeId);
+    const awayDraw = weightedDrawRateForTeam(awayId);
+    const teamDrawRate = clamp((homeDraw.rate + awayDraw.rate) / 2, 0.04, 0.72);
+
+    const h2hGames = allGames
+        .filter((entry) => {
+            const h = String(entry.homeTeamId);
+            const a = String(entry.awayTeamId);
+            return (h === homeId && a === awayId) || (h === awayId && a === homeId);
+        })
+        .sort((a, b) => new Date(b.dateTime).getTime() - new Date(a.dateTime).getTime())
+        .slice(0, 18);
+
+    let h2hDrawRate = teamDrawRate;
+    if (h2hGames.length > 0) {
+        let drawCount = 0;
+        h2hGames.forEach((entry) => {
+            if (parseScore(entry.homeScore) === parseScore(entry.awayScore)) drawCount += 1;
+        });
+        h2hDrawRate = clamp(drawCount / h2hGames.length, 0.02, 0.85);
+    }
+
+    const weightedDrawRate = clamp((teamDrawRate * 0.76) + (h2hDrawRate * 0.24), 0.04, 0.8);
+    const sampleGames = homeDraw.games + awayDraw.games + h2hGames.length;
+    const sampleWeight = clamp(
+        ((homeDraw.games + awayDraw.games) / 90) + (h2hGames.length / 22),
+        0,
+        1,
+    );
+
+    return {
+        teamDrawRate,
+        h2hDrawRate,
+        weightedDrawRate,
+        sampleWeight,
+        sampleGames,
+    };
+};
+
 const resolveLiveProfileShare = (
     offenseShare: number[] | null,
     offenseCount: number[] | null,
@@ -1841,8 +2069,17 @@ const applyLiveAdjustments = (
     const elapsedFraction = getElapsedFraction(game, details, profile);
     const remainingFraction = clamp(1 - elapsedFraction, 0, 1);
     const soccerTiming = profile.family === "soccer" ? getSoccerTimingContext(game, details) : null;
-    const paceTotal = elapsedFraction > 0.08 ? currentTotal / elapsedFraction : baseProjectedTotal;
-    const paceWeight = clamp(Math.pow(elapsedFraction, 1.35), 0, 1);
+    let paceTotal = elapsedFraction > 0.08 ? currentTotal / elapsedFraction : baseProjectedTotal;
+    let paceWeight = clamp(Math.pow(elapsedFraction, 1.35), 0, 1);
+    if (profile.family === "soccer" && soccerTiming) {
+        const intensityRemainingShare = getSoccerRemainingIntensityShare(
+            soccerTiming.elapsedMinutes,
+            soccerTiming.targetMinutes,
+        );
+        const intensityElapsedShare = clamp(1 - intensityRemainingShare, 0.06, 0.99);
+        paceTotal = currentTotal / intensityElapsedShare;
+        paceWeight = clamp((elapsedFraction - 0.18) / 0.78, 0, 0.42);
+    }
     let projectedTotal = (baseProjectedTotal * (1 - paceWeight)) + (paceTotal * paceWeight);
     projectedTotal = clamp(projectedTotal, currentTotal, profile.maxTotal);
     const remainingTotal = Math.max(0, projectedTotal - currentTotal);
@@ -2043,6 +2280,95 @@ const computePoissonOutcomeFromCurrent = (
         home: (home / total) * 100,
         draw: (draw / total) * 100,
         away: (away / total) * 100,
+    };
+};
+
+const computeSoccerLiveRemainingLambdas = (
+    game: Game,
+    details: GameDetails | null,
+    baseProjectedTotal: number,
+    projectedHome: number,
+    projectedAway: number,
+    baseProjectedMargin: number,
+    elapsedFraction: number,
+    liveStats: TeamStat[],
+): {
+    homeRemainingLambda: number;
+    awayRemainingLambda: number;
+    timing: { elapsedMinutes: number; targetMinutes: number; remainingMinutes: number; declaredExtraMinutes: number };
+    signalSummary: string;
+    shareDelta: number;
+    totalRemaining: number;
+} => {
+    const timing = getSoccerTimingContext(game, details);
+    const currentHome = parseScore(game.homeScore);
+    const currentAway = parseScore(game.awayScore);
+    const currentTotal = currentHome + currentAway;
+    const goalDiff = currentHome - currentAway;
+
+    const baseProjectedHome = Math.max(projectedHome, currentHome);
+    const baseProjectedAway = Math.max(projectedAway, currentAway);
+    const baseRemainingHome = Math.max(0, baseProjectedHome - currentHome);
+    const baseRemainingAway = Math.max(0, baseProjectedAway - currentAway);
+    const projectionRemainingTotal = baseRemainingHome + baseRemainingAway;
+
+    const intensityRemainingShare = getSoccerRemainingIntensityShare(
+        timing.elapsedMinutes,
+        timing.targetMinutes,
+    );
+    const baselineRemainingTotal = Math.max(0, baseProjectedTotal * intensityRemainingShare);
+
+    let totalRemaining = blend(baselineRemainingTotal, projectionRemainingTotal, 0.57);
+    if (elapsedFraction > 0.08) {
+        const paceProjectedTotal = currentTotal / Math.max(elapsedFraction, 0.08);
+        const paceRemaining = Math.max(0, paceProjectedTotal - currentTotal);
+        const paceWeight = clamp((elapsedFraction - 0.2) / 0.75, 0, 0.32);
+        totalRemaining = blend(totalRemaining, paceRemaining, paceWeight);
+    }
+
+    if (goalDiff === 0 && timing.remainingMinutes <= 18) {
+        const lateTieConsolidation = clamp((18 - timing.remainingMinutes) / 18, 0, 1);
+        totalRemaining *= (1 - (lateTieConsolidation * 0.14));
+    }
+    if (Math.abs(goalDiff) >= 2) {
+        totalRemaining *= clamp(1 - ((Math.abs(goalDiff) - 1) * 0.08), 0.72, 1);
+    }
+
+    const minuteFloor = Math.max(0, timing.remainingMinutes * 0.0045);
+    const minuteCap = Math.max(
+        0.09,
+        ((timing.remainingMinutes / Math.max(1, timing.targetMinutes)) * 5.3) + 0.14,
+    );
+    totalRemaining = clamp(totalRemaining, minuteFloor, minuteCap);
+
+    const baseShare = projectionRemainingTotal > 0
+        ? clamp(baseRemainingHome / projectionRemainingTotal, 0.1, 0.9)
+        : clamp(0.5 + ((baseProjectedMargin / Math.max(1, baseProjectedTotal)) * 0.38), 0.12, 0.88);
+
+    const signals = extractSoccerLiveSignals(liveStats, game.league as Sport);
+    const shareSignal = getSoccerSignalShareDelta(signals);
+    let homeShare = clamp(baseShare + (shareSignal.delta * shareSignal.weight), 0.08, 0.92);
+
+    const urgency = clamp(1 - (timing.remainingMinutes / 36), 0, 1);
+    if (goalDiff > 0) {
+        const awayChase = Math.min(3, goalDiff) * (0.05 + (0.06 * urgency));
+        homeShare -= awayChase;
+    } else if (goalDiff < 0) {
+        const homeChase = Math.min(3, Math.abs(goalDiff)) * (0.05 + (0.06 * urgency));
+        homeShare += homeChase;
+    }
+    homeShare = clamp(homeShare, 0.06, 0.94);
+
+    const homeRemainingLambda = clamp(totalRemaining * homeShare, 0, 7.5);
+    const awayRemainingLambda = clamp(totalRemaining * (1 - homeShare), 0, 7.5);
+
+    return {
+        homeRemainingLambda,
+        awayRemainingLambda,
+        timing,
+        signalSummary: shareSignal.detail,
+        shareDelta: shareSignal.delta * shareSignal.weight,
+        totalRemaining,
     };
 };
 
@@ -2260,50 +2586,143 @@ export const runProbabilityModel = (game: Game, details: GameDetails | null): Mo
         if (game.status === "in_progress") {
             const currentHome = parseScore(game.homeScore);
             const currentAway = parseScore(game.awayScore);
-            let homeRemainingLambda = Math.max(0, projectedHome - currentHome);
-            let awayRemainingLambda = Math.max(0, projectedAway - currentAway);
-            const timing = profile.family === "soccer" ? getSoccerTimingContext(game, details) : null;
-            const remainingFraction = clamp(1 - elapsedFraction, 0, 1);
-            const matchupRatePerMinute = Math.max(0.0001, baseProjectedTotal / Math.max(profile.regulationMinutes, 1));
-            const expectedRemainingTotal = matchupRatePerMinute * (timing
-                ? timing.remainingMinutes
-                : (profile.regulationMinutes * remainingFraction));
-            const conservativeFloor = Math.max(0, expectedRemainingTotal * (profile.family === "soccer" ? 0.55 : 0.4));
-            const currentRemainingTotal = homeRemainingLambda + awayRemainingLambda;
+            const liveSourceStats = uniqueByLabel(details?.stats || [], game.league as Sport);
+            if (profile.family === "soccer") {
+                const soccerLive = computeSoccerLiveRemainingLambdas(
+                    game,
+                    details,
+                    baseProjectedTotal,
+                    projectedHome,
+                    projectedAway,
+                    baseProjectedMargin,
+                    elapsedFraction,
+                    liveSourceStats,
+                );
 
-            if (currentRemainingTotal < conservativeFloor) {
-                const homeShare = currentRemainingTotal > 0
-                    ? clamp(homeRemainingLambda / currentRemainingTotal, 0.2, 0.8)
-                    : clamp(0.5 + ((baseProjectedMargin / Math.max(1, baseProjectedTotal)) * 0.35), 0.2, 0.8);
-                const topUp = conservativeFloor - currentRemainingTotal;
-                homeRemainingLambda += topUp * homeShare;
-                awayRemainingLambda += topUp * (1 - homeShare);
+                const poisson = computePoissonOutcomeFromCurrent(
+                    currentHome,
+                    currentAway,
+                    soccerLive.homeRemainingLambda,
+                    soccerLive.awayRemainingLambda,
+                );
+
+                const cutoffMs = Number.isFinite(new Date(game.dateTime).getTime())
+                    ? new Date(game.dateTime).getTime()
+                    : Date.now();
+                const drawPrior = computeSoccerDrawPrior(game, cutoffMs);
+                const goalDiff = Math.abs(currentHome - currentAway);
+                let drawPriorPct = clamp(drawPrior.weightedDrawRate * 100, 2, 82);
+                if (goalDiff > 0) {
+                    drawPriorPct *= clamp(1 - (goalDiff * 0.18), 0.45, 1);
+                }
+                if (goalDiff === 0 && soccerLive.timing.remainingMinutes <= 25) {
+                    drawPriorPct += clamp((25 - soccerLive.timing.remainingMinutes) * 0.45, 0, 10);
+                }
+                const stateDrawCap = goalDiff >= 2
+                    ? clamp(soccerLive.timing.remainingMinutes * 4.6, 0, 22)
+                    : goalDiff === 1
+                        ? clamp(8 + (soccerLive.timing.remainingMinutes * 2.8), 8, 58)
+                        : 94.5;
+                const drawBlendWeight = clamp(0.08 + (drawPrior.sampleWeight * 0.26), 0.08, 0.34);
+                let adjustedDraw = blend(poisson.draw, drawPriorPct, drawBlendWeight);
+                adjustedDraw = clamp(adjustedDraw, 0.1, stateDrawCap);
+
+                const nonDrawPoisson = Math.max(0.0001, poisson.home + poisson.away);
+                const nonDrawTarget = Math.max(0, 100 - adjustedDraw);
+                winProbabilityHome = nonDrawTarget * (poisson.home / nonDrawPoisson);
+                winProbabilityAway = nonDrawTarget * (poisson.away / nonDrawPoisson);
+                drawProbability = adjustedDraw;
+
+                findings.push({
+                    label: "Soccer Remaining Goal Intensity",
+                    value: `lambda ${soccerLive.homeRemainingLambda.toFixed(2)}-${soccerLive.awayRemainingLambda.toFixed(2)}`,
+                    impact: "neutral",
+                    description: `${soccerLive.timing.remainingMinutes.toFixed(1)} minute(s) remaining, modeled total ${soccerLive.totalRemaining.toFixed(2)} goals`,
+                    magnitude: 0.62,
+                });
+                findings.push({
+                    label: "Soccer Draw Prior Calibration",
+                    value: `${drawProbability.toFixed(1)}% draw`,
+                    impact: "neutral",
+                    description: `Team draw profile ${(drawPrior.teamDrawRate * 100).toFixed(1)}%, H2H ${(drawPrior.h2hDrawRate * 100).toFixed(1)}% across ${drawPrior.sampleGames} sampled games`,
+                    magnitude: 0.58,
+                });
+                if (soccerLive.signalSummary) {
+                    findings.push({
+                        label: "Soccer Live Stat Pressure",
+                        value: `${soccerLive.shareDelta > 0 ? "+" : ""}${(soccerLive.shareDelta * 100).toFixed(1)} share pts`,
+                        impact: soccerLive.shareDelta > 0 ? "positive" : soccerLive.shareDelta < 0 ? "negative" : "neutral",
+                        description: soccerLive.signalSummary,
+                        magnitude: 0.42,
+                    });
+                }
+            } else {
+                let homeRemainingLambda = Math.max(0, projectedHome - currentHome);
+                let awayRemainingLambda = Math.max(0, projectedAway - currentAway);
+                const timing = profile.family === "soccer" ? getSoccerTimingContext(game, details) : null;
+                const remainingFraction = clamp(1 - elapsedFraction, 0, 1);
+                const matchupRatePerMinute = Math.max(0.0001, baseProjectedTotal / Math.max(profile.regulationMinutes, 1));
+                const expectedRemainingTotal = matchupRatePerMinute * (timing
+                    ? timing.remainingMinutes
+                    : (profile.regulationMinutes * remainingFraction));
+                const conservativeFloor = Math.max(0, expectedRemainingTotal * 0.4);
+                const currentRemainingTotal = homeRemainingLambda + awayRemainingLambda;
+
+                if (currentRemainingTotal < conservativeFloor) {
+                    const homeShare = currentRemainingTotal > 0
+                        ? clamp(homeRemainingLambda / currentRemainingTotal, 0.2, 0.8)
+                        : clamp(0.5 + ((baseProjectedMargin / Math.max(1, baseProjectedTotal)) * 0.35), 0.2, 0.8);
+                    const topUp = conservativeFloor - currentRemainingTotal;
+                    homeRemainingLambda += topUp * homeShare;
+                    awayRemainingLambda += topUp * (1 - homeShare);
+                }
+
+                const poisson = computePoissonOutcomeFromCurrent(
+                    currentHome,
+                    currentAway,
+                    homeRemainingLambda,
+                    awayRemainingLambda,
+                );
+                winProbabilityHome = poisson.home;
+                winProbabilityAway = poisson.away;
+                drawProbability = poisson.draw;
+
+                findings.push({
+                    label: "Live Remaining Goal Model",
+                    value: `lambda ${homeRemainingLambda.toFixed(2)}-${awayRemainingLambda.toFixed(2)}`,
+                    impact: "neutral",
+                    description: `${Math.round(remainingFraction * 100)}% match time remaining`,
+                    magnitude: 0.55,
+                });
             }
-
-            const poisson = computePoissonOutcomeFromCurrent(
-                currentHome,
-                currentAway,
-                homeRemainingLambda,
-                awayRemainingLambda,
-            );
-            winProbabilityHome = poisson.home;
-            winProbabilityAway = poisson.away;
-            drawProbability = poisson.draw;
-
-            findings.push({
-                label: "Live Remaining Goal Model",
-                value: `lambda ${homeRemainingLambda.toFixed(2)}-${awayRemainingLambda.toFixed(2)}`,
-                impact: "neutral",
-                description: timing
-                    ? `${timing.remainingMinutes.toFixed(1)} minute(s) remaining including declared stoppage time`
-                    : `${Math.round(remainingFraction * 100)}% match time remaining`,
-                magnitude: 0.55,
-            });
         } else {
             const poisson = computePoissonOutcome(projectedHome, projectedAway);
-            winProbabilityHome = poisson.home;
-            winProbabilityAway = poisson.away;
-            drawProbability = poisson.draw;
+            if (profile.family === "soccer") {
+                const cutoffMs = Number.isFinite(new Date(game.dateTime).getTime())
+                    ? new Date(game.dateTime).getTime()
+                    : Date.now();
+                const drawPrior = computeSoccerDrawPrior(game, cutoffMs);
+                const drawPriorPct = clamp(drawPrior.weightedDrawRate * 100, 7, 68);
+                const drawBlendWeight = clamp(0.1 + (drawPrior.sampleWeight * 0.22), 0.1, 0.32);
+                const adjustedDraw = clamp(blend(poisson.draw, drawPriorPct, drawBlendWeight), 2, 70);
+                const nonDrawPoisson = Math.max(0.0001, poisson.home + poisson.away);
+                const nonDrawTarget = Math.max(0, 100 - adjustedDraw);
+                winProbabilityHome = nonDrawTarget * (poisson.home / nonDrawPoisson);
+                winProbabilityAway = nonDrawTarget * (poisson.away / nonDrawPoisson);
+                drawProbability = adjustedDraw;
+
+                findings.push({
+                    label: "Soccer Draw Propensity",
+                    value: `${drawProbability.toFixed(1)}%`,
+                    impact: "neutral",
+                    description: `Draw profile from team + matchup history (${drawPrior.sampleGames} games sampled)`,
+                    magnitude: 0.44,
+                });
+            } else {
+                winProbabilityHome = poisson.home;
+                winProbabilityAway = poisson.away;
+                drawProbability = poisson.draw;
+            }
         }
     } else {
         const remainingFraction = game.status === "in_progress" ? clamp(1 - elapsedFraction, 0.04, 1) : 1;
@@ -2348,8 +2767,12 @@ export const runProbabilityModel = (game: Game, details: GameDetails | null): Mo
     if (game.status !== "finished") {
         const remainingFraction = game.status === "in_progress" ? clamp(1 - elapsedFraction, 0, 1) : 1;
         const certaintyCap = game.status === "in_progress"
-            ? clamp(99.1 - (remainingFraction * 10.8), 90.5, 99.1)
-            : clamp(95.2 + (coverage * 1.8), 93.5, 97.4);
+            ? (profile.family === "soccer"
+                ? clamp(96.4 - (remainingFraction * 22.5), 74, 96.4)
+                : clamp(99.1 - (remainingFraction * 10.8), 90.5, 99.1))
+            : (profile.family === "soccer"
+                ? clamp(89.5 + (coverage * 4.0), 88, 92.5)
+                : clamp(95.2 + (coverage * 1.8), 93.5, 97.4));
         const capped = applyOutcomeCertaintyCap(
             winProbabilityHome,
             winProbabilityAway,

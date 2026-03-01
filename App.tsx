@@ -880,6 +880,7 @@ export const App: React.FC = () => {
       setNavigatedGameId(null);
       setIsFilterDropdownOpen(false);
       isTabSwitch.current = true;
+      window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const handleGameToggle = async (game: Game) => {
@@ -1344,7 +1345,12 @@ export const App: React.FC = () => {
 	                     <ViewSelector 
 	                        viewMode={viewMode}
 	                        selectedTab={selectedTab}
-	                        setViewMode={(mode) => { setViewMode(mode); setSelectedGame(null); setNavigatedGameId(null); }}
+	                        setViewMode={(mode) => {
+                                setViewMode(mode);
+                                setSelectedGame(null);
+                                setNavigatedGameId(null);
+                                window.scrollTo({ top: 0, behavior: 'smooth' });
+                            }}
 	                     />
                  </div>
 

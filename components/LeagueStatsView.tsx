@@ -139,7 +139,6 @@ export const LeagueStatsView: React.FC<LeagueStatsViewProps> = ({ groups, sport,
     const [integrityReport, setIntegrityReport] = useState<SportIntegrityReport | null>(null);
     const rootRef = useRef<HTMLDivElement>(null);
     const scrollContainerRef = useRef<HTMLDivElement>(null);
-    const hasAutoCenteredRef = useRef(false);
 
     // Filter teams based on groups (e.g. if filtered by Conference in generic view)
     const activeTeams = useMemo(() => {
@@ -233,24 +232,6 @@ export const LeagueStatsView: React.FC<LeagueStatsViewProps> = ({ groups, sport,
         dbEvents.addEventListener('stats_updated', handleUpdate);
         return () => dbEvents.removeEventListener('stats_updated', handleUpdate);
     }, [activeTeams, sport]);
-
-    useEffect(() => {
-        hasAutoCenteredRef.current = false;
-    }, [sport]);
-
-    useEffect(() => {
-        if (isLoading || statsData.length === 0 || hasAutoCenteredRef.current) return;
-        if (typeof window === 'undefined') return;
-        if (!window.matchMedia('(max-width: 767px)').matches) return;
-        if (!rootRef.current) return;
-
-        hasAutoCenteredRef.current = true;
-        requestAnimationFrame(() => {
-            requestAnimationFrame(() => {
-                rootRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            });
-        });
-    }, [isLoading, statsData.length]);
 
     // Group stats by category and surface every tracked stat column from the internal dataset.
     const categorizedColumns = useMemo<Record<string, string[]>>(() => {
