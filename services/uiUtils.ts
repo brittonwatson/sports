@@ -249,7 +249,8 @@ const parseLapFromText = (value: string): { currentLap?: number; totalLaps?: num
     if (!text) return {};
 
     const full = text.match(/lap(?:s)?\s*(\d+)\s*(?:\/|of)\s*(\d+)/i)
-        || text.match(/(\d+)\s*(?:\/|of)\s*(\d+)\s*laps?/i);
+        || text.match(/(\d+)\s*(?:\/|of)\s*(\d+)\s*laps?/i)
+        || text.match(/\b(\d{1,3})\s*\/\s*(\d{1,3})\b/);
     if (full) {
         return {
             currentLap: parseInt(full[1], 10),
@@ -336,7 +337,10 @@ const applyRacingRealtimeStatus = (
     const stageFromStatus = parseStageFromText(detail);
     const stageFromClock = parseStageFromText(clock);
 
-    const currentLap = game.racingCurrentLap || lapFromStatus.currentLap || lapFromClock.currentLap;
+    const periodLap = (typeof game.period === 'number' && game.period > 0 && game.period < 5000)
+        ? game.period
+        : undefined;
+    const currentLap = game.racingCurrentLap || lapFromStatus.currentLap || lapFromClock.currentLap || periodLap;
     const totalLaps = game.racingTotalLaps || lapFromStatus.totalLaps || lapFromClock.totalLaps;
     const stage = game.racingStage || stageFromStatus.stage || stageFromClock.stage;
     const totalStages = game.racingTotalStages || stageFromStatus.totalStages || stageFromClock.totalStages;

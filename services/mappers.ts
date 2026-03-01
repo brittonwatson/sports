@@ -133,7 +133,8 @@ const parseLapFromText = (value: unknown): { currentLap?: number; totalLaps?: nu
     if (!text) return {};
 
     const fullMatch = text.match(/lap(?:s)?\s*(\d+)\s*(?:\/|of)\s*(\d+)/i)
-        || text.match(/(\d+)\s*(?:\/|of)\s*(\d+)\s*laps?/i);
+        || text.match(/(\d+)\s*(?:\/|of)\s*(\d+)\s*laps?/i)
+        || text.match(/\b(\d{1,3})\s*\/\s*(\d{1,3})\b/);
     if (fullMatch) {
         return {
             currentLap: toPositiveInt(fullMatch[1]),
@@ -193,6 +194,14 @@ const parseRacingProgressMeta = (
         .map((value) => String(value || '').trim())
         .filter(Boolean);
 
+    const mergedText = textCandidates.join(' ').toLowerCase();
+    const isLikelyTimedSession =
+        /\bpractice\b/.test(mergedText) ||
+        /\bqualifying\b/.test(mergedText) ||
+        /\bshootout\b/.test(mergedText) ||
+        /\bfp\s*[123]\b/.test(mergedText) ||
+        /\bq\s*[123]\b/.test(mergedText);
+
     let currentLap = toPositiveInt(
         competition?.status?.currentLap
         ?? competition?.currentLap
@@ -216,6 +225,15 @@ const parseRacingProgressMeta = (
         currentLap = Math.max(...competitorLaps);
     }
 
+    if (!currentLap && !isLikelyTimedSession) {
+        currentLap = toPositiveInt(
+            competition?.status?.period
+            ?? event?.status?.period
+            ?? competition?.period
+            ?? event?.period,
+        );
+    }
+
     let totalLaps = toPositiveInt(
         competition?.status?.totalLaps
         ?? competition?.totalLaps
@@ -237,8 +255,8 @@ const parseRacingProgressMeta = (
         stage = toPositiveInt(
             competition?.status?.stage
             ?? competition?.stage
-            ?? competition?.status?.period
-            ?? event?.status?.period,
+            ?? event?.stage
+            ?? event?.status?.stage,
         );
         totalStages = toPositiveInt(
             competition?.totalStages
