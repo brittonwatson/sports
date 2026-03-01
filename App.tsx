@@ -2236,6 +2236,7 @@ export const App: React.FC = () => {
                         onTeamClick={handleTeamClick}
                         isGameFollowed={isGameFollowed}
                         onToggleFollowGame={toggleFollowGame}
+                        racingUpcomingMode={viewMode === 'UPCOMING' ? 'list' : 'calendar'}
                      />
                  ) : viewMode === 'TEAMS' ? (
                      <TeamsListView 

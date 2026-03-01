@@ -12,6 +12,7 @@ interface CalendarViewProps {
   onTeamClick?: (teamId: string, league: Sport) => void;
   isGameFollowed?: (game: Game) => boolean;
   onToggleFollowGame?: (game: Game, e: React.MouseEvent<HTMLButtonElement>) => void;
+  racingUpcomingMode?: 'calendar' | 'list';
 }
 
 const isRacingSport = (sport: Sport): boolean => RACING_LEAGUES.includes(sport);
@@ -145,6 +146,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
   onTeamClick,
   isGameFollowed,
   onToggleFollowGame,
+  racingUpcomingMode = 'calendar',
 }) => {
   const [currentMonth, setCurrentMonth] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState(new Date());
@@ -161,6 +163,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
   const [racingError, setRacingError] = useState<string | null>(null);
 
   const racingMode = isRacingSport(sport);
+  const isRacingListMode = racingMode && racingUpcomingMode === 'list';
 
   useEffect(() => {
     if (!racingMode) return;
@@ -242,6 +245,23 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
     () => (racingCalendar?.events || []).filter((event) => event.status !== 'finished'),
     [racingCalendar],
   );
+
+  const groupedUpcomingRacingEvents = useMemo(() => {
+    const grouped = new Map<string, RacingCalendarEvent[]>();
+    upcomingRacingEvents.forEach((event) => {
+      const date = new Date(event.date);
+      const label = Number.isNaN(date.getTime())
+        ? 'Unknown Month'
+        : date.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+      const existing = grouped.get(label);
+      if (existing) existing.push(event);
+      else grouped.set(label, [event]);
+    });
+    return Array.from(grouped.entries()).map(([label, events]) => ({
+      label,
+      events: events.slice().sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()),
+    }));
+  }, [upcomingRacingEvents]);
 
   const completedRacingEvents = useMemo(
     () => (racingCalendar?.events || [])
@@ -449,10 +469,10 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <h2 className="text-lg font-display font-bold text-slate-900 dark:text-white">
-                {sport} {racingCalendar ? `${racingCalendar.seasonYear}` : ''} Season Calendar
+                {sport} {racingCalendar ? `${racingCalendar.seasonYear}` : ''} {isRacingListMode ? 'Upcoming Events' : 'Season Calendar'}
               </h2>
               <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
-                Full schedule plus completed-race top 5 finishers.
+                {isRacingListMode ? 'All upcoming race weekends and sessions for the season.' : 'Full schedule plus completed-race top 5 finishers.'}
               </p>
             </div>
             <div className="text-right text-xs text-slate-500 dark:text-slate-400">
@@ -494,36 +514,27 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
           <>
             <section className="space-y-4">
               <div className="flex items-center gap-2 text-sm font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                <Flag size={14} /> Upcoming Sessions
+                <Flag size={14} /> {isRacingListMode ? 'Upcoming Races' : 'Upcoming Sessions'}
               </div>
 
-              {upcomingRacingSessions.length === 0 ? (
+              {(isRacingListMode ? upcomingRacingEvents.length === 0 : upcomingRacingSessions.length === 0) ? (
                 <div className="rounded-2xl border border-dashed border-slate-300 dark:border-slate-800 px-6 py-8 text-center text-slate-500 dark:text-slate-400">
-                  No upcoming sessions found.
+                  {isRacingListMode ? 'No upcoming race weekends found.' : 'No upcoming sessions found.'}
                 </div>
               ) : (
-                <>
-                  {renderCalendar()}
-
-                  <div className="space-y-3">
-                    <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                      Sessions for {selectedDate.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}
-                    </h3>
-
-                    {selectedDateRacingSessions.length === 0 ? (
-                      <div className="rounded-2xl border border-dashed border-slate-300 dark:border-slate-800 px-6 py-6 text-center text-slate-500 dark:text-slate-400">
-                        No upcoming sessions on this date.
-                      </div>
-                    ) : (
+                isRacingListMode ? (
+                  groupedUpcomingRacingEvents.map((group) => (
+                    <div key={group.label} className="space-y-3">
+                      <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">{group.label}</h3>
                       <div className="space-y-3">
-                        {selectedDateRacingSessions.map((item) => {
-                          const openGame = racingGamesById.get(item.event.eventId) || toFallbackRacingGame(sport, item.event);
+                        {group.events.map((event) => {
+                          const openGame = racingGamesById.get(event.eventId) || toFallbackRacingGame(sport, event);
                           const isSelected = selectedGameId === openGame.id;
                           return (
                             <button
-                              key={`${item.event.eventId}-${item.session.id}`}
+                              key={event.eventId}
                               type="button"
-                              onClick={() => openRacingEvent(item.event)}
+                              onClick={() => openRacingEvent(event)}
                               className={`w-full text-left rounded-2xl border p-4 transition-colors ${
                                 isSelected
                                   ? 'border-cyan-400/60 bg-cyan-50 dark:bg-cyan-950/20 dark:border-cyan-700/60'
@@ -532,29 +543,95 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
                             >
                               <div className="flex flex-wrap items-start justify-between gap-2">
                                 <div>
-                                  <div className="text-sm font-bold text-slate-900 dark:text-white">{item.event.shortName}</div>
-                                  <div className="text-xs font-semibold text-slate-600 dark:text-slate-300 mt-1">{item.session.name}</div>
-                                  <div className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                                    {item.event.venue || 'Venue TBD'}{item.event.location ? `, ${item.event.location}` : ''}
-                                  </div>
+                                  <div className="text-sm font-bold text-slate-900 dark:text-white">{event.shortName}</div>
+                                  <div className="text-xs text-slate-500 dark:text-slate-400 mt-1">{event.venue || 'Venue TBD'}{event.location ? `, ${event.location}` : ''}</div>
                                 </div>
                                 <div className="text-right text-xs">
-                                  <div className="font-semibold text-slate-700 dark:text-slate-300">{formatDateTime(item.date)}</div>
-                                  <div className={`mt-1 inline-flex px-2 py-0.5 rounded-full border uppercase tracking-wider text-[10px] ${sessionPillClass(item.session.status)}`}>
-                                    {item.session.statusText || item.session.status}
+                                  <div className="font-semibold text-slate-700 dark:text-slate-300">{formatDateTime(event.date)}</div>
+                                  <div className={`mt-1 inline-flex px-2 py-0.5 rounded-full border uppercase tracking-wider text-[10px] ${
+                                    event.status === 'in_progress'
+                                      ? 'text-amber-300 bg-amber-500/20 border-amber-400/40'
+                                      : 'text-slate-400 bg-slate-700/30 border-slate-600'
+                                  }`}>
+                                    {event.statusText}
                                   </div>
                                 </div>
                               </div>
+
+                              {event.sessions.length > 0 && (
+                                <div className="mt-3 flex flex-wrap gap-1.5">
+                                  {sortRacingSessionsForDisplay(event.sessions).map((session) => (
+                                    <span
+                                      key={`${event.eventId}-${session.id}`}
+                                      className={`text-[10px] uppercase tracking-wider rounded-md border px-2 py-1 ${sessionPillClass(session.status)}`}
+                                    >
+                                      {session.name}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
                             </button>
                           );
                         })}
                       </div>
-                    )}
-                  </div>
-                </>
+                    </div>
+                  ))
+                ) : (
+                  <>
+                    {renderCalendar()}
+
+                    <div className="space-y-3">
+                      <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                        Sessions for {selectedDate.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}
+                      </h3>
+
+                      {selectedDateRacingSessions.length === 0 ? (
+                        <div className="rounded-2xl border border-dashed border-slate-300 dark:border-slate-800 px-6 py-6 text-center text-slate-500 dark:text-slate-400">
+                          No upcoming sessions on this date.
+                        </div>
+                      ) : (
+                        <div className="space-y-3">
+                          {selectedDateRacingSessions.map((item) => {
+                            const openGame = racingGamesById.get(item.event.eventId) || toFallbackRacingGame(sport, item.event);
+                            const isSelected = selectedGameId === openGame.id;
+                            return (
+                              <button
+                                key={`${item.event.eventId}-${item.session.id}`}
+                                type="button"
+                                onClick={() => openRacingEvent(item.event)}
+                                className={`w-full text-left rounded-2xl border p-4 transition-colors ${
+                                  isSelected
+                                    ? 'border-cyan-400/60 bg-cyan-50 dark:bg-cyan-950/20 dark:border-cyan-700/60'
+                                    : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/40 hover:border-slate-300 dark:hover:border-slate-700'
+                                }`}
+                              >
+                                <div className="flex flex-wrap items-start justify-between gap-2">
+                                  <div>
+                                    <div className="text-sm font-bold text-slate-900 dark:text-white">{item.event.shortName}</div>
+                                    <div className="text-xs font-semibold text-slate-600 dark:text-slate-300 mt-1">{item.session.name}</div>
+                                    <div className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                                      {item.event.venue || 'Venue TBD'}{item.event.location ? `, ${item.event.location}` : ''}
+                                    </div>
+                                  </div>
+                                  <div className="text-right text-xs">
+                                    <div className="font-semibold text-slate-700 dark:text-slate-300">{formatDateTime(item.date)}</div>
+                                    <div className={`mt-1 inline-flex px-2 py-0.5 rounded-full border uppercase tracking-wider text-[10px] ${sessionPillClass(item.session.status)}`}>
+                                      {item.session.statusText || item.session.status}
+                                    </div>
+                                  </div>
+                                </div>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </>
+                )
               )}
             </section>
 
+            {!isRacingListMode && (
             <section className="space-y-4">
               <div className="flex items-center gap-2 text-sm font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
                 <Trophy size={14} /> Completed Races (Top 5)
@@ -615,6 +692,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
                 </div>
               )}
             </section>
+            )}
           </>
         )}
       </div>
