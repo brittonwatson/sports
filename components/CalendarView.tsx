@@ -131,6 +131,7 @@ const toFallbackRacingGame = (sport: Sport, event: RacingCalendarEvent): Game =>
       name: finisher.name,
       abbreviation: finisher.abbreviation,
       logo: finisher.logo,
+      vehicleNumber: finisher.vehicleNumber,
       position: finisher.rank,
       statusText: finisher.statusText,
     })),
@@ -672,7 +673,12 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
                             {event.topFinishers.slice(0, 5).map((finisher) => (
                               <div key={`${event.eventId}-${finisher.competitorId}-${finisher.rank}`} className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/60 px-2.5 py-2">
                                 <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">P{finisher.rank}</div>
-                                <div className="mt-1 text-xs font-semibold text-slate-900 dark:text-white truncate">{finisher.name}</div>
+                                <div className="mt-1 text-xs font-semibold text-slate-900 dark:text-white truncate flex items-center gap-1.5">
+                                  <span className="truncate">{finisher.name}</span>
+                                  {finisher.vehicleNumber && (
+                                    <span className="text-[10px] font-bold text-slate-600 dark:text-slate-300">#{finisher.vehicleNumber}</span>
+                                  )}
+                                </div>
                                 {(finisher.teamName || finisher.manufacturer) && (
                                   <div className="text-[10px] text-slate-500 dark:text-slate-400 truncate mt-0.5">
                                     {finisher.teamName || finisher.manufacturer}

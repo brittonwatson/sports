@@ -384,12 +384,16 @@ export const RacingEventPanel: React.FC<RacingEventPanelProps> = ({
                                     if (!entry.competitorId) return;
                                     onDriverClick(event.sport, entry.competitorId, entry.name);
                                   }}
-                                  className="text-left font-semibold text-cyan-800 dark:text-cyan-200 hover:underline"
+                                  className="text-left font-semibold text-cyan-800 dark:text-cyan-200 hover:underline inline-flex items-center gap-1.5"
                                 >
-                                  {entry.name}
+                                  <span>{entry.name}</span>
+                                  {entry.vehicleNumber && <span className="text-xs font-bold text-cyan-900/80 dark:text-cyan-200/90">#{entry.vehicleNumber}</span>}
                                 </button>
                         ) : (
-                          <span className="font-semibold text-cyan-900 dark:text-cyan-200">{entry.name}</span>
+                          <span className="font-semibold text-cyan-900 dark:text-cyan-200 inline-flex items-center gap-1.5">
+                            <span>{entry.name}</span>
+                            {entry.vehicleNumber && <span className="text-xs font-bold text-cyan-900/80 dark:text-cyan-200/90">#{entry.vehicleNumber}</span>}
+                          </span>
                         )}
                       </td>
                       <td className="px-3 py-2 text-cyan-900 dark:text-cyan-200">{entry.winProbability.toFixed(1)}%</td>
@@ -431,7 +435,6 @@ export const RacingEventPanel: React.FC<RacingEventPanelProps> = ({
                     <th className="px-3 py-2 text-left">Pos</th>
                     <th className="px-3 py-2 text-left">Driver</th>
                     <th className="px-3 py-2 text-left">Team</th>
-                    <th className="px-3 py-2 text-left">#</th>
                     <th className="px-3 py-2 text-left">Start</th>
                     {columns.map((column, columnIndex) => (
                       <th key={`${session.id}-${column.key}-${columnIndex}`} className="px-3 py-2 text-left">
@@ -477,12 +480,16 @@ export const RacingEventPanel: React.FC<RacingEventPanelProps> = ({
                                     if (!competitor.competitorId) return;
                                     onDriverClick(event.sport, competitor.competitorId, competitor.name);
                                   }}
-                                  className="font-semibold text-left text-cyan-700 dark:text-cyan-300 hover:underline leading-tight"
+                                  className="font-semibold text-left text-cyan-700 dark:text-cyan-300 hover:underline leading-tight inline-flex items-center gap-1.5"
                                 >
-                                  {competitor.name}
+                                  <span>{competitor.name}</span>
+                                  {competitor.vehicleNumber && <span className="text-xs font-bold text-slate-600 dark:text-slate-300">#{competitor.vehicleNumber}</span>}
                                 </button>
                               ) : (
-                                <div className="font-semibold text-slate-900 dark:text-white leading-tight">{competitor.name}</div>
+                                <div className="font-semibold text-slate-900 dark:text-white leading-tight inline-flex items-center gap-1.5">
+                                  <span>{competitor.name}</span>
+                                  {competitor.vehicleNumber && <span className="text-xs font-bold text-slate-600 dark:text-slate-300">#{competitor.vehicleNumber}</span>}
+                                </div>
                               )}
                               {competitor.flag && (
                                 <img src={competitor.flag} alt="" className="w-4 h-3 object-cover rounded-sm mt-1" />
@@ -493,7 +500,6 @@ export const RacingEventPanel: React.FC<RacingEventPanelProps> = ({
                         <td className="px-3 py-2 text-slate-700 dark:text-slate-300 min-w-[180px]">
                           {competitor.teamName || competitor.manufacturer || "-"}
                         </td>
-                        <td className="px-3 py-2 text-slate-700 dark:text-slate-300">{competitor.vehicleNumber || "-"}</td>
                         <td className="px-3 py-2 text-slate-700 dark:text-slate-300">{competitor.startPosition || "-"}</td>
                         {columns.map((column, columnIndex) => (
                           <td

@@ -63,6 +63,20 @@ const toRacingScore = (competitor: any, state?: string): string | undefined => {
     return undefined;
 };
 
+const toRacingVehicleNumber = (competitor: any): string | undefined => {
+    const candidates = [
+        competitor?.vehicle?.number,
+        competitor?.athlete?.displayNumber,
+        competitor?.athlete?.jersey,
+        competitor?.number,
+    ];
+    for (const candidate of candidates) {
+        const value = String(candidate || "").trim();
+        if (value) return value;
+    }
+    return undefined;
+};
+
 const inferRacingSessionType = (competition: any): Game["racingSessionType"] => {
     const text = String(
         competition?.type?.text ||
@@ -74,6 +88,193 @@ const inferRacingSessionType = (competition: any): Game["racingSessionType"] => 
     if (text.includes("qualifying") || text.includes("shootout")) return "qualifying";
     if (text.includes("practice") || text.startsWith("fp") || text.includes("warmup")) return "practice";
     return "other";
+};
+
+const toPositiveInt = (value: unknown): number | undefined => {
+    const parsed = Math.trunc(extractNumber(value));
+    if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
+    return parsed;
+};
+
+const parseLapFromText = (value: unknown): { currentLap?: number; totalLaps?: number } => {
+    const text = String(value || '').trim();
+    if (!text) return {};
+
+    const fullMatch = text.match(/lap(?:s)?\s*(\d+)\s*(?:\/|of)\s*(\d+)/i)
+        || text.match(/(\d+)\s*(?:\/|of)\s*(\d+)\s*laps?/i);
+    if (fullMatch) {
+        return {
+            currentLap: toPositiveInt(fullMatch[1]),
+            totalLaps: toPositiveInt(fullMatch[2]),
+        };
+    }
+
+    const partialMatch = text.match(/lap(?:s)?\s*(\d+)/i);
+    if (partialMatch) {
+        return {
+            currentLap: toPositiveInt(partialMatch[1]),
+        };
+    }
+
+    return {};
+};
+
+const parseStageFromText = (value: unknown): { stage?: number; totalStages?: number } => {
+    const text = String(value || '').trim();
+    if (!text) return {};
+
+    const fullMatch = text.match(/stage\s*(\d+)\s*(?:\/|of)\s*(\d+)/i);
+    if (fullMatch) {
+        return {
+            stage: toPositiveInt(fullMatch[1]),
+            totalStages: toPositiveInt(fullMatch[2]),
+        };
+    }
+
+    const partialMatch = text.match(/stage\s*(\d+)/i);
+    if (partialMatch) {
+        return {
+            stage: toPositiveInt(partialMatch[1]),
+        };
+    }
+
+    return {};
+};
+
+const parseRacingProgressMeta = (
+    event: any,
+    competition: any,
+    sport: Sport,
+    statusDetail: string,
+    statusClock: string,
+): { currentLap?: number; totalLaps?: number; stage?: number; totalStages?: number } => {
+    const textCandidates: string[] = [
+        statusDetail,
+        statusClock,
+        competition?.status?.displayClock,
+        event?.status?.displayClock,
+        competition?.status?.type?.detail,
+        competition?.status?.type?.description,
+        event?.status?.type?.detail,
+        event?.status?.type?.description,
+    ]
+        .map((value) => String(value || '').trim())
+        .filter(Boolean);
+
+    let currentLap = toPositiveInt(
+        competition?.status?.currentLap
+        ?? competition?.currentLap
+        ?? competition?.lap
+        ?? competition?.lapsCompleted
+        ?? competition?.completedLaps,
+    );
+
+    const competitorLaps = (Array.isArray(competition?.competitors) ? competition.competitors : [])
+        .map((competitor: any) => (
+            toPositiveInt(
+                competitor?.lapsCompleted
+                ?? competitor?.completedLaps
+                ?? competitor?.lap
+                ?? competitor?.laps,
+            )
+        ))
+        .filter((value): value is number => Boolean(value && value > 0));
+
+    if (!currentLap && competitorLaps.length > 0) {
+        currentLap = Math.max(...competitorLaps);
+    }
+
+    let totalLaps = toPositiveInt(
+        competition?.status?.totalLaps
+        ?? competition?.totalLaps
+        ?? competition?.laps
+        ?? competition?.numberOfLaps
+        ?? event?.totalLaps
+        ?? event?.laps,
+    );
+
+    textCandidates.forEach((text) => {
+        const parsed = parseLapFromText(text);
+        if (!currentLap && parsed.currentLap) currentLap = parsed.currentLap;
+        if (!totalLaps && parsed.totalLaps) totalLaps = parsed.totalLaps;
+    });
+
+    let stage: number | undefined;
+    let totalStages: number | undefined;
+    if (sport === 'NASCAR') {
+        stage = toPositiveInt(
+            competition?.status?.stage
+            ?? competition?.stage
+            ?? competition?.status?.period
+            ?? event?.status?.period,
+        );
+        totalStages = toPositiveInt(
+            competition?.totalStages
+            ?? competition?.numberOfStages
+            ?? event?.totalStages
+            ?? event?.numberOfStages,
+        );
+
+        textCandidates.forEach((text) => {
+            const parsed = parseStageFromText(text);
+            if (!stage && parsed.stage) stage = parsed.stage;
+            if (!totalStages && parsed.totalStages) totalStages = parsed.totalStages;
+        });
+
+        if (stage && stage > 12) stage = undefined;
+        if (totalStages && totalStages > 12) totalStages = undefined;
+    }
+
+    return {
+        currentLap,
+        totalLaps,
+        stage,
+        totalStages,
+    };
+};
+
+const firstText = (...candidates: unknown[]): string | undefined => {
+    for (const candidate of candidates) {
+        const value = String(candidate || "").trim();
+        if (value) return value;
+    }
+    return undefined;
+};
+
+const toRacingVenueAndLocation = (
+    event: any,
+    competition: any,
+): { venueName?: string; location?: string } => {
+    const venueName = firstText(
+        event?.circuit?.fullName,
+        event?.circuit?.displayName,
+        event?.circuit?.name,
+        competition?.circuit?.fullName,
+        competition?.circuit?.displayName,
+        competition?.circuit?.name,
+        competition?.venue?.fullName,
+        event?.venues?.[0]?.fullName,
+        event?.venue?.fullName,
+    );
+
+    const city = firstText(
+        event?.circuit?.address?.city,
+        competition?.circuit?.address?.city,
+        competition?.venue?.address?.city,
+        event?.venues?.[0]?.address?.city,
+    );
+    const region = firstText(
+        event?.circuit?.address?.state,
+        event?.circuit?.address?.country,
+        competition?.circuit?.address?.state,
+        competition?.circuit?.address?.country,
+        competition?.venue?.address?.state,
+        competition?.venue?.address?.country,
+        event?.venues?.[0]?.address?.state,
+        event?.venues?.[0]?.address?.country,
+    );
+    const location = city ? (region ? `${city}, ${region}` : city) : region;
+    return { venueName, location };
 };
 
 export const mapEventToGame = (event: any, sport: Sport, leagueLogo?: string): Game => {
@@ -101,6 +302,15 @@ export const mapEventToGame = (event: any, sport: Sport, leagueLogo?: string): G
             return `${racingSessionName} - ${baseStatusDetail}`;
         })()
         : baseStatusDetail;
+    const racingProgress = isRacing
+        ? parseRacingProgressMeta(
+            event,
+            competition,
+            sport,
+            racingStatusDetail,
+            String(competition?.status?.displayClock || event?.status?.displayClock || ''),
+        )
+        : {};
 
     let homeComp = competition?.competitors?.find((c: any) => c.homeAway === 'home');
     let awayComp = competition?.competitors?.find((c: any) => c.homeAway === 'away');
@@ -143,10 +353,13 @@ export const mapEventToGame = (event: any, sport: Sport, leagueLogo?: string): G
 
     // Extract Venue Info
     const venue = competition?.venue;
-    const venueName = venue?.fullName;
+    const racingVenue = isRacing ? toRacingVenueAndLocation(event, competition) : null;
+    const venueName = isRacing ? racingVenue?.venueName : venue?.fullName;
     const city = venue?.address?.city;
     const state = venue?.address?.state;
-    const location = city ? (state ? `${city}, ${state}` : city) : undefined;
+    const location = isRacing
+        ? racingVenue?.location
+        : (city ? (state ? `${city}, ${state}` : city) : undefined);
 
     const homeName = isRacing ? toRacingName(homeComp) : formatTeamName(homeComp?.team, sport);
     const awayName = isRacing ? toRacingName(awayComp) : formatTeamName(awayComp?.team, sport);
@@ -173,6 +386,7 @@ export const mapEventToGame = (event: any, sport: Sport, leagueLogo?: string): G
                     competitor?.athlete?.headshot?.href ||
                     competitor?.team?.logo ||
                     competitor?.team?.logos?.[0]?.href,
+                vehicleNumber: toRacingVehicleNumber(competitor),
                 position: (() => {
                     const order = Math.trunc(extractNumber(competitor?.order));
                     if (Number.isFinite(order) && order > 0) return order;
@@ -229,6 +443,10 @@ export const mapEventToGame = (event: any, sport: Sport, leagueLogo?: string): G
         seasonYear: event.season?.year,
         seasonType: seasonType,
         racingSessionType,
+        racingCurrentLap: racingProgress.currentLap,
+        racingTotalLaps: racingProgress.totalLaps,
+        racingStage: racingProgress.stage,
+        racingTotalStages: racingProgress.totalStages,
         racingOrderSnapshot,
         
         situation: sport === 'NFL' || sport === 'NCAAF' ? (event.competitions?.[0]?.situation ? {

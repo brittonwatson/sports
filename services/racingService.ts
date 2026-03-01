@@ -49,6 +49,7 @@ interface EntitySummary {
   abbreviation?: string;
   logo?: string;
   flag?: string;
+  number?: string;
 }
 
 interface StandingsTableRaw {
@@ -148,6 +149,69 @@ const shouldShowStatValue = (value: string): boolean => {
 };
 
 const normalizeKey = (value: string): string => String(value || "").trim().toLowerCase();
+
+const normalizeNameKey = (value: string): string =>
+  String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+
+const parseVehicleNumber = (...candidates: unknown[]): string | undefined => {
+  for (const candidate of candidates) {
+    const value = String(candidate || "").trim();
+    if (value) return value;
+  }
+  return undefined;
+};
+
+const parsePercentValue = (value: number): string => {
+  if (!Number.isFinite(value)) return "0.0%";
+  const clamped = Math.max(0, Math.min(100, value));
+  return `${clamped.toFixed(1)}%`;
+};
+
+const firstText = (...candidates: unknown[]): string | undefined => {
+  for (const candidate of candidates) {
+    const value = String(candidate || "").trim();
+    if (value) return value;
+  }
+  return undefined;
+};
+
+const buildRacingVenueAndLocation = (
+  event: any,
+  raceCompetition: any,
+): { venueName?: string; location?: string } => {
+  const venueName = firstText(
+    event?.circuit?.fullName,
+    event?.circuit?.displayName,
+    event?.circuit?.name,
+    raceCompetition?.circuit?.fullName,
+    raceCompetition?.circuit?.displayName,
+    raceCompetition?.circuit?.name,
+    event?.venues?.[0]?.fullName,
+    raceCompetition?.venue?.fullName,
+  );
+
+  const city = firstText(
+    event?.circuit?.address?.city,
+    raceCompetition?.circuit?.address?.city,
+    event?.venues?.[0]?.address?.city,
+    raceCompetition?.venue?.address?.city,
+  );
+  const region = firstText(
+    event?.circuit?.address?.state,
+    event?.circuit?.address?.country,
+    raceCompetition?.circuit?.address?.state,
+    raceCompetition?.circuit?.address?.country,
+    event?.venues?.[0]?.address?.state,
+    event?.venues?.[0]?.address?.country,
+    raceCompetition?.venue?.address?.state,
+    raceCompetition?.venue?.address?.country,
+  );
+  const location = city ? (region ? `${city}, ${region}` : city) : region;
+  return { venueName, location };
+};
 
 const canUseLocalStorage = (): boolean =>
   typeof window !== "undefined" && typeof window.localStorage !== "undefined";
@@ -338,7 +402,44 @@ const parseEntitySummary = (payload: any): EntitySummary => ({
   abbreviation: payload?.abbreviation ? String(payload.abbreviation) : undefined,
   logo: payload?.headshot?.href || payload?.logo || payload?.logos?.[0]?.href,
   flag: payload?.flag?.href,
+  number: parseVehicleNumber(
+    payload?.displayNumber,
+    payload?.number,
+    payload?.jersey,
+    payload?.uniform?.number,
+    payload?.athlete?.displayNumber,
+    payload?.athlete?.number,
+  ),
 });
+
+const getNumericStatFromEntry = (entry: RacingStandingsEntry, keys: string[]): number | null => {
+  for (const key of keys) {
+    const match = entry.stats.find((stat) => normalizeKey(stat.key) === normalizeKey(key));
+    if (!match) continue;
+    const parsed = extractNumber(match.value);
+    if (Number.isFinite(parsed) && parsed !== 0) return parsed;
+    if (String(match.value || "").trim() === "0") return 0;
+  }
+  return null;
+};
+
+const upsertEntryStat = (
+  entry: RacingStandingsEntry,
+  stat: { key: string; label: string; abbreviation?: string; value: string },
+): RacingStandingsEntry => {
+  const normalizedKey = normalizeKey(stat.key);
+  const nextStats = [...entry.stats];
+  const index = nextStats.findIndex((item) => normalizeKey(item.key) === normalizedKey);
+  if (index >= 0) {
+    nextStats[index] = {
+      ...nextStats[index],
+      ...stat,
+    };
+  } else {
+    nextStats.push(stat);
+  }
+  return { ...entry, stats: nextStats };
+};
 
 const parseStatus = (statusPayload: any): { state: "scheduled" | "in_progress" | "finished"; text: string } => {
   const stateText = String(statusPayload?.type?.state || "").toLowerCase();
@@ -565,6 +666,13 @@ const makeTopFinisher = (
     shortName: entity?.shortName,
     abbreviation: entity?.abbreviation,
     logo: entity?.logo,
+    vehicleNumber: parseVehicleNumber(
+      competitor?.vehicle?.number,
+      competitor?.athlete?.displayNumber,
+      competitor?.athlete?.jersey,
+      competitor?.number,
+      entity?.number,
+    ),
     teamName: competitor?.vehicle?.team ? String(competitor.vehicle.team) : undefined,
     manufacturer: competitor?.vehicle?.manufacturer ? String(competitor.vehicle.manufacturer) : undefined,
     statusText: competitor?.status?.type?.description ? String(competitor.status.type.description) : undefined,
@@ -607,13 +715,19 @@ const parseStandingsEntry = (
   return {
     rank,
     competitorId: entity?.id || getCompetitorId(entry) || `${tableId}-${fallbackRank}`,
-    name: entity?.name || "Unknown",
+    name: entity?.name || String(entry?.athlete?.displayName || entry?.manufacturer?.displayName || "Unknown"),
     shortName: entity?.shortName,
     abbreviation: entity?.abbreviation,
     logo: entity?.logo,
     flag: entity?.flag,
-    teamName: undefined,
-    manufacturer: undefined,
+    vehicleNumber: parseVehicleNumber(
+      entry?.athlete?.displayNumber,
+      entry?.athlete?.jersey,
+      entry?.number,
+      entity?.number,
+    ),
+    teamName: safeStatValue(entry?.team?.displayName || entry?.team?.shortDisplayName || entry?.team?.name) || undefined,
+    manufacturer: safeStatValue(entry?.manufacturer?.displayName || entry?.manufacturer?.shortDisplayName || entry?.manufacturer?.name) || undefined,
     stats,
   };
 };
@@ -878,6 +992,7 @@ const buildDerivedStandingsTable = async (
         abbreviation: entity?.abbreviation,
         logo: entity?.logo,
         flag: entity?.flag,
+        vehicleNumber: entity?.number,
         stats: [
           { key: "points", label: "Points", abbreviation: "PTS", value: String(Math.round(row.points)) },
           { key: "wins", label: "Wins", abbreviation: "W", value: String(row.wins) },
@@ -970,11 +1085,7 @@ const buildCalendarPayloadFromSnapshot = async (snapshot: SeasonDataSnapshot): P
       };
     });
 
-    const venueName = event?.venues?.[0]?.fullName || event?.circuit?.shortName || undefined;
-    const locationParts = [
-      event?.venues?.[0]?.address?.city,
-      event?.venues?.[0]?.address?.state || event?.venues?.[0]?.address?.country,
-    ].filter(Boolean);
+    const venueMeta = buildRacingVenueAndLocation(event, raceCompetition);
 
     return {
       eventId: String(event?.id || ""),
@@ -982,8 +1093,8 @@ const buildCalendarPayloadFromSnapshot = async (snapshot: SeasonDataSnapshot): P
       shortName: String(event?.shortName || event?.name || "Race Event"),
       date: String(event?.date || ""),
       endDate: event?.endDate ? String(event.endDate) : undefined,
-      venue: venueName,
-      location: locationParts.length > 0 ? locationParts.join(", ") : undefined,
+      venue: venueMeta.venueName,
+      location: venueMeta.location,
       status: raceStatus.state,
       statusText: raceStatus.text,
       seasonYear: Number(event?.season?.year) || snapshot.seasonYear,
@@ -1028,7 +1139,13 @@ const toSessionResult = (
         abbreviation: entity?.abbreviation,
         logo: entity?.logo,
         flag: entity?.flag,
-        vehicleNumber: competitor?.vehicle?.number ? String(competitor.vehicle.number) : undefined,
+        vehicleNumber: parseVehicleNumber(
+          competitor?.vehicle?.number,
+          competitor?.athlete?.displayNumber,
+          competitor?.athlete?.jersey,
+          competitor?.number,
+          entity?.number,
+        ),
         teamName: competitor?.vehicle?.team ? String(competitor.vehicle.team) : undefined,
         manufacturer: competitor?.vehicle?.manufacturer ? String(competitor.vehicle.manufacturer) : undefined,
         startPosition: getCompetitorStart(competitor),
@@ -1253,6 +1370,7 @@ const buildEventPrediction = (
         shortName: row.participant.shortName,
         abbreviation: row.participant.abbreviation,
         logo: row.participant.logo,
+        vehicleNumber: row.participant.vehicleNumber,
         teamName: row.participant.teamName,
         manufacturer: row.participant.manufacturer,
         startingPosition: row.startPosition,
@@ -1304,6 +1422,7 @@ const buildDriverSeasonResultsFromSnapshot = async (
 
   const rule = SERIES_SCORING_RULES[sport];
   const results: RacingDriverEventResult[] = [];
+  let latestVehicleNumber: string | undefined;
 
   snapshot.events
     .slice()
@@ -1330,6 +1449,12 @@ const buildDriverSeasonResultsFromSnapshot = async (
       const positionGain = Number.isFinite(start) && Number.isFinite(finish) && finish !== Number.MAX_SAFE_INTEGER
         ? (start - finish)
         : undefined;
+      latestVehicleNumber = latestVehicleNumber || parseVehicleNumber(
+        competitor?.vehicle?.number,
+        competitor?.athlete?.displayNumber,
+        competitor?.athlete?.jersey,
+        competitor?.number,
+      );
 
       results.push({
         eventId: String(event?.id || ""),
@@ -1373,6 +1498,7 @@ const buildDriverSeasonResultsFromSnapshot = async (
     shortName: entity?.shortName,
     abbreviation: entity?.abbreviation,
     logo: entity?.logo,
+    vehicleNumber: parseVehicleNumber(entity?.number, latestVehicleNumber),
     starts,
     wins: driverAggregate.wins,
     podiums: driverAggregate.podiums,
@@ -1383,6 +1509,417 @@ const buildDriverSeasonResultsFromSnapshot = async (
     pointsSource: "derived",
     results,
   };
+};
+
+interface RacingChampionshipProbabilityModel {
+  driverProbabilities: Map<string, number>;
+  teamProbabilitiesById: Map<string, number>;
+  teamProbabilitiesByName: Map<string, number>;
+  simulations: number;
+  remainingRaces: number;
+  remainingSprints: number;
+}
+
+const choosePrimaryTable = (
+  tables: RacingStandingsTable[],
+  categories: RacingStandingsTable["category"][],
+): RacingStandingsTable | null => {
+  const candidates = tables.filter((table) => categories.includes(table.category) && table.entries.length > 0);
+  if (candidates.length === 0) return null;
+  return [...candidates].sort((a, b) => {
+    const aPointsCoverage = a.entries.filter((entry) => getNumericStatFromEntry(entry, ["points", "championshipPts", "pts"]) !== null).length;
+    const bPointsCoverage = b.entries.filter((entry) => getNumericStatFromEntry(entry, ["points", "championshipPts", "pts"]) !== null).length;
+    const aModelPenalty = a.id === "model-series-points" ? 1 : 0;
+    const bModelPenalty = b.id === "model-series-points" ? 1 : 0;
+    if (aModelPenalty !== bModelPenalty) return aModelPenalty - bModelPenalty;
+    if (aPointsCoverage !== bPointsCoverage) return bPointsCoverage - aPointsCoverage;
+    return b.entries.length - a.entries.length;
+  })[0];
+};
+
+const buildDriverMetadataFromSnapshot = (
+  snapshot: SeasonDataSnapshot,
+): { teamKeyByDriverId: Map<string, string>; numberByDriverId: Map<string, string> } => {
+  const sortedEvents = snapshot.events
+    .slice()
+    .sort((a, b) => new Date(String(a?.date || "")).getTime() - new Date(String(b?.date || "")).getTime());
+
+  const teamKeyByDriverId = new Map<string, string>();
+  const numberByDriverId = new Map<string, string>();
+  sortedEvents.forEach((event: any) => {
+    const competitions = Array.isArray(event?.competitions) ? event.competitions : [];
+    competitions.forEach((competition: any) => {
+      const competitors = Array.isArray(competition?.competitors) ? competition.competitors : [];
+      competitors.forEach((competitor: any) => {
+        const driverId = getCompetitorId(competitor);
+        if (!driverId) return;
+        const teamName = safeStatValue(competitor?.vehicle?.team || competitor?.vehicle?.manufacturer);
+        if (teamName) {
+          teamKeyByDriverId.set(driverId, normalizeNameKey(teamName));
+        }
+        const number = parseVehicleNumber(
+          competitor?.vehicle?.number,
+          competitor?.athlete?.displayNumber,
+          competitor?.athlete?.jersey,
+          competitor?.number,
+        );
+        if (number) numberByDriverId.set(driverId, number);
+      });
+    });
+  });
+  return { teamKeyByDriverId, numberByDriverId };
+};
+
+const countRemainingChampionshipSessions = (
+  sport: Sport,
+  snapshot: SeasonDataSnapshot,
+): { remainingRaces: number; remainingSprints: number } => {
+  const nowMs = Date.now();
+  let remainingRaces = 0;
+  let remainingSprints = 0;
+
+  snapshot.events.forEach((event: any) => {
+    const competitions = Array.isArray(event?.competitions) ? event.competitions : [];
+    competitions.forEach((competition: any) => {
+      const isRace = isRaceCompetition(competition);
+      const isSprint = isSprintCompetition(sport, competition);
+      if (!isRace && !isSprint) return;
+
+      const state = String(competition?.status?.type?.state || "").toLowerCase();
+      if (state === "post") return;
+      const competitionTimeMs = new Date(String(competition?.date || event?.date || "")).getTime();
+      if (Number.isFinite(competitionTimeMs) && state !== "in" && competitionTimeMs < (nowMs - (36 * 60 * 60 * 1000))) return;
+
+      if (isSprint) remainingSprints += 1;
+      else remainingRaces += 1;
+    });
+  });
+
+  return { remainingRaces, remainingSprints };
+};
+
+const computeRacingChampionshipProbabilities = (
+  sport: Sport,
+  snapshot: SeasonDataSnapshot,
+  aggregate: Map<string, DriverAggregateRow>,
+  tables: RacingStandingsTable[],
+): RacingChampionshipProbabilityModel | null => {
+  const scoring = SERIES_SCORING_RULES[sport];
+  if (!scoring) return null;
+
+  const primaryDriverTable = choosePrimaryTable(tables, ["driver"]);
+  if (!primaryDriverTable || primaryDriverTable.entries.length < 2) return null;
+
+  const { teamKeyByDriverId, numberByDriverId } = buildDriverMetadataFromSnapshot(snapshot);
+
+  const starterCount = Math.max(2, primaryDriverTable.entries.length);
+  const driverProfiles = primaryDriverTable.entries.map((entry) => {
+    const aggregateRow = aggregate.get(String(entry.competitorId));
+    const starts = Math.max(
+      1,
+      getNumericStatFromEntry(entry, ["starts", "races", "events", "gp"]) ?? aggregateRow?.starts ?? 0,
+    );
+    const currentPoints = Math.max(
+      0,
+      getNumericStatFromEntry(entry, ["points", "championshipPts", "pts"]) ?? aggregateRow?.points ?? 0,
+    );
+    const currentWins = Math.max(
+      0,
+      getNumericStatFromEntry(entry, ["wins", "win"]) ?? aggregateRow?.wins ?? 0,
+    );
+    const top5Count = Math.max(
+      0,
+      getNumericStatFromEntry(entry, ["top5", "top 5"]) ?? aggregateRow?.top5 ?? 0,
+    );
+    const avgFinish = (
+      getNumericStatFromEntry(entry, ["avgFinish", "averageFinish", "avg"]) ??
+      (aggregateRow && aggregateRow.starts > 0 ? aggregateRow.finishSum / aggregateRow.starts : starterCount / 2)
+    );
+    const recentAvgFinish = aggregateRow && aggregateRow.recentFinishes.length > 0
+      ? aggregateRow.recentFinishes.slice(-5).reduce((sum, value) => sum + value, 0) / Math.min(5, aggregateRow.recentFinishes.length)
+      : avgFinish;
+    const teamKey = normalizeNameKey(entry.teamName || entry.manufacturer || "") || teamKeyByDriverId.get(String(entry.competitorId)) || "";
+
+    return {
+      id: String(entry.competitorId),
+      currentPoints,
+      currentWins,
+      starts,
+      top5Count,
+      seasonRank: Math.max(1, Number(entry.rank) || starterCount),
+      avgFinish,
+      recentAvgFinish,
+      teamKey,
+      number: entry.vehicleNumber || numberByDriverId.get(String(entry.competitorId)) || "",
+    };
+  });
+
+  const racePointTable = scoring.racePoints || [];
+  const sprintPointTable = scoring.sprintPoints || [];
+  const { remainingRaces, remainingSprints } = countRemainingChampionshipSessions(sport, snapshot);
+  const totalRemainingSessions = remainingRaces + remainingSprints;
+
+  const pointsValues = driverProfiles.map((profile) => profile.currentPoints);
+  const minPoints = Math.min(...pointsValues);
+  const maxPoints = Math.max(...pointsValues);
+  const normalizeRange = (value: number, min: number, max: number): number => {
+    if (!Number.isFinite(value)) return 0;
+    if (!Number.isFinite(min) || !Number.isFinite(max) || Math.abs(max - min) < 1e-9) return 0.5;
+    return Math.max(0, Math.min(1, (value - min) / (max - min)));
+  };
+  const normalizeInverseRank = (value: number, fallback: number): number => {
+    const safe = Number.isFinite(value) && value > 0 ? value : fallback;
+    return (starterCount + 1 - Math.min(starterCount, safe)) / starterCount;
+  };
+
+  const scoredDrivers = driverProfiles.map((profile) => {
+    const pointsScore = normalizeRange(profile.currentPoints, minPoints, maxPoints);
+    const rankScore = normalizeInverseRank(profile.seasonRank, starterCount * 0.65);
+    const avgFinishScore = normalizeInverseRank(profile.avgFinish, starterCount * 0.6);
+    const recentFinishScore = normalizeInverseRank(profile.recentAvgFinish, starterCount * 0.6);
+    const winRateScore = Math.max(0, Math.min(1, profile.currentWins / Math.max(1, profile.starts)));
+    const top5RateScore = Math.max(0, Math.min(1, profile.top5Count / Math.max(1, profile.starts)));
+    const continuityPenalty = Math.max(0, 0.35 - (profile.starts / 20));
+
+    const skill = (
+      (pointsScore * 0.34) +
+      (rankScore * 0.16) +
+      (avgFinishScore * 0.15) +
+      (recentFinishScore * 0.20) +
+      (winRateScore * 0.10) +
+      (top5RateScore * 0.05)
+    );
+
+    return {
+      ...profile,
+      skill,
+      variance: 0.82 + continuityPenalty,
+    };
+  });
+
+  let teamProfiles: Array<{ id: string; nameKey: string; currentPoints: number }> = [];
+  let teamIndexByNameKey = new Map<string, number>();
+  if (sport === "F1") {
+    const primaryTeamTable = choosePrimaryTable(tables, ["constructor", "team"]);
+    if (primaryTeamTable) {
+      teamProfiles = primaryTeamTable.entries.map((entry, idx) => {
+        const nameKey = normalizeNameKey(entry.name || entry.shortName || `${entry.competitorId}-${idx}`);
+        return {
+          id: String(entry.competitorId || `${nameKey}-${idx}`),
+          nameKey,
+          currentPoints: Math.max(0, getNumericStatFromEntry(entry, ["points", "championshipPts", "pts"]) ?? 0),
+        };
+      });
+      teamProfiles.forEach((team, index) => {
+        if (team.nameKey) teamIndexByNameKey.set(team.nameKey, index);
+      });
+    }
+  }
+
+  const driverTeamIndices = scoredDrivers.map((driver) => {
+    if (!driver.teamKey) return -1;
+    return teamIndexByNameKey.has(driver.teamKey) ? (teamIndexByNameKey.get(driver.teamKey) as number) : -1;
+  });
+
+  const remainingForSimulation = Math.max(0, totalRemainingSessions);
+  const simulations = remainingForSimulation <= 4
+    ? 10000
+    : remainingForSimulation <= 12
+      ? 7000
+      : 5000;
+
+  const seedBasis = [
+    sport,
+    snapshot.seasonYear,
+    remainingRaces,
+    remainingSprints,
+    ...scoredDrivers.map((driver) => `${driver.id}:${driver.currentPoints}:${driver.currentWins}:${driver.skill.toFixed(6)}:${driver.number}`),
+    ...teamProfiles.map((team) => `${team.id}:${team.currentPoints}`),
+  ].join("|");
+  let randomSeed = seedBasis
+    .split("")
+    .reduce((acc, char) => ((acc * 31) + char.charCodeAt(0)) >>> 0, 2166136261);
+
+  const random = (): number => {
+    randomSeed = (randomSeed + 0x6D2B79F5) >>> 0;
+    let t = Math.imul(randomSeed ^ (randomSeed >>> 15), 1 | randomSeed);
+    t ^= t + Math.imul(t ^ (t >>> 7), 61 | t);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+
+  const sampleNormal = (mean: number, stdev: number): number => {
+    const u1 = Math.max(1e-12, random());
+    const u2 = Math.max(1e-12, random());
+    const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+    return mean + (z * stdev);
+  };
+
+  const weightedPick = (indices: number[]): number => {
+    if (indices.length === 0) return -1;
+    const weights = indices.map((driverIndex) => {
+      const skill = scoredDrivers[driverIndex]?.skill ?? 0.5;
+      return Math.max(0.1, 0.35 + skill);
+    });
+    const total = weights.reduce((sum, value) => sum + value, 0);
+    if (!Number.isFinite(total) || total <= 0) return indices[0];
+    let marker = random() * total;
+    for (let i = 0; i < indices.length; i += 1) {
+      marker -= weights[i];
+      if (marker <= 0) return indices[i];
+    }
+    return indices[indices.length - 1];
+  };
+
+  const driverChampionCounts = new Array(scoredDrivers.length).fill(0);
+  const teamChampionCounts = new Array(teamProfiles.length).fill(0);
+
+  for (let sim = 0; sim < simulations; sim += 1) {
+    const points = scoredDrivers.map((driver) => driver.currentPoints);
+    const wins = scoredDrivers.map((driver) => driver.currentWins);
+    const teamPoints = teamProfiles.map((team) => team.currentPoints);
+    const teamWins = new Array(teamProfiles.length).fill(0);
+
+    const runSession = (pointsTable: number[], includeFastestLapBonus: boolean): void => {
+      const sampledOrder = scoredDrivers
+        .map((driver, index) => ({
+          index,
+          value: sampleNormal(-driver.skill, driver.variance),
+        }))
+        .sort((a, b) => a.value - b.value)
+        .map((row) => row.index);
+
+      sampledOrder.forEach((driverIndex, finishingIndex) => {
+        const finishPosition = finishingIndex + 1;
+        const pointsAwarded = scoreFromTable(pointsTable, finishPosition);
+        if (pointsAwarded > 0) {
+          points[driverIndex] += pointsAwarded;
+          const teamIndex = driverTeamIndices[driverIndex];
+          if (teamIndex >= 0 && teamIndex < teamPoints.length) {
+            teamPoints[teamIndex] += pointsAwarded;
+          }
+        }
+
+        if (finishPosition === 1) {
+          wins[driverIndex] += 1;
+          const teamIndex = driverTeamIndices[driverIndex];
+          if (teamIndex >= 0 && teamIndex < teamWins.length) {
+            teamWins[teamIndex] += 1;
+          }
+        }
+      });
+
+      if (includeFastestLapBonus && sport === "F1") {
+        const topTen = sampledOrder.slice(0, Math.min(10, sampledOrder.length));
+        const fastestLapDriverIndex = weightedPick(topTen);
+        if (fastestLapDriverIndex >= 0) {
+          points[fastestLapDriverIndex] += 1;
+          const teamIndex = driverTeamIndices[fastestLapDriverIndex];
+          if (teamIndex >= 0 && teamIndex < teamPoints.length) {
+            teamPoints[teamIndex] += 1;
+          }
+        }
+      }
+    };
+
+    for (let raceIdx = 0; raceIdx < remainingRaces; raceIdx += 1) {
+      runSession(racePointTable, true);
+    }
+    for (let sprintIdx = 0; sprintIdx < remainingSprints; sprintIdx += 1) {
+      runSession(sprintPointTable, false);
+    }
+
+    const topDriverPoints = Math.max(...points);
+    let driverLeaderIndices = points
+      .map((value, index) => ({ value, index }))
+      .filter((row) => Math.abs(row.value - topDriverPoints) < 1e-9)
+      .map((row) => row.index);
+    if (driverLeaderIndices.length > 1) {
+      const maxWins = Math.max(...driverLeaderIndices.map((index) => wins[index] || 0));
+      driverLeaderIndices = driverLeaderIndices.filter((index) => (wins[index] || 0) === maxWins);
+    }
+    const driverShare = 1 / Math.max(1, driverLeaderIndices.length);
+    driverLeaderIndices.forEach((index) => {
+      driverChampionCounts[index] += driverShare;
+    });
+
+    if (teamProfiles.length > 0) {
+      const topTeamPoints = Math.max(...teamPoints);
+      let teamLeaderIndices = teamPoints
+        .map((value, index) => ({ value, index }))
+        .filter((row) => Math.abs(row.value - topTeamPoints) < 1e-9)
+        .map((row) => row.index);
+      if (teamLeaderIndices.length > 1) {
+        const maxTeamWins = Math.max(...teamLeaderIndices.map((index) => teamWins[index] || 0));
+        teamLeaderIndices = teamLeaderIndices.filter((index) => (teamWins[index] || 0) === maxTeamWins);
+      }
+      const teamShare = 1 / Math.max(1, teamLeaderIndices.length);
+      teamLeaderIndices.forEach((index) => {
+        teamChampionCounts[index] += teamShare;
+      });
+    }
+  }
+
+  const driverProbabilities = new Map<string, number>();
+  scoredDrivers.forEach((driver, index) => {
+    driverProbabilities.set(driver.id, (driverChampionCounts[index] || 0) / simulations);
+  });
+
+  const teamProbabilitiesById = new Map<string, number>();
+  const teamProbabilitiesByName = new Map<string, number>();
+  teamProfiles.forEach((team, index) => {
+    const probability = (teamChampionCounts[index] || 0) / simulations;
+    teamProbabilitiesById.set(team.id, probability);
+    if (team.nameKey) teamProbabilitiesByName.set(team.nameKey, probability);
+  });
+
+  return {
+    driverProbabilities,
+    teamProbabilitiesById,
+    teamProbabilitiesByName,
+    simulations,
+    remainingRaces,
+    remainingSprints,
+  };
+};
+
+const applyRacingChampionshipProbabilities = (
+  sport: Sport,
+  tables: RacingStandingsTable[],
+  model: RacingChampionshipProbabilityModel,
+): RacingStandingsTable[] => {
+  return tables.map((table) => {
+    if (table.category === "driver") {
+      const entries = table.entries.map((entry) => {
+        const probability = model.driverProbabilities.get(String(entry.competitorId));
+        if (probability === undefined) return entry;
+        return upsertEntryStat(entry, {
+          key: "championshipProbability",
+          label: "Championship Probability",
+          abbreviation: "TITLE %",
+          value: parsePercentValue(probability * 100),
+        });
+      });
+      return { ...table, entries };
+    }
+
+    if (sport === "F1" && (table.category === "constructor" || table.category === "team")) {
+      const entries = table.entries.map((entry) => {
+        const byId = model.teamProbabilitiesById.get(String(entry.competitorId));
+        const byName = model.teamProbabilitiesByName.get(normalizeNameKey(entry.name || entry.shortName || ""));
+        const probability = byId ?? byName;
+        if (probability === undefined) return entry;
+        return upsertEntryStat(entry, {
+          key: "championshipProbability",
+          label: "Championship Probability",
+          abbreviation: "TITLE %",
+          value: parsePercentValue(probability * 100),
+        });
+      });
+      return { ...table, entries };
+    }
+
+    return table;
+  });
 };
 
 const buildDerivedPayloadFallback = async (sport: Sport): Promise<RacingStandingsPayload> => {
@@ -1533,11 +2070,8 @@ export const fetchRacingEventBundle = async (sport: Sport, eventId: string): Pro
     });
   const orderedSessions = sortRacingSessionsForDisplay(sessions);
 
-  const venueName = event?.venues?.[0]?.fullName || event?.circuit?.shortName || undefined;
-  const locationParts = [
-    event?.venues?.[0]?.address?.city,
-    event?.venues?.[0]?.address?.state || event?.venues?.[0]?.address?.country,
-  ].filter(Boolean);
+  const raceCompetition = extractRaceCompetition(event);
+  const venueMeta = buildRacingVenueAndLocation(event, raceCompetition);
 
   const snapshot = await fetchSeasonDataSnapshot(sport);
   const aggregate = snapshot ? buildSeasonDriverAggregate(sport, snapshot.events) : new Map<string, DriverAggregateRow>();
@@ -1551,8 +2085,8 @@ export const fetchRacingEventBundle = async (sport: Sport, eventId: string): Pro
     shortName: String(event?.shortName || event?.name || "Race Event"),
     date: String(event?.date || ""),
     endDate: event?.endDate ? String(event.endDate) : undefined,
-    venue: venueName,
-    location: locationParts.length > 0 ? locationParts.join(", ") : undefined,
+    venue: venueMeta.venueName,
+    location: venueMeta.location,
     sessions: orderedSessions,
     prediction,
   };
@@ -1621,18 +2155,39 @@ export const fetchRacingStandingsPayload = async (sport: Sport): Promise<RacingS
   const aggregate = snapshot ? buildSeasonDriverAggregate(sport, snapshot.events) : new Map<string, DriverAggregateRow>();
   const derivedTable = await buildDerivedStandingsTable(sport, aggregate);
   const includeDerivedTable = derivedTable.entries.length > 0;
-  const mergedTables = includeDerivedTable ? [derivedTable, ...officialTables] : officialTables;
+  let mergedTables = includeDerivedTable ? [derivedTable, ...officialTables] : officialTables;
+  let championshipModel: RacingChampionshipProbabilityModel | null = null;
+  if (snapshot) {
+    championshipModel = computeRacingChampionshipProbabilities(sport, snapshot, aggregate, mergedTables);
+    if (championshipModel) {
+      mergedTables = applyRacingChampionshipProbabilities(sport, mergedTables, championshipModel);
+    }
+  }
 
   let payload: RacingStandingsPayload;
   if (officialTables.length > 0) {
+    const titleModelNote = championshipModel
+      ? `Title model: ${championshipModel.remainingRaces} races`
+        + (championshipModel.remainingSprints > 0 ? ` + ${championshipModel.remainingSprints} sprints` : "")
+        + ` remaining, ${championshipModel.simulations.toLocaleString()} Monte Carlo simulations.`
+      : "";
     payload = {
       sport,
       updatedAt: new Date().toISOString(),
-      note: `Model points table uses series rules: ${SERIES_SCORING_RULES[sport]?.notes || "completed race finish points."}`,
+      note: `Model points table uses series rules: ${SERIES_SCORING_RULES[sport]?.notes || "completed race finish points."}${titleModelNote ? ` ${titleModelNote}` : ""}`,
       tables: mergedTables,
     };
   } else {
     payload = await buildDerivedPayloadFallback(sport);
+    if (championshipModel) {
+      payload = {
+        ...payload,
+        tables: applyRacingChampionshipProbabilities(sport, payload.tables, championshipModel),
+        note: `${payload.note ? `${payload.note} ` : ""}Title model: ${championshipModel.remainingRaces} races`
+          + (championshipModel.remainingSprints > 0 ? ` + ${championshipModel.remainingSprints} sprints` : "")
+          + ` remaining, ${championshipModel.simulations.toLocaleString()} Monte Carlo simulations.`,
+      };
+    }
   }
 
   standingsCache.set(cacheKey, { fetchedAt: Date.now(), data: payload });

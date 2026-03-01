@@ -35,6 +35,7 @@ export const GameCard: React.FC<GameCardProps> = ({ game, onSelect, isSelected, 
               name: row.name,
               logo: row.logo,
               abbreviation: row.abbreviation,
+              vehicleNumber: row.vehicleNumber,
               position: String(row.position || index + 1),
             }))
         : [
@@ -263,6 +264,9 @@ export const GameCard: React.FC<GameCardProps> = ({ game, onSelect, isSelected, 
                                             <span className="text-sm sm:text-base font-semibold text-slate-900 dark:text-white truncate">
                                                 {row.name}
                                             </span>
+                                            {row.vehicleNumber && (
+                                                <span className="text-[10px] sm:text-xs font-bold text-slate-600 dark:text-slate-300 shrink-0">#{row.vehicleNumber}</span>
+                                            )}
                                         </div>
                                         {row.abbreviation && (
                                             <span className="text-[10px] sm:text-xs font-bold tracking-wider text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-900/80 px-2 py-1 rounded-md">

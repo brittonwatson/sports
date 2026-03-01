@@ -34,7 +34,7 @@ export const RacingDriverSeasonPanel: React.FC<RacingDriverSeasonPanelProps> = (
           <h3 className="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-wider">Driver Season Results</h3>
           {data && (
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              {data.driverName} • {data.sport} {data.seasonYear}
+              {data.driverName}{data.vehicleNumber ? ` #${data.vehicleNumber}` : ''} • {data.sport} {data.seasonYear}
             </p>
           )}
         </div>

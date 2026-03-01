@@ -1639,29 +1639,45 @@ export const App: React.FC = () => {
     return ids;
   }, [gameRegistry, favoriteTeamKeySet]);
 
+  const pickBestLiveGameCandidate = useCallback((candidates: Game[]): Game | null => {
+    const liveCandidates = candidates.filter((candidate) => candidate.status === 'in_progress');
+    if (liveCandidates.length === 0) return null;
+    const scoreCandidate = (candidate: Game): number => {
+      let score = 0;
+      if (candidate.clock) score += 2;
+      if (candidate.gameStatus) score += 2;
+      if (candidate.homeScore !== undefined || candidate.awayScore !== undefined) score += 2;
+      if (candidate.situation) score += 1;
+      if (candidate.racingOrderSnapshot && candidate.racingOrderSnapshot.length > 0) score += 1;
+      return score;
+    };
+    return liveCandidates.slice().sort((a, b) => {
+      const scoreDiff = scoreCandidate(b) - scoreCandidate(a);
+      if (scoreDiff !== 0) return scoreDiff;
+      return compareLiveGamesNatural(a, b);
+    })[0] || null;
+  }, []);
+
   const followedGamesForBar = useMemo(() => {
     const ids = new Set<string>([...Array.from(followedGames), ...Array.from(autoFollowGameIds)]);
-    const tracked = new Map(gameRegistry);
-    if (selectedGame) tracked.set(selectedGame.id, selectedGame);
-    games.forEach((game) => {
-      const existing = tracked.get(game.id);
-      tracked.set(game.id, existing ? { ...existing, ...game } : game);
-    });
-    teamSchedule.forEach((game) => {
-      const existing = tracked.get(game.id);
-      tracked.set(game.id, existing ? { ...existing, ...game } : game);
-    });
+    const candidateMap = new Map<string, Game[]>();
+    const appendCandidate = (candidate: Game | null | undefined) => {
+      if (!candidate || !candidate.id) return;
+      const existing = candidateMap.get(candidate.id);
+      if (existing) existing.push(candidate);
+      else candidateMap.set(candidate.id, [candidate]);
+    };
+
+    if (selectedGame) appendCandidate(selectedGame);
+    gameRegistry.forEach((candidate) => appendCandidate(candidate));
+    games.forEach((candidate) => appendCandidate(candidate));
+    teamSchedule.forEach((candidate) => appendCandidate(candidate));
 
     return Array.from(ids)
-      .map((id) => tracked.get(id))
-      .filter((game): game is Game => Boolean(game) && game.status !== 'finished')
-      .sort((a, b) => {
-        const aLive = a.status === 'in_progress' ? 0 : 1;
-        const bLive = b.status === 'in_progress' ? 0 : 1;
-        if (aLive !== bLive) return aLive - bLive;
-        return new Date(a.dateTime).getTime() - new Date(b.dateTime).getTime();
-      });
-  }, [autoFollowGameIds, followedGames, gameRegistry, games, selectedGame, teamSchedule]);
+      .map((id) => pickBestLiveGameCandidate(candidateMap.get(id) || []))
+      .filter((game): game is Game => Boolean(game))
+      .sort(compareLiveGamesNatural);
+  }, [autoFollowGameIds, followedGames, gameRegistry, games, selectedGame, teamSchedule, pickBestLiveGameCandidate]);
 
   const isGameFollowed = useCallback((game: Game) => {
     return followedGames.has(game.id) || autoFollowGameIds.has(game.id);
@@ -1680,17 +1696,30 @@ export const App: React.FC = () => {
   }, [upsertGamesInRegistry]);
 
   const openFollowedGame = useCallback((game: Game) => {
+    const candidates: Game[] = [];
+    if (selectedGame?.id === game.id) candidates.push(selectedGame);
+    const registryGame = gameRegistry.get(game.id);
+    if (registryGame) candidates.push(registryGame);
+    const gamesMatch = games.find((candidate) => candidate.id === game.id);
+    if (gamesMatch) candidates.push(gamesMatch);
+    const scheduleMatch = teamSchedule.find((candidate) => candidate.id === game.id);
+    if (scheduleMatch) candidates.push(scheduleMatch);
+    candidates.push(game);
+
+    const liveGame = pickBestLiveGameCandidate(candidates);
+    if (!liveGame) return;
+
     forceLiveRefreshOnNextLoad.current = true;
     setIsMenuOpen(false);
     setSelectedTeam(null);
-    const targetLeague = SPORTS.includes(game.league as Sport) ? (game.league as Sport) : 'HOME';
+    const targetLeague = SPORTS.includes(liveGame.league as Sport) ? (liveGame.league as Sport) : 'HOME';
     setSelectedTab(targetLeague);
-    setViewMode(game.status === 'in_progress' ? 'LIVE' : 'UPCOMING');
-    setNavigatedGameId(game.id);
-    if (selectedGame?.id !== game.id) {
-      handleGameToggle(game);
+    setViewMode('LIVE');
+    setNavigatedGameId(liveGame.id);
+    if (selectedGame?.id !== liveGame.id) {
+      handleGameToggle(liveGame);
     }
-  }, [handleGameToggle, selectedGame?.id]);
+  }, [games, gameRegistry, handleGameToggle, pickBestLiveGameCandidate, selectedGame, teamSchedule]);
 
   const closeActiveGameButKeepFollowing = useCallback(() => {
     setNavigatedGameId(null);

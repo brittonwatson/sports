@@ -14,6 +14,7 @@ const PRIORITY_KEYS = [
   "rank",
   "championshipPts",
   "points",
+  "championshipProbability",
   "wins",
   "podiums",
   "starts",
@@ -142,12 +143,16 @@ export const RacingStandingsView: React.FC<RacingStandingsViewProps> = ({
                                 <button
                                   type="button"
                                   onClick={() => onDriverClick?.(sport, String(entry.competitorId), entry.name)}
-                                  className="font-semibold text-left text-cyan-700 dark:text-cyan-300 hover:underline"
+                                  className="font-semibold text-left text-cyan-700 dark:text-cyan-300 hover:underline inline-flex items-center gap-1.5"
                                 >
-                                  {entry.name}
+                                  <span>{entry.name}</span>
+                                  {entry.vehicleNumber && <span className="text-xs font-bold text-slate-600 dark:text-slate-300">#{entry.vehicleNumber}</span>}
                                 </button>
                               ) : (
-                                <div className="font-semibold text-slate-900 dark:text-white">{entry.name}</div>
+                                <div className="font-semibold text-slate-900 dark:text-white inline-flex items-center gap-1.5">
+                                  <span>{entry.name}</span>
+                                  {entry.vehicleNumber && <span className="text-xs font-bold text-slate-600 dark:text-slate-300">#{entry.vehicleNumber}</span>}
+                                </div>
                               )}
                               {(entry.teamName || entry.manufacturer) && (
                                 <div className="text-xs text-slate-500 dark:text-slate-400">{entry.teamName || entry.manufacturer}</div>

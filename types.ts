@@ -91,11 +91,16 @@ export interface Game {
   seasonYear?: number;
   seasonType?: number;
   racingSessionType?: 'race' | 'qualifying' | 'practice' | 'other';
+  racingCurrentLap?: number;
+  racingTotalLaps?: number;
+  racingStage?: number;
+  racingTotalStages?: number;
   racingOrderSnapshot?: Array<{
     competitorId?: string;
     name: string;
     abbreviation?: string;
     logo?: string;
+    vehicleNumber?: string;
     position?: number;
     statusText?: string;
   }>;
@@ -305,6 +310,7 @@ export interface RacingStandingsEntry {
   abbreviation?: string;
   logo?: string;
   flag?: string;
+  vehicleNumber?: string;
   teamName?: string;
   manufacturer?: string;
   stats: RacingStatValue[];
@@ -332,6 +338,7 @@ export interface RacingCalendarFinisher {
   shortName?: string;
   abbreviation?: string;
   logo?: string;
+  vehicleNumber?: string;
   teamName?: string;
   manufacturer?: string;
   statusText?: string;
@@ -392,6 +399,7 @@ export interface RacingDriverSeasonResults {
   shortName?: string;
   abbreviation?: string;
   logo?: string;
+  vehicleNumber?: string;
   teamName?: string;
   manufacturer?: string;
   starts: number;
@@ -412,6 +420,7 @@ export interface RacingEventPredictionEntry {
   shortName?: string;
   abbreviation?: string;
   logo?: string;
+  vehicleNumber?: string;
   teamName?: string;
   manufacturer?: string;
   startingPosition?: number;

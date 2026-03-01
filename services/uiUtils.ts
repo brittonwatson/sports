@@ -244,34 +244,88 @@ const normalizeStatusSuffix = (baseStatus: string, baseClock: string): string =>
     return detail === clock ? '' : detail;
 };
 
-const getLapTickSeconds = (league: string): number => {
-    if (league === 'NASCAR') return 55;
-    if (league === 'INDYCAR') return 75;
-    if (league === 'F1') return 95;
-    return 70;
+const parseLapFromText = (value: string): { currentLap?: number; totalLaps?: number } => {
+    const text = String(value || '').trim();
+    if (!text) return {};
+
+    const full = text.match(/lap(?:s)?\s*(\d+)\s*(?:\/|of)\s*(\d+)/i)
+        || text.match(/(\d+)\s*(?:\/|of)\s*(\d+)\s*laps?/i);
+    if (full) {
+        return {
+            currentLap: parseInt(full[1], 10),
+            totalLaps: parseInt(full[2], 10),
+        };
+    }
+
+    const partial = text.match(/lap(?:s)?\s*(\d+)/i);
+    if (partial) {
+        return { currentLap: parseInt(partial[1], 10) };
+    }
+    return {};
+};
+
+const parseStageFromText = (value: string): { stage?: number; totalStages?: number } => {
+    const text = String(value || '').trim();
+    if (!text) return {};
+
+    const full = text.match(/stage\s*(\d+)\s*(?:\/|of)\s*(\d+)/i);
+    if (full) {
+        return {
+            stage: parseInt(full[1], 10),
+            totalStages: parseInt(full[2], 10),
+        };
+    }
+
+    const partial = text.match(/stage\s*(\d+)/i);
+    if (partial) {
+        return { stage: parseInt(partial[1], 10) };
+    }
+    return {};
+};
+
+const cleanRacingSuffix = (value: string): string => {
+    return String(value || '')
+        .replace(/(^|[\s\-•,])lap(?:s)?\s*\d+(?:\s*(?:\/|of)\s*\d+)?/ig, '$1')
+        .replace(/(^|[\s\-•,])stage\s*\d+(?:\s*(?:\/|of)\s*\d+)?/ig, '$1')
+        .replace(/\s{2,}/g, ' ')
+        .replace(/^[\s\-•,]+|[\s\-•,]+$/g, '')
+        .trim();
 };
 
 const applyRacingRealtimeStatus = (
-    league: string,
+    game: Game,
     baseStatus: string,
     baseClock: string,
     elapsedSeconds: number,
 ): string | null => {
     const detail = String(baseStatus || '').trim();
-    const lapMatch = detail.match(/(lap(?:s)?\s*)(\d+)(?:\s*(?:\/|of)\s*(\d+))?/i);
-    if (lapMatch) {
-        const startLap = parseInt(lapMatch[2], 10);
-        const totalLaps = lapMatch[3] ? parseInt(lapMatch[3], 10) : undefined;
-        if (Number.isFinite(startLap) && startLap > 0) {
-            const step = Math.floor(Math.max(0, elapsedSeconds) / getLapTickSeconds(league));
-            const nextLap = totalLaps && totalLaps > 0
-                ? Math.min(totalLaps, startLap + step)
-                : startLap + step;
-            return detail.replace(
-                /(lap(?:s)?\s*)(\d+)(?:\s*(?:\/|of)\s*(\d+))?/i,
-                (_, prefix: string) => `${prefix}${nextLap}${totalLaps && totalLaps > 0 ? `/${totalLaps}` : ''}`,
-            );
-        }
+    const clock = String(baseClock || '').trim();
+    const lapFromStatus = parseLapFromText(detail);
+    const lapFromClock = parseLapFromText(clock);
+    const stageFromStatus = parseStageFromText(detail);
+    const stageFromClock = parseStageFromText(clock);
+
+    const currentLap = game.racingCurrentLap || lapFromStatus.currentLap || lapFromClock.currentLap;
+    const totalLaps = game.racingTotalLaps || lapFromStatus.totalLaps || lapFromClock.totalLaps;
+    const stage = game.racingStage || stageFromStatus.stage || stageFromClock.stage;
+    const totalStages = game.racingTotalStages || stageFromStatus.totalStages || stageFromClock.totalStages;
+
+    if (currentLap && currentLap > 0) {
+        const lapLabel = totalLaps && totalLaps > 0
+            ? `Lap ${currentLap}/${totalLaps}`
+            : `Lap ${currentLap}`;
+        const stageLabel = game.league === 'NASCAR' && stage && stage > 0
+            ? `Stage ${stage}${totalStages && totalStages > 0 ? `/${totalStages}` : ''}`
+            : '';
+        const prefix = [lapLabel, stageLabel].filter(Boolean).join(' • ');
+        const suffix = cleanRacingSuffix(normalizeStatusSuffix(detail, clock));
+        return suffix ? `${prefix} - ${suffix}` : prefix;
+    }
+
+    if (game.league === 'NASCAR' && stage && stage > 0) {
+        const stageLabel = `Stage ${stage}${totalStages && totalStages > 0 ? `/${totalStages}` : ''}`;
+        const suffix = cleanRacingSuffix(normalizeStatusSuffix(detail, clock));
+        return suffix ? `${stageLabel} - ${suffix}` : stageLabel;
     }
 
     const remainingMatch = detail.match(/(\d{1,3}:\d{2}(?::\d{2})?)\s*(remaining|left)/i);
@@ -305,7 +359,7 @@ export const getRealtimeLiveStatus = (
     const elapsed = Math.max(0, Math.floor(elapsedSeconds));
 
     if (RACING_LEAGUES.includes(game.league as Sport)) {
-        const racingStatus = applyRacingRealtimeStatus(game.league, baseStatus, baseClock, elapsed);
+        const racingStatus = applyRacingRealtimeStatus(game, baseStatus, baseClock, elapsed);
         if (racingStatus) return racingStatus;
     }
 
