@@ -335,7 +335,7 @@ const SOCCER_PROFILE: SportProfile = {
         { label: "Chance Creation", aliases: ["shots on target", "shots on goal", "sot"], better: "high", weight: 0.85, scale: 1.8 },
         { label: "Possession Control", aliases: ["possession"], better: "high", weight: 0.45, scale: 9.0 },
         { label: "Passing Security", aliases: ["pass %", "passing %", "pass completion"], better: "high", weight: 0.45, scale: 6.0 },
-        { label: "Defensive Discipline", aliases: ["clean sheets"], better: "high", weight: 0.6, scale: 0.5 },
+        { label: "Defensive Discipline", aliases: ["red cards", "yellow cards", "fouls"], better: "low", weight: 0.6, scale: 2.6 },
     ],
     liveAxes: [
         { label: "Live Shot Edge", aliases: ["shots on target", "shots on goal"], better: "high", weight: 1.0, scale: 1.7 },
@@ -451,9 +451,12 @@ const statCoverageWeight = (stat: TeamStat, alias: string, sport: Sport): number
     const canonicalAlias = canonicalizeStatLabel(sport, alias);
     const label = normalizeLabel(canonicalStatLabel);
     const target = normalizeLabel(canonicalAlias);
+    const containsWhole = (source: string, tokenOrPhrase: string): boolean =>
+        ` ${source} `.includes(` ${tokenOrPhrase} `);
     if (label === target) return 100 + target.length;
     if (label.startsWith(`${target} `)) return 75 + target.length;
-    if (label.includes(target)) return 50 + target.length;
+    if (containsWhole(label, target)) return 56 + target.length;
+    if (target.length >= 3 && label.includes(target)) return 50 + target.length;
     if (target.length >= 5 && target.includes(label)) return 15 + label.length;
     return 0;
 };

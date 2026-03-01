@@ -124,12 +124,18 @@ export const normalizeStatToken = (label: string): string =>
     .replace(/\s+/g, " ")
     .trim();
 
+const includesWholeToken = (text: string, tokenOrPhrase: string): boolean => {
+  if (!text || !tokenOrPhrase) return false;
+  return ` ${text} `.includes(` ${tokenOrPhrase} `);
+};
+
 const aliasMatches = (normalizedLabel: string, alias: string): number => {
   const normalizedAlias = normalizeStatToken(alias);
   if (!normalizedAlias) return 0;
   if (normalizedLabel === normalizedAlias) return 100 + normalizedAlias.length;
   if (normalizedLabel.startsWith(`${normalizedAlias} `)) return 70 + normalizedAlias.length;
-  if (normalizedLabel.includes(normalizedAlias)) return 50 + normalizedAlias.length;
+  if (includesWholeToken(normalizedLabel, normalizedAlias)) return 58 + normalizedAlias.length;
+  if (normalizedAlias.length >= 3 && normalizedLabel.includes(normalizedAlias)) return 50 + normalizedAlias.length;
   if (normalizedAlias.includes(normalizedLabel) && normalizedLabel.length >= 5) return 25 + normalizedLabel.length;
   return 0;
 };
