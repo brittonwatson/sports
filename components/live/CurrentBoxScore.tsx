@@ -26,6 +26,9 @@ const resolveTeamBox = (game: Game, boxscore: TeamBoxScore[]) => {
 };
 
 const groupPriority = [
+    'goal contributions',
+    'discipline',
+    'key leaders',
     'totals',
     'overall',
     'offense',

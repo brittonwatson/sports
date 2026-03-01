@@ -762,6 +762,27 @@ export const fetchGameDetails = async (gameId: string, sport: Sport): Promise<Ga
         const parsedLinescores = Array.from(finalLinescoreMap.values())
             .sort((a, b) => a.period - b.period);
         
+        const leaders: TeamGameLeaders[] = (data.leaders || []).map((t: any) => ({
+            team: {
+                id: t.team.id,
+                abbreviation: t.team.abbreviation,
+                logo: t.team.logo
+            },
+            leaders: (t.leaders || []).map((l: any) => ({
+                name: l.name,
+                displayName: l.displayName,
+                shortDisplayName: l.shortDisplayName,
+                leaders: (l.leaders || []).map((a: any) => ({
+                    id: a.athlete.id,
+                    displayName: a.athlete.displayName,
+                    headshot: a.athlete.headshot?.href,
+                    displayValue: a.displayValue,
+                    position: a.athlete.position?.abbreviation,
+                    jersey: a.athlete.jersey
+                }))
+            }))
+        }));
+
         const playerSource = data.boxscore?.players || [];
         const rosterSource = Array.isArray(data.rosters) ? data.rosters : [];
         const competitorRosterSource = competitors
@@ -776,7 +797,81 @@ export const fetchGameDetails = async (gameId: string, sport: Sport): Promise<Ga
         if ((!teamBoxSource || teamBoxSource.length === 0) && data.statistics) {
             teamBoxSource = data.statistics;
         }
-        
+
+        const mapRosterToLineupGroup = (teamRoster: any) => ({
+            label: 'Lineup',
+            labels: ['Pos', 'Starter'],
+            players: (teamRoster.roster || []).map((entry: any, idx: number) => ({
+                player: {
+                    id: entry.athlete?.id || `${teamRoster.team?.id || 'team'}-${entry.jersey || idx}`,
+                    displayName: entry.athlete?.displayName || 'Unknown Player',
+                    shortName: entry.athlete?.shortName,
+                    jersey: entry.jersey || entry.athlete?.jersey,
+                    position: entry.position?.abbreviation || entry.athlete?.position?.abbreviation,
+                    headshot: entry.athlete?.headshot?.href,
+                    isStarter: !!entry.starter
+                },
+                stats: [
+                    entry.position?.abbreviation || entry.athlete?.position?.abbreviation || '-',
+                    entry.starter ? 'Yes' : 'No'
+                ]
+            }))
+        });
+
+        const parseSoccerPlayerName = (text: string): string | null => {
+            const normalized = String(text || '').replace(/\s+/g, ' ').trim();
+            if (!normalized) return null;
+
+            const byMatch = normalized.match(/\bby\s+([A-Z][\w'.-]*(?:\s+[A-Z][\w'.-]*){0,3})/);
+            if (byMatch?.[1]) return byMatch[1].trim();
+
+            const beforeParen = normalized.split('(')[0] || normalized;
+            const sentenceParts = beforeParen
+                .split(/[.!?]/)
+                .map((part) => part.trim())
+                .filter(Boolean);
+            const candidateRaw = sentenceParts.length > 0 ? sentenceParts[sentenceParts.length - 1] : beforeParen;
+            const cleaned = candidateRaw
+                .replace(/^(goal!?|penalty|own goal|yellow card|red card|substitution|foul|shot|save|assisted by)\s*(?:by\s*)?/i, '')
+                .replace(/\s+\d{1,3}(?:\+\d{1,2})?'?$/i, '')
+                .replace(/,$/, '')
+                .trim();
+
+            if (!cleaned) return null;
+            if (cleaned.length < 3) return null;
+            if (!/[A-Za-z]/.test(cleaned)) return null;
+            return cleaned;
+        };
+
+        const parseSoccerAssistNames = (text: string): string[] => {
+            const normalized = String(text || '').replace(/\s+/g, ' ').trim();
+            if (!normalized) return [];
+            const assistMatch = normalized.match(/assisted by\s+([^.]*)/i);
+            if (!assistMatch?.[1]) return [];
+            return assistMatch[1]
+                .split(/,| and | & /i)
+                .map((chunk) => chunk.replace(/\([^)]*\)/g, '').trim())
+                .filter((chunk) => chunk.length >= 3);
+        };
+
+        const parseSoccerMinute = (clock: string, text: string): string => {
+            const clockText = String(clock || '').trim();
+            if (clockText) return clockText.replace(/\s+/g, '');
+            const textMatch = String(text || '').match(/(\d{1,3}(?:\+\d{1,2})?)\s*'?/);
+            if (!textMatch?.[1]) return '';
+            return `${textMatch[1]}'`;
+        };
+
+        const isYellowCardEvent = (play: Play): boolean => {
+            const source = `${play.type || ''} ${play.text || ''}`.toLowerCase();
+            return source.includes('yellow card');
+        };
+
+        const isRedCardEvent = (play: Play): boolean => {
+            const source = `${play.type || ''} ${play.text || ''}`.toLowerCase();
+            return source.includes('red card') || source.includes('second yellow');
+        };
+
         let boxscore: TeamBoxScore[] = [];
         if (playerSource.length > 0) {
             boxscore = (playerSource || []).map((t: any) => ({
@@ -800,53 +895,218 @@ export const fetchGameDetails = async (gameId: string, sport: Sport): Promise<Ga
                     }))
                 }))
             }));
+        } else if (isSoccer) {
+            type SoccerPlayerAccum = {
+                teamId: string;
+                playerId: string;
+                displayName: string;
+                goals: number;
+                assists: number;
+                ownGoals: number;
+                yellowCards: number;
+                redCards: number;
+                minute: string;
+            };
+
+            const homeTeamId = String(homeComp?.team?.id || '');
+            const awayTeamId = String(awayComp?.team?.id || '');
+            const fallbackTeamIds = [awayTeamId, homeTeamId].filter(Boolean);
+            const perTeam = new Map<string, Map<string, SoccerPlayerAccum>>();
+            const rosterByTeam = new Map<string, any>(
+                resolvedRosterSource.map((teamRoster: any) => [String(teamRoster.team?.id || ''), teamRoster]),
+            );
+            const leaderByTeam = new Map<string, TeamGameLeaders>(
+                leaders.map((entry) => [String(entry.team.id || ''), entry]),
+            );
+
+            const ensureTeamMap = (teamId: string): Map<string, SoccerPlayerAccum> => {
+                if (!perTeam.has(teamId)) perTeam.set(teamId, new Map<string, SoccerPlayerAccum>());
+                return perTeam.get(teamId)!;
+            };
+
+            const toPlayerKey = (name: string): string =>
+                name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'player';
+
+            const upsertPlayer = (teamId: string, playerName: string): SoccerPlayerAccum => {
+                const safeTeamId = String(teamId || '');
+                const normalizedName = playerName.trim();
+                const teamMap = ensureTeamMap(safeTeamId);
+                const playerId = `${safeTeamId}-${toPlayerKey(normalizedName)}`;
+                const existing = teamMap.get(playerId);
+                if (existing) return existing;
+                const created: SoccerPlayerAccum = {
+                    teamId: safeTeamId,
+                    playerId,
+                    displayName: normalizedName,
+                    goals: 0,
+                    assists: 0,
+                    ownGoals: 0,
+                    yellowCards: 0,
+                    redCards: 0,
+                    minute: '',
+                };
+                teamMap.set(playerId, created);
+                return created;
+            };
+
+            scoringPlays.forEach((play) => {
+                const teamId = String(play.teamId || (play.isHome ? homeTeamId : awayTeamId) || '');
+                if (!teamId) return;
+                const minute = parseSoccerMinute(play.clock, play.text);
+                const scorer = parseSoccerPlayerName(play.text);
+                const ownGoal = /own goal/i.test(`${play.type || ''} ${play.text || ''}`);
+                if (scorer) {
+                    const player = upsertPlayer(teamId, scorer);
+                    if (ownGoal) player.ownGoals += 1;
+                    else player.goals += 1;
+                    if (minute) player.minute = minute;
+                }
+                parseSoccerAssistNames(play.text).forEach((assistName) => {
+                    const player = upsertPlayer(teamId, assistName);
+                    player.assists += 1;
+                    if (minute && !player.minute) player.minute = minute;
+                });
+            });
+
+            plays.forEach((play) => {
+                const teamId = String(play.teamId || '');
+                if (!teamId) return;
+                const yellow = isYellowCardEvent(play);
+                const red = isRedCardEvent(play);
+                if (!yellow && !red) return;
+                const playerName = parseSoccerPlayerName(play.text);
+                if (!playerName) return;
+                const player = upsertPlayer(teamId, playerName);
+                if (yellow) player.yellowCards += 1;
+                if (red) player.redCards += 1;
+                const minute = parseSoccerMinute(play.clock, play.text);
+                if (minute) player.minute = minute;
+            });
+
+            const teamMeta = [awayComp?.team, homeComp?.team]
+                .filter(Boolean)
+                .map((team: any) => ({
+                    id: String(team.id || ''),
+                    name: formatTeamName(team, sport),
+                    logo: team.logo || team.logos?.[0]?.href,
+                }))
+                .filter((team) => team.id);
+
+            const normalizedTeams = teamMeta.length > 0
+                ? teamMeta
+                : fallbackTeamIds.map((teamId) => ({ id: teamId, name: 'Team', logo: undefined }));
+
+            boxscore = normalizedTeams.map((team) => {
+                const players = Array.from((perTeam.get(team.id) || new Map()).values());
+                const goalRows = players
+                    .filter((entry) => entry.goals > 0 || entry.assists > 0 || entry.ownGoals > 0)
+                    .sort((a, b) => (b.goals - a.goals) || (b.assists - a.assists) || a.displayName.localeCompare(b.displayName));
+                const disciplineRows = players
+                    .filter((entry) => entry.yellowCards > 0 || entry.redCards > 0)
+                    .sort((a, b) => (b.redCards - a.redCards) || (b.yellowCards - a.yellowCards) || a.displayName.localeCompare(b.displayName));
+
+                const leaderRows = (leaderByTeam.get(team.id)?.leaders || [])
+                    .flatMap((category) => (
+                        category.leaders.map((leader) => ({
+                            category: category.shortDisplayName || category.displayName || category.name,
+                            player: leader,
+                        }))
+                    ));
+
+                const groups: Array<{
+                    label: string;
+                    labels: string[];
+                    players: Array<{
+                        player: {
+                            id: string;
+                            displayName: string;
+                            shortName?: string;
+                            jersey?: string;
+                            position?: string;
+                            headshot?: string;
+                            isStarter?: boolean;
+                        };
+                        stats: string[];
+                    }>;
+                }> = [];
+
+                if (goalRows.length > 0) {
+                    groups.push({
+                        label: 'Goal Contributions',
+                        labels: ['G', 'A', 'OG', 'Min'],
+                        players: goalRows.map((entry) => ({
+                            player: {
+                                id: entry.playerId,
+                                displayName: entry.displayName,
+                            },
+                            stats: [
+                                String(entry.goals),
+                                String(entry.assists),
+                                String(entry.ownGoals),
+                                entry.minute || '-',
+                            ],
+                        })),
+                    });
+                }
+
+                if (disciplineRows.length > 0) {
+                    groups.push({
+                        label: 'Discipline',
+                        labels: ['YC', 'RC', 'Min'],
+                        players: disciplineRows.map((entry) => ({
+                            player: {
+                                id: entry.playerId,
+                                displayName: entry.displayName,
+                            },
+                            stats: [
+                                String(entry.yellowCards),
+                                String(entry.redCards),
+                                entry.minute || '-',
+                            ],
+                        })),
+                    });
+                }
+
+                if (leaderRows.length > 0) {
+                    groups.push({
+                        label: 'Key Leaders',
+                        labels: ['Stat', 'Value'],
+                        players: leaderRows.map((entry) => ({
+                            player: {
+                                id: entry.player.id || `${team.id}-${toPlayerKey(entry.player.displayName)}`,
+                                displayName: entry.player.displayName,
+                                position: entry.player.position,
+                                jersey: entry.player.jersey,
+                                headshot: entry.player.headshot,
+                            },
+                            stats: [
+                                entry.category || 'Leader',
+                                entry.player.displayValue || '-',
+                            ],
+                        })),
+                    });
+                }
+
+                if (groups.length === 0) {
+                    const teamRoster = rosterByTeam.get(team.id);
+                    if (teamRoster) groups.push(mapRosterToLineupGroup(teamRoster));
+                }
+
+                return {
+                    teamId: team.id,
+                    teamName: team.name,
+                    teamLogo: team.logo,
+                    groups,
+                };
+            }).filter((team) => team.groups.some((group) => (group.players || []).length > 0));
         } else if (resolvedRosterSource.length > 0) {
             boxscore = resolvedRosterSource.map((teamRoster: any) => ({
                 teamId: String(teamRoster.team?.id || ''),
                 teamName: formatTeamName(teamRoster.team, sport),
                 teamLogo: teamRoster.team?.logo || teamRoster.team?.logos?.[0]?.href,
-                groups: [{
-                    label: 'Lineup',
-                    labels: ['Pos', 'Starter'],
-                    players: (teamRoster.roster || []).map((entry: any, idx: number) => ({
-                        player: {
-                            id: entry.athlete?.id || `${teamRoster.team?.id || 'team'}-${entry.jersey || idx}`,
-                            displayName: entry.athlete?.displayName || 'Unknown Player',
-                            shortName: entry.athlete?.shortName,
-                            jersey: entry.jersey || entry.athlete?.jersey,
-                            position: entry.position?.abbreviation || entry.athlete?.position?.abbreviation,
-                            headshot: entry.athlete?.headshot?.href,
-                            isStarter: !!entry.starter
-                        },
-                        stats: [
-                            entry.position?.abbreviation || entry.athlete?.position?.abbreviation || '-',
-                            entry.starter ? 'Yes' : 'No'
-                        ]
-                    }))
-                }]
+                groups: [mapRosterToLineupGroup(teamRoster)]
             }));
         }
-
-        const leaders: TeamGameLeaders[] = (data.leaders || []).map((t: any) => ({
-            team: {
-                id: t.team.id,
-                abbreviation: t.team.abbreviation,
-                logo: t.team.logo
-            },
-            leaders: (t.leaders || []).map((l: any) => ({
-                name: l.name,
-                displayName: l.displayName,
-                shortDisplayName: l.shortDisplayName,
-                leaders: (l.leaders || []).map((a: any) => ({
-                    id: a.athlete.id,
-                    displayName: a.athlete.displayName,
-                    headshot: a.athlete.headshot?.href,
-                    displayValue: a.displayValue,
-                    position: a.athlete.position?.abbreviation,
-                    jersey: a.athlete.jersey
-                }))
-            }))
-        }));
 
         let teamStats: TeamStat[] = [];
         if (teamBoxSource && teamBoxSource.length === 2) {

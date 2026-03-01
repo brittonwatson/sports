@@ -23,7 +23,33 @@ export const ActiveLineupList: React.FC<ActiveLineupListProps> = ({ situation, h
         if (!gameDetails?.boxscore || !teamId) return [];
         const teamBox = gameDetails.boxscore.find(t => String(t.teamId) === String(teamId));
         if (!teamBox) return [];
-        const allPlayers = teamBox.groups.flatMap(g => g.players.map(p => p.player)) as Player[];
+
+        const lineupLikeGroups = teamBox.groups.filter((group) => {
+            const label = String(group.label || '').toLowerCase();
+            return label.includes('lineup') || label.includes('roster') || label.includes('starter');
+        });
+        const starterTaggedGroups = teamBox.groups.filter((group) =>
+            (group.players || []).some((entry) => entry.player?.isStarter),
+        );
+        const nonEventGroups = teamBox.groups.filter((group) => {
+            const label = String(group.label || '').toLowerCase();
+            return !(
+                label.includes('goal contribution') ||
+                label.includes('discipline') ||
+                label.includes('leader') ||
+                label.includes('event') ||
+                label.includes('card')
+            );
+        });
+
+        const sourceGroups =
+            lineupLikeGroups.length > 0 ? lineupLikeGroups :
+            starterTaggedGroups.length > 0 ? starterTaggedGroups :
+            (type === 'SOCCER'
+                ? nonEventGroups
+                : teamBox.groups);
+
+        const allPlayers = sourceGroups.flatMap(g => g.players.map(p => p.player)) as Player[];
         let starters = allPlayers.filter(p => p.isStarter);
         if (starters.length === 0) {
             const limit = isBasketball ? 5 : (isHockey ? 6 : 11);
