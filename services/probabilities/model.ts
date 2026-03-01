@@ -1415,12 +1415,30 @@ const getSoccerTimingContext = (
     };
 };
 
+const getBaseballInningProgress = (game: Game, details: GameDetails | null): number => {
+    const inning = Math.max(1, Math.trunc(details?.period || game.period || 1));
+    const outs = clamp(details?.situation?.outs || 0, 0, 2);
+    const clockText = `${details?.clock || game.clock || ""} ${game.gameStatus || ""}`.toLowerCase();
+    const isFinalState = clockText.includes("final") || clockText.includes("ft");
+    if (isFinalState) return 1;
+
+    const isTopHalf = /top|t\d/.test(clockText);
+    const isBottomHalf = /bottom|bot|b\d/.test(clockText);
+
+    // Each inning has two halves. Each half advances by outs / 3.
+    let completedInnings = inning - 1;
+    if (isBottomHalf) completedInnings += 0.5;
+    else if (!isTopHalf) completedInnings += 0.25;
+    completedInnings += (outs / 6);
+
+    return clamp(completedInnings / 9, 0, 1);
+};
+
 const getElapsedFraction = (game: Game, details: GameDetails | null, profile: SportProfile): number => {
     if (profile.clockMode === "none") return 0;
 
     if (profile.clockMode === "inning") {
-        const inning = details?.period || game.period || 1;
-        return clamp((inning - 1) / 9, 0, 1);
+        return getBaseballInningProgress(game, details);
     }
 
     const clock = details?.clock || game.clock || "00:00";
@@ -2401,7 +2419,7 @@ const applyLiveAdjustments = (
         currentAway,
     );
     if (trajectoryProjection) {
-        const maxWeight = profile.family === "basketball" ? 0.8 : 0.66;
+        const maxWeight = profile.family === "basketball" ? 0.8 : profile.family === "baseball" ? 0.28 : 0.66;
         const trajectoryWeight = clamp(trajectoryProjection.confidence * maxWeight, 0.06, maxWeight);
         projectedHome = blend(projectedHome, trajectoryProjection.homeProjectedFinal, trajectoryWeight);
         projectedAway = blend(projectedAway, trajectoryProjection.awayProjectedFinal, trajectoryWeight);
@@ -2444,6 +2462,50 @@ const applyLiveAdjustments = (
                 impact: "neutral",
                 description: "High first-half scoring pace anchored against historical under-projection",
                 magnitude: 0.65,
+            });
+        }
+    }
+
+    if (profile.family === "baseball" && elapsedFraction >= 0.2) {
+        const safeElapsed = Math.max(elapsedFraction, 0.1);
+        const inningsRemaining = Math.max(0, 9 - (safeElapsed * 9));
+        const paceHomeFinal = currentHome / safeElapsed;
+        const paceAwayFinal = currentAway / safeElapsed;
+        const baseHomeFinal = Math.max(currentHome, (baseProjectedTotal + baseProjectedMargin) / 2);
+        const baseAwayFinal = Math.max(currentAway, (baseProjectedTotal - baseProjectedMargin) / 2);
+
+        // Keep late-game MLB projections from exploding unless both current pace and baseline support it.
+        const paceCapMultiplier = clamp(1.06 + (remainingFraction * 0.18), 1.06, 1.24);
+        const burstAllowance = 0.8 + (inningsRemaining * 1.4);
+        const homeUpper = Math.min(
+            profile.maxTeamScore,
+            Math.max(
+                currentHome + burstAllowance,
+                paceHomeFinal * paceCapMultiplier,
+                baseHomeFinal + (inningsRemaining * 0.9),
+            ),
+        );
+        const awayUpper = Math.min(
+            profile.maxTeamScore,
+            Math.max(
+                currentAway + burstAllowance,
+                paceAwayFinal * paceCapMultiplier,
+                baseAwayFinal + (inningsRemaining * 0.9),
+            ),
+        );
+
+        const preClampHome = projectedHome;
+        const preClampAway = projectedAway;
+        projectedHome = clamp(projectedHome, currentHome, homeUpper);
+        projectedAway = clamp(projectedAway, currentAway, awayUpper);
+
+        if (Math.abs(preClampHome - projectedHome) > 0.35 || Math.abs(preClampAway - projectedAway) > 0.35) {
+            findings.push({
+                label: "Baseball Late-Game Pace Guardrail",
+                value: `upper ${homeUpper.toFixed(1)}-${awayUpper.toFixed(1)}`,
+                impact: "neutral",
+                description: `${inningsRemaining.toFixed(1)} inning(s) remaining with pace-calibrated cap`,
+                magnitude: 0.52,
             });
         }
     }

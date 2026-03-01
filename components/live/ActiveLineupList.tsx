@@ -46,7 +46,7 @@ export const ActiveLineupList: React.FC<ActiveLineupListProps> = ({ situation, h
             lineupLikeGroups.length > 0 ? lineupLikeGroups :
             starterTaggedGroups.length > 0 ? starterTaggedGroups :
             (type === 'SOCCER'
-                ? nonEventGroups
+                ? (nonEventGroups.length > 0 ? nonEventGroups : teamBox.groups)
                 : teamBox.groups);
 
         const allPlayers = sourceGroups.flatMap(g => g.players.map(p => p.player)) as Player[];

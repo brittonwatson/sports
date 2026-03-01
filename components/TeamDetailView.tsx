@@ -13,7 +13,7 @@ import { STAT_CORRELATIONS } from '../services/probabilities/correlations';
 import { findCorrelationConfig } from '../services/probabilities/utils';
 import { dbEvents } from '../services/statsDb';
 import { getRankColor } from '../services/uiUtils';
-import { formatSeasonLabel, getSeasonKeyForGame, getSeasonYearForGame, listSeasonOptionsFromGames } from '../services/seasonScope';
+import { getSeasonKeyForGame, getSeasonYearForGame, listSeasonOptionsFromGames } from '../services/seasonScope';
 
 interface TeamDetailViewProps {
   team: TeamProfile;
@@ -225,11 +225,10 @@ export const TeamDetailView: React.FC<TeamDetailViewProps> = ({
     }, [seasonOptions, effectiveSeasonKey]);
 
     const selectedSeasonLabel = useMemo(() => {
-        if (typeof selectedSeasonYear === 'number' && Number.isFinite(selectedSeasonYear)) {
-            return formatSeasonLabel(league, selectedSeasonYear);
-        }
+        const selected = seasonOptions.find((option) => option.key === effectiveSeasonKey);
+        if (selected?.label) return selected.label;
         return 'Current Season';
-    }, [league, selectedSeasonYear]);
+    }, [seasonOptions, effectiveSeasonKey]);
 
     const seasonScopedSchedule = useMemo(() => {
         if (!effectiveSeasonKey) return schedule;

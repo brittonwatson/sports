@@ -41,12 +41,25 @@ const inferSeasonYearFromDate = (dateTime: string, sport?: Sport): number | unde
     return month >= 7 ? year : year - 1;
 };
 
+export const getCurrentSeasonYear = (sport?: Sport, now: Date = new Date()): number => {
+    const year = now.getUTCFullYear();
+    const month = now.getUTCMonth() + 1;
+    if (!SPLIT_SEASON_SPORTS.has(sport as Sport)) return year;
+    return month >= 7 ? year : year - 1;
+};
+
 export const getSeasonYearForGame = (game: Game, sport?: Sport): number | undefined => {
+    const inferred = inferSeasonYearFromDate(game.dateTime, sport);
     const explicit = Number(game.seasonYear);
     if (Number.isFinite(explicit) && explicit > 1900) {
-        return Math.trunc(explicit);
+        const normalized = Math.trunc(explicit);
+        if (Number.isFinite(inferred) && SPLIT_SEASON_SPORTS.has(sport as Sport)) {
+            // Some upstream feeds store split-season year as end-year (e.g., 2026 for 2025-26).
+            if (normalized === (inferred as number) + 1) return inferred;
+        }
+        return normalized;
     }
-    return inferSeasonYearFromDate(game.dateTime, sport);
+    return inferred;
 };
 
 export const getSeasonKeyForGame = (game: Game, sport?: Sport): string => {
@@ -73,6 +86,7 @@ export interface SeasonOption {
 
 export const listSeasonOptionsFromGames = (games: Game[], sport?: Sport): SeasonOption[] => {
     const counts = new Map<number, number>();
+    const currentSeasonYear = getCurrentSeasonYear(sport);
 
     games.forEach((game) => {
         const seasonYear = getSeasonYearForGame(game, sport);
@@ -81,7 +95,11 @@ export const listSeasonOptionsFromGames = (games: Game[], sport?: Sport): Season
         counts.set(year, (counts.get(year) || 0) + 1);
     });
 
-    return Array.from(counts.entries())
+    const allEntries = Array.from(counts.entries());
+    const nonFutureEntries = allEntries.filter(([seasonYear]) => seasonYear <= currentSeasonYear);
+    const entries = nonFutureEntries.length > 0 ? nonFutureEntries : allEntries;
+
+    return entries
         .sort((a, b) => {
             if (a[0] !== b[0]) return b[0] - a[0];
             return b[1] - a[1];
@@ -89,7 +107,9 @@ export const listSeasonOptionsFromGames = (games: Game[], sport?: Sport): Season
         .map(([seasonYear, gameCount]) => ({
             key: String(seasonYear),
             seasonYear,
-            label: formatSeasonLabel(sport, seasonYear),
+            label: seasonYear === currentSeasonYear
+                ? `Current Season (${formatSeasonLabel(sport, seasonYear)})`
+                : formatSeasonLabel(sport, seasonYear),
             gameCount,
         }));
 };

@@ -191,6 +191,16 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({ game, gameDetails, p
   const allPlays = gameDetails?.plays || [];
   const scoredPlays = gameDetails?.scoringPlays || [];
   let playsToShow: (ScoringPlay | Play)[] = showAllPlays ? allPlays : (scoredPlays.length > 0 ? scoredPlays : allPlays.filter(p => ('scoringPlay' in p ? p.scoringPlay : false) || p.type?.toLowerCase().includes('score') || p.text?.toLowerCase().match(/\b(goal|touchdown|td|safety|field goal|fg|home run|hr)\b/))); // Removed 'run' and 'points' to be strict
+  if (isSoccer && !showAllPlays) {
+      const soccerKeyEvents = allPlays.filter((p) => {
+          const combined = `${p.type || ''} ${p.text || ''}`.toLowerCase();
+          return (
+              ('scoringPlay' in p ? p.scoringPlay : false) ||
+              /\b(goal|yellow card|red card|penalty|substitution|var|offside|shot|save|foul)\b/.test(combined)
+          );
+      });
+      playsToShow = soccerKeyEvents.length > 0 ? soccerKeyEvents : allPlays;
+  }
   if (isHockey && !showAllPlays && playsToShow.length === allPlays.length) playsToShow = playsToShow.filter(p => p.type.toLowerCase().includes('goal') || p.text.toLowerCase().includes('goal'));
   const sortedPlays = [...playsToShow].reverse();
   
@@ -340,7 +350,7 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({ game, gameDetails, p
               </div>
 
               {/* 3. Current Box Score */}
-              {gameDetails?.boxscore && gameDetails.boxscore.length > 0 && (
+              {(isSoccer || (gameDetails?.boxscore && gameDetails.boxscore.length > 0)) && (
                   <CurrentBoxScore
                       game={game}
                       gameDetails={gameDetails}

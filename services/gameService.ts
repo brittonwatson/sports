@@ -634,31 +634,64 @@ export const fetchGameDetails = async (gameId: string, sport: Sport): Promise<Ga
         };
 
         // 1. Prepare raw plays early to support fallback for scoringPlays
+        const keyEventPlays = Array.isArray(data.keyEvents)
+            ? data.keyEvents.map((p: any, idx: number) => withFallbackShape(p, idx))
+            : [];
+        const commentaryPlays = Array.isArray(data.commentary)
+            ? [...data.commentary]
+                .sort((a: any, b: any) => {
+                    const seqA = Number(a?.sequence ?? 0);
+                    const seqB = Number(b?.sequence ?? 0);
+                    return seqA - seqB;
+                })
+                .map((entry: any, idx: number) => withFallbackShape(commentaryToFallbackPlay(entry, idx), idx))
+            : [];
+
         let rawPlays = data.plays || [];
         if (rawPlays.length === 0 && data.drives) {
              const drives = [...(data.drives.previous || [])];
              if (data.drives.current) drives.push(data.drives.current);
              rawPlays = drives.flatMap((d: any) => d.plays || []);
         }
-        if (rawPlays.length === 0 && Array.isArray(data.keyEvents) && data.keyEvents.length > 0) {
-            rawPlays = data.keyEvents.map((p: any, idx: number) => withFallbackShape(p, idx));
+        if (rawPlays.length === 0 && keyEventPlays.length > 0) {
+            rawPlays = keyEventPlays;
         }
         if (rawPlays.length === 0 && Array.isArray(data.header?.competitions?.[0]?.details) && data.header.competitions[0].details.length > 0) {
             rawPlays = data.header.competitions[0].details.map((p: any, idx: number) => withFallbackShape(p, idx));
         }
-        if (rawPlays.length === 0 && Array.isArray(data.commentary) && data.commentary.length > 0) {
-            const ordered = [...data.commentary].sort((a: any, b: any) => {
-                const seqA = Number(a?.sequence ?? 0);
-                const seqB = Number(b?.sequence ?? 0);
-                return seqA - seqB;
-            });
-            rawPlays = ordered.map((entry: any, idx: number) =>
-                withFallbackShape(commentaryToFallbackPlay(entry, idx), idx),
-            );
+        if (rawPlays.length === 0 && commentaryPlays.length > 0) {
+            rawPlays = commentaryPlays;
+        }
+
+        // Soccer feeds often include sparse keyEvents (without descriptive text) and rich commentary.
+        // Prefer commentary in that case so play-by-play and derived box-score events stay populated.
+        if (isSoccer && commentaryPlays.length > 0) {
+            const keyEventsSparse =
+                keyEventPlays.length > 0 &&
+                keyEventPlays.every((play: any) => {
+                    const text = String(play?.text || '').trim().toLowerCase();
+                    const typeText = String(play?.type?.text || '').trim().toLowerCase();
+                    return !text || text === 'play' || text === typeText;
+                });
+            if (rawPlays.length === 0 || keyEventsSparse || commentaryPlays.length >= (keyEventPlays.length * 2)) {
+                rawPlays = commentaryPlays;
+            }
         }
 
         // 2. Extract scoring plays with fallback
         let sourceScoringPlays = data.scoringPlays || [];
+        if (sourceScoringPlays.length === 0 && isSoccer && keyEventPlays.length > 0) {
+            sourceScoringPlays = keyEventPlays.filter((p: any) => {
+                const typeText = String(p?.type?.text || '').toLowerCase();
+                const text = String(p?.text || '').toLowerCase();
+                if (typeText.includes('goal kick')) return false;
+                return (
+                    !!p?.scoringPlay ||
+                    typeText.includes('goal') ||
+                    text.includes('goal')
+                );
+            });
+        }
         if (sourceScoringPlays.length === 0 && rawPlays.length > 0) {
             // Fallback: Filter raw plays for scores
             // Fixed: Only include explicit scoring plays or text matches

@@ -1,8 +1,9 @@
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { SPORTS, Sport, Game, PredictionResult, GroundingChunk, StandingsGroup, GameDetails, UserProfile, TeamOption, PredictionStats, StandingsType, TeamProfile, SOCCER_LEAGUES, RACING_LEAGUES } from './types';
+import { SPORTS, Sport, Game, PredictionResult, GroundingChunk, StandingsGroup, GameDetails, UserProfile, TeamOption, PredictionStats, StandingsType, TeamProfile, SOCCER_LEAGUES, RACING_LEAGUES, RacingEventBundle, RacingStandingsPayload } from './types';
 import { fetchUpcomingGames, fetchBracketGames, fetchGameDetails } from './services/gameService';
 import { fetchStandings, fetchRankings, fetchTeamProfile, fetchTeamSchedule, syncFullDatabase } from './services/teamService';
+import { fetchRacingEventBundle, fetchRacingStandingsPayload } from './services/racingService';
 import { recordCompletedGames } from './services/internalDbService';
 import { generateAIAnalysis } from './services/aiService';
 import { getSeasonKeyForGame, listSeasonOptionsFromGames } from './services/seasonScope';
@@ -16,6 +17,8 @@ import { TeamDetailView } from './components/TeamDetailView';
 import { CalendarView } from './components/CalendarView';
 import { TeamsListView } from './components/TeamsListView';
 import { LeagueStatsView } from './components/LeagueStatsView';
+import { RacingEventPanel } from './components/RacingEventPanel';
+import { RacingStandingsView } from './components/RacingStandingsView';
 import { Calendar, Trophy, CalendarOff, Loader2 } from 'lucide-react';
 import { LOCAL_TEAMS } from './data/teams';
 
@@ -241,6 +244,8 @@ export const App: React.FC = () => {
   const [navigatedGameId, setNavigatedGameId] = useState<string | null>(initialNavRef.current.gameId);
   const [prediction, setPrediction] = useState<PredictionResult | null>(null);
   const [gameDetails, setGameDetails] = useState<GameDetails | null>(null);
+  const [racingEventBundle, setRacingEventBundle] = useState<RacingEventBundle | null>(null);
+  const [racingStandings, setRacingStandings] = useState<RacingStandingsPayload | null>(null);
   
   const predictionCache = useRef<Map<string, {
     prediction: PredictionResult | null;
@@ -803,14 +808,22 @@ export const App: React.FC = () => {
         setIsLoading(true);
         setError(null);
         if (mode === 'STANDINGS' || mode === 'RANKINGS' || mode === 'TEAMS' || mode === 'LEAGUE_STATS') setStandings([]);
+        if (mode !== 'STANDINGS' || tab === 'HOME' || !RACING_LEAGUES.includes(tab as Sport)) setRacingStandings(null);
         if (mode === 'BRACKET') setBracketGames([]);
         if (mode !== 'LIVE' && mode !== 'UPCOMING' && mode !== 'SCORES') setGames([]);
     }
     
     try {
         if (mode === 'STANDINGS' && tab !== 'HOME') {
-            const standingsData = await fetchStandings(tab, standingsType);
-            setStandings(standingsData);
+            if (RACING_LEAGUES.includes(tab as Sport)) {
+                const racingData = await fetchRacingStandingsPayload(tab as Sport);
+                setRacingStandings(racingData);
+                setStandings([]);
+            } else {
+                const standingsData = await fetchStandings(tab, standingsType);
+                setStandings(standingsData);
+                setRacingStandings(null);
+            }
         } else if ((mode === 'TEAMS' || mode === 'LEAGUE_STATS') && tab !== 'HOME') {
             const standingsData = await fetchStandings(tab, 'DIVISION');
             setStandings(standingsData);
@@ -943,6 +956,13 @@ export const App: React.FC = () => {
                 const liveGame = fetchedGames.find(g => g.id === activeRequestId.current);
                 if (liveGame && liveGame.status === 'in_progress') {
                     try {
+                        if (RACING_LEAGUES.includes(liveGame.league as Sport)) {
+                            const bundle = await fetchRacingEventBundle(liveGame.league as Sport, liveGame.id);
+                            if (activeRequestId.current === liveGame.id) {
+                                setRacingEventBundle(bundle);
+                            }
+                            return;
+                        }
                         const details = await fetchGameDetails(liveGame.id, liveGame.league as Sport);
                         const { calculateWinProbability } = await loadProbabilityModule();
                         const stats = calculateWinProbability(liveGame, details, { latencyMode: 'background' });
@@ -1010,6 +1030,7 @@ export const App: React.FC = () => {
     setSelectedGame(null);
     setPrediction(null);
     setGameDetails(null);
+    setRacingEventBundle(null);
     activeRequestId.current = null;
     
     // Auto-refresh logic for Live/Scores
@@ -1051,8 +1072,10 @@ export const App: React.FC = () => {
           setSelectedGame(null);
           setPrediction(null);
           setGameDetails(null);
+          setRacingEventBundle(null);
           activeRequestId.current = null;
       } else {
+          const isRacingGame = RACING_LEAGUES.includes(game.league as Sport);
           if (!selectedTeam && selectedTab !== 'HOME' && selectedTab !== 'METHODOLOGY') {
               const selectedGameSeason = getSeasonKeyForGame(game, selectedTab as Sport);
               if (selectedGameSeason !== 'unknown') {
@@ -1064,7 +1087,27 @@ export const App: React.FC = () => {
           upsertGamesInRegistry([game]);
           setPrediction(null);
           setGameDetails(null);
+          setRacingEventBundle(null);
           activeRequestId.current = game.id;
+
+          if (isRacingGame) {
+              setIsPredicting(true);
+              try {
+                  const bundle = await fetchRacingEventBundle(game.league as Sport, game.id);
+                  if (activeRequestId.current === game.id) {
+                      setRacingEventBundle(bundle);
+                      setPrediction(null);
+                      setGameDetails(null);
+                  }
+              } catch (e) {
+                  console.error(e);
+              } finally {
+                  if (activeRequestId.current === game.id) {
+                      setIsPredicting(false);
+                  }
+              }
+              return;
+          }
 
           if (predictionCache.current.has(game.id)) {
               const cached = predictionCache.current.get(game.id);
@@ -1455,6 +1498,7 @@ export const App: React.FC = () => {
     setSelectedGame(null);
     setPrediction(null);
     setGameDetails(null);
+    setRacingEventBundle(null);
     activeRequestId.current = null;
   }, []);
 
@@ -1657,7 +1701,7 @@ export const App: React.FC = () => {
                          game={game} 
                          onSelect={handleGameToggle} 
                          isSelected={isSelected} 
-                         onTeamClick={handleTeamClick}
+                         onTeamClick={RACING_LEAGUES.includes(game.league as Sport) ? undefined : handleTeamClick}
                          isFollowed={isGameFollowed(game)}
                          onToggleFollow={toggleFollowGame}
                      />
@@ -1666,7 +1710,9 @@ export const App: React.FC = () => {
                          <div className="relative mt-4 ml-4 pl-6 border-l-2 border-slate-200 dark:border-slate-800 animate-fade-in">
                              <div className="absolute -left-[9px] -top-4 w-4 h-8 rounded-bl-xl border-l-2 border-b-0 border-slate-200 dark:border-slate-800 bg-transparent opacity-0"></div>
                              
-                             {isPredicting ? (
+                             {RACING_LEAGUES.includes(game.league as Sport) ? (
+                                 <RacingEventPanel event={racingEventBundle} isLoading={isPredicting} />
+                             ) : isPredicting ? (
                                  <div className="bg-white dark:bg-slate-900/60 rounded-3xl p-12 border border-slate-200 dark:border-slate-800 flex flex-col items-center justify-center text-center shadow-xl">
                                      <Loader2 size={48} className="text-slate-500 animate-spin mb-6" />
                                      <h3 className="text-xl font-bold text-slate-900 dark:text-white mb-2 font-display">Loading Data</h3>
@@ -1844,15 +1890,19 @@ export const App: React.FC = () => {
 
                  {/* CONTENT AREA */}
                  {viewMode === 'STANDINGS' ? (
-                     <StandingsView 
-                        groups={displayStandings} 
-                        sport={selectedTab as Sport} 
-                        activeType={standingsType} 
-                        onTypeChange={setStandingsType} 
-                        onTeamClick={RACING_LEAGUES.includes(selectedTab as Sport) ? undefined : handleTeamClick}
-                        useApiRankForNCAA={activeFilter === 'TOP25'}
-                        isLoading={isLoading}
-                     />
+                     RACING_LEAGUES.includes(selectedTab as Sport) ? (
+                         <RacingStandingsView standings={racingStandings} isLoading={isLoading} />
+                     ) : (
+                         <StandingsView 
+                            groups={displayStandings} 
+                            sport={selectedTab as Sport} 
+                            activeType={standingsType} 
+                            onTypeChange={setStandingsType} 
+                            onTeamClick={RACING_LEAGUES.includes(selectedTab as Sport) ? undefined : handleTeamClick}
+                            useApiRankForNCAA={activeFilter === 'TOP25'}
+                            isLoading={isLoading}
+                         />
+                     )
                  ) : viewMode === 'RANKINGS' ? (
                      <StandingsView 
                         groups={standings} 

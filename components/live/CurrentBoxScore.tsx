@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Table } from 'lucide-react';
-import { Game, GameDetails, TeamBoxScore, Sport } from '../../types';
+import { Game, GameDetails, TeamBoxScore, Sport, SOCCER_LEAGUES } from '../../types';
 import { getGameTeamAbbreviation } from '../../services/teamAbbreviation';
 
 interface CurrentBoxScoreProps {
@@ -53,6 +53,7 @@ const getDefaultGroupIndex = (groups: TeamBoxScore['groups']) => {
 
 export const CurrentBoxScore: React.FC<CurrentBoxScoreProps> = ({ game, gameDetails, onPlayerClick, onTeamClick }) => {
     const teamBoxes = gameDetails?.boxscore || [];
+    const isSoccer = SOCCER_LEAGUES.includes(game.league as Sport);
     const { away: awayTeamBox, home: homeTeamBox } = useMemo(() => resolveTeamBox(game, teamBoxes), [game, teamBoxes]);
     const awayShort = getGameTeamAbbreviation(game, 'away');
     const homeShort = getGameTeamAbbreviation(game, 'home');
@@ -93,7 +94,22 @@ export const CurrentBoxScore: React.FC<CurrentBoxScoreProps> = ({ game, gameDeta
         return Array.from({ length: columnCount }).map((_, index) => activeGroup.labels?.[index] || `Stat ${index + 1}`);
     }, [activeGroup, columnCount]);
 
-    if (!gameDetails || teamBoxes.length === 0) return null;
+    if (!gameDetails) return null;
+    if (teamBoxes.length === 0) {
+        if (!isSoccer) return null;
+        return (
+            <div className="bg-white dark:bg-slate-900/40 rounded-2xl border border-slate-200 dark:border-slate-700 overflow-hidden shadow-sm">
+                <div className="px-5 py-3 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/65">
+                    <h4 className="text-xs font-bold text-slate-600 dark:text-slate-200 uppercase tracking-wider flex items-center gap-2">
+                        <Table size={14} /> Current Box Score
+                    </h4>
+                </div>
+                <div className="p-6 text-center text-xs text-slate-600 dark:text-slate-300">
+                    Player event box score is not available from the live feed yet. Live score, team stats, and play-by-play remain active.
+                </div>
+            </div>
+        );
+    }
 
     return (
         <div className="bg-white dark:bg-slate-900/40 rounded-2xl border border-slate-200 dark:border-slate-700 overflow-hidden shadow-sm">

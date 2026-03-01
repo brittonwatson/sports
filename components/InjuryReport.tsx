@@ -133,8 +133,8 @@ export const InjuryReport: React.FC<InjuryReportProps> = ({ game, injuries, onTe
                         <p className="text-[11px] text-slate-500 dark:text-slate-400 italic">No reported injuries</p>
                     ) : (
                         <ul className="space-y-2">
-                            {away.map((injury) => (
-                                <li key={injury.athleteId} className="flex items-start justify-between gap-2">
+                            {away.map((injury, idx) => (
+                                <li key={`${injury.athleteId}-${injury.status}-${idx}`} className="flex items-start justify-between gap-2">
                                     <div>
                                         <p className="text-xs font-semibold text-slate-800 dark:text-slate-100">{injury.displayName}</p>
                                         {injury.position && (
@@ -173,8 +173,8 @@ export const InjuryReport: React.FC<InjuryReportProps> = ({ game, injuries, onTe
                         <p className="text-[11px] text-slate-500 dark:text-slate-400 italic">No reported injuries</p>
                     ) : (
                         <ul className="space-y-2">
-                            {home.map((injury) => (
-                                <li key={injury.athleteId} className="flex items-start justify-between gap-2">
+                            {home.map((injury, idx) => (
+                                <li key={`${injury.athleteId}-${injury.status}-${idx}`} className="flex items-start justify-between gap-2">
                                     <div>
                                         <p className="text-xs font-semibold text-slate-800 dark:text-slate-100">{injury.displayName}</p>
                                         {injury.position && (
@@ -199,8 +199,8 @@ export const InjuryReport: React.FC<InjuryReportProps> = ({ game, injuries, onTe
                             <span className="text-[10px] text-slate-500 dark:text-slate-400">{other.length}</span>
                         </div>
                         <ul className="space-y-2">
-                            {other.map((injury) => (
-                                <li key={injury.athleteId} className="flex items-start justify-between gap-2">
+                            {other.map((injury, idx) => (
+                                <li key={`${injury.athleteId}-${injury.status}-${idx}`} className="flex items-start justify-between gap-2">
                                     <div>
                                         <p className="text-xs font-semibold text-slate-800 dark:text-slate-100">{injury.displayName}</p>
                                         {injury.position && (

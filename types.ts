@@ -240,6 +240,81 @@ export interface TeamBoxScore {
     groups: BoxScoreStatGroup[];
 }
 
+export interface RacingStatValue {
+  key: string;
+  label: string;
+  abbreviation?: string;
+  value: string;
+}
+
+export interface RacingCompetitorResult {
+  competitorId: string;
+  name: string;
+  shortName?: string;
+  abbreviation?: string;
+  logo?: string;
+  flag?: string;
+  vehicleNumber?: string;
+  teamName?: string;
+  manufacturer?: string;
+  startPosition?: number;
+  finishPosition?: number;
+  winner?: boolean;
+  statusText?: string;
+  stats: RacingStatValue[];
+}
+
+export interface RacingSessionResult {
+  id: string;
+  name: string;
+  shortName?: string;
+  sessionNumber?: number;
+  date: string;
+  status: 'scheduled' | 'in_progress' | 'finished';
+  statusText: string;
+  competitors: RacingCompetitorResult[];
+}
+
+export interface RacingEventBundle {
+  sport: Sport;
+  eventId: string;
+  name: string;
+  shortName: string;
+  date: string;
+  endDate?: string;
+  venue?: string;
+  location?: string;
+  sessions: RacingSessionResult[];
+}
+
+export interface RacingStandingsEntry {
+  rank: number;
+  competitorId: string;
+  name: string;
+  shortName?: string;
+  abbreviation?: string;
+  logo?: string;
+  flag?: string;
+  teamName?: string;
+  manufacturer?: string;
+  stats: RacingStatValue[];
+}
+
+export interface RacingStandingsTable {
+  id: string;
+  name: string;
+  category: 'driver' | 'team' | 'constructor' | 'other';
+  entries: RacingStandingsEntry[];
+}
+
+export interface RacingStandingsPayload {
+  sport: Sport;
+  updatedAt: string;
+  derived?: boolean;
+  note?: string;
+  tables: RacingStandingsTable[];
+}
+
 export interface GameInfo {
   weather?: string;
   venue?: string;

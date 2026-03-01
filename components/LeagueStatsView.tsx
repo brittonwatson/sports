@@ -6,7 +6,7 @@ import { Loader2, ArrowUp, ArrowDown, Activity, Database, CheckCircle2, RefreshC
 import { isInverseMetricLabel } from '../services/statDictionary';
 import { auditInternalSportData, SportIntegrityReport } from '../services/dataIntegrity';
 import { StatDetailModal } from './modals/StatDetailModal';
-import { formatSeasonLabel } from '../services/seasonScope';
+import { formatSeasonLabel, getCurrentSeasonYear } from '../services/seasonScope';
 
 interface LeagueStatsViewProps {
     groups: StandingsGroup[];
@@ -240,6 +240,12 @@ export const LeagueStatsView: React.FC<LeagueStatsViewProps> = ({ groups, sport,
     const rootRef = useRef<HTMLDivElement>(null);
     const scrollContainerRef = useRef<HTMLDivElement>(null);
     const [visibleRowCount, setVisibleRowCount] = useState(80);
+    const currentSeasonYear = useMemo(() => getCurrentSeasonYear(sport), [sport]);
+    const seasonLabel = useMemo(() => {
+        if (typeof seasonYear !== 'number') return 'Current Season';
+        const formatted = formatSeasonLabel(sport, seasonYear);
+        return seasonYear === currentSeasonYear ? `Current Season (${formatted})` : formatted;
+    }, [seasonYear, sport, currentSeasonYear]);
 
     // Filter teams based on groups (e.g. if filtered by Conference in generic view)
     const activeTeams = useMemo(() => {
@@ -488,7 +494,7 @@ export const LeagueStatsView: React.FC<LeagueStatsViewProps> = ({ groups, sport,
                     <Loader2 size={36} className="text-indigo-500 animate-spin mb-4" />
                     <h3 className="text-xl font-bold text-slate-900 dark:text-white mb-2">Hydrating Historical Season</h3>
                     <p className="text-slate-500 dark:text-slate-400 max-w-md">
-                        Loading {sport} {typeof seasonYear === 'number' ? formatSeasonLabel(sport, seasonYear) : 'season'} data in the background.
+                        Loading {sport} {seasonLabel.toLowerCase()} data in the background.
                     </p>
                 </div>
             );
@@ -500,7 +506,7 @@ export const LeagueStatsView: React.FC<LeagueStatsViewProps> = ({ groups, sport,
                 </div>
                 <h3 className="text-xl font-bold text-slate-900 dark:text-white mb-2">Data Unavailable</h3>
                 <p className="text-slate-500 dark:text-slate-400 max-w-md">
-                    Unable to load statistics for {sport} ({typeof seasonYear === 'number' ? formatSeasonLabel(sport, seasonYear) : 'current season'}) at this time. Please check your connection.
+                    Unable to load statistics for {sport} ({seasonLabel.toLowerCase()}) at this time. Please check your connection.
                 </p>
             </div>
         );
@@ -508,7 +514,6 @@ export const LeagueStatsView: React.FC<LeagueStatsViewProps> = ({ groups, sport,
 
     const hasDetailedStats = Object.keys(categorizedColumns).length > 1;
     const isSyncing = isHydratingSeason || !hasDetailedStats || statsData.some(r => Object.keys(r.stats).length < 5);
-    const seasonLabel = typeof seasonYear === 'number' ? formatSeasonLabel(sport, seasonYear) : 'Current Season';
 
     return (
         <div ref={rootRef} className="animate-fade-in space-y-4 pb-8 scroll-mt-24">
