@@ -1,6 +1,7 @@
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Game } from '../../types';
 import { BellRing, ChevronDown, ChevronUp, Clock3, Radio, X } from 'lucide-react';
+import { getRealtimeLiveStatus, LiveStatusSeed } from '../../services/uiUtils';
 
 interface FollowingBarProps {
   games: Game[];
@@ -31,10 +32,41 @@ export const FollowingBar: React.FC<FollowingBarProps> = ({
   onGameClick,
   onCloseActiveGame,
 }) => {
+  const liveSeedRef = useRef<Map<string, LiveStatusSeed & { startedAtMs: number }>>(new Map());
+  const [liveTick, setLiveTick] = useState(0);
+
+  useEffect(() => {
+    const nowMs = Date.now();
+    const nextMap = new Map<string, LiveStatusSeed & { startedAtMs: number }>();
+    games.forEach((game) => {
+      if (game.status !== 'in_progress') return;
+      const prev = liveSeedRef.current.get(game.id);
+      if (prev && prev.baseClock === game.clock && prev.baseStatus === game.gameStatus) {
+        nextMap.set(game.id, prev);
+        return;
+      }
+      nextMap.set(game.id, {
+        baseClock: game.clock,
+        baseStatus: game.gameStatus,
+        startedAtMs: nowMs,
+      });
+    });
+    liveSeedRef.current = nextMap;
+  }, [games]);
+
   const liveCount = useMemo(
     () => games.filter((game) => game.status === 'in_progress').length,
     [games],
   );
+
+  useEffect(() => {
+    if (liveCount === 0) return;
+    const timerId = window.setInterval(() => {
+      setLiveTick((prev) => prev + 1);
+    }, 1000);
+    return () => window.clearInterval(timerId);
+  }, [liveCount]);
+
   const orderedGames = useMemo(
     () => [...games].sort((a, b) => {
       if (a.id === selectedGameId) return -1;
@@ -43,7 +75,7 @@ export const FollowingBar: React.FC<FollowingBarProps> = ({
       if (b.status === 'in_progress' && a.status !== 'in_progress') return 1;
       return new Date(a.dateTime).getTime() - new Date(b.dateTime).getTime();
     }),
-    [games, selectedGameId],
+    [games, selectedGameId, liveTick],
   );
 
   if (games.length === 0) return null;
@@ -114,6 +146,15 @@ export const FollowingBar: React.FC<FollowingBarProps> = ({
                 const isSelected = selectedGameId === game.id;
                 const isLive = game.status === 'in_progress';
                 const isFinished = game.status === 'finished';
+                const liveSeed = liveSeedRef.current.get(game.id);
+                const elapsedSeconds = liveSeed ? Math.floor((Date.now() - liveSeed.startedAtMs) / 1000) : 0;
+                const liveStatusLabel = isLive
+                  ? getRealtimeLiveStatus(
+                      game,
+                      liveSeed || { baseClock: game.clock, baseStatus: game.gameStatus },
+                      elapsedSeconds,
+                    )
+                  : '';
                 return (
                   <button
                     key={game.id}
@@ -169,7 +210,7 @@ export const FollowingBar: React.FC<FollowingBarProps> = ({
 
                     <div className="mt-1 text-xs font-mono text-slate-600 dark:text-slate-300">
                       {isLive || isFinished
-                        ? `${game.awayScore || '0'}-${game.homeScore || '0'}${isLive && game.clock ? ` • ${game.clock}` : ''}`
+                        ? `${game.awayScore || '0'}-${game.homeScore || '0'}${isLive && liveStatusLabel ? ` • ${liveStatusLabel}` : ''}`
                         : `${game.date} • ${game.time}`}
                     </div>
                   </button>

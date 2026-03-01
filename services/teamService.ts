@@ -1667,26 +1667,73 @@ export const fetchTeamProfile = async (sport: Sport, teamId: string): Promise<Te
 export const fetchTeamSchedule = async (
     sport: Sport,
     teamId: string,
-    options?: { scope?: 'recent' | 'all' },
+    options?: { scope?: 'recent' | 'all'; forceLiveRefresh?: boolean },
 ): Promise<Game[]> => {
     const scope = options?.scope || 'recent';
+    const forceLiveRefresh = options?.forceLiveRefresh === true;
     await ensureInternalSportLoaded(sport);
+
+    const shouldRefreshNearLiveWindow = (games: Game[]): boolean => {
+        const nowMs = Date.now();
+        const refreshWindowMs = 36 * 60 * 60 * 1000;
+        return games.some((game) => {
+            if (game.status === 'in_progress') return true;
+            const gameMs = new Date(game.dateTime).getTime();
+            if (!Number.isFinite(gameMs)) return false;
+            return Math.abs(nowMs - gameMs) <= refreshWindowMs;
+        });
+    };
+
+    const mergeGamesByIdPreferFresh = (baseGames: Game[], freshGames: Game[]): Game[] => {
+        if (freshGames.length === 0) return baseGames;
+        const merged = new Map<string, Game>();
+        baseGames.forEach((game) => merged.set(game.id, game));
+        freshGames.forEach((game) => {
+            const existing = merged.get(game.id);
+            if (!existing) {
+                merged.set(game.id, game);
+                return;
+            }
+            merged.set(game.id, {
+                ...existing,
+                ...game,
+                context: game.context ?? existing.context,
+                gameStatus: game.gameStatus ?? existing.gameStatus,
+                leagueLogo: game.leagueLogo || existing.leagueLogo,
+            });
+        });
+        return Array.from(merged.values()).sort((a, b) => new Date(a.dateTime).getTime() - new Date(b.dateTime).getTime());
+    };
+
+    const fetchTeamScheduleFromApi = async (bypassCache = false): Promise<Game[]> => {
+        const endpoint = ESPN_ENDPOINTS[sport];
+        const baseUrl = `https://site.api.espn.com/apis/site/v2/sports/${endpoint}/teams/${teamId}/schedule`;
+        const url = bypassCache ? `${baseUrl}?_ts=${Date.now()}` : baseUrl;
+        const response = await fetchWithRetry(url);
+        if (!response.ok) return [];
+        const data = await response.json();
+        return (data.events || [])
+            .map((e: any) => mapEventToGame(e, sport))
+            .filter((game: Game) => !shouldHideUndeterminedPlayoffGame(game));
+    };
 
     const internal = getInternalTeamSchedule(sport, teamId);
     if (internal.length > 0) {
-        const filtered = internal.filter((game) => !shouldHideUndeterminedPlayoffGame(game));
+        let filtered = internal.filter((game) => !shouldHideUndeterminedPlayoffGame(game));
+        if (forceLiveRefresh && shouldRefreshNearLiveWindow(filtered)) {
+            try {
+                const fresh = await fetchTeamScheduleFromApi(true);
+                if (fresh.length > 0) {
+                    filtered = mergeGamesByIdPreferFresh(filtered, fresh);
+                }
+            } catch {
+            }
+        }
         return scope === 'all' ? filtered : scopeGamesToMostRecentSeason(filtered, sport);
     }
 
-    const endpoint = ESPN_ENDPOINTS[sport];
-    const baseUrl = `https://site.api.espn.com/apis/site/v2/sports/${endpoint}/teams/${teamId}/schedule`;
     try {
-        const response = await fetchWithRetry(baseUrl);
-        if (!response.ok) return [];
-        const data = await response.json();
-        const mapped = (data.events || [])
-            .map((e: any) => mapEventToGame(e, sport))
-            .filter((game: Game) => !shouldHideUndeterminedPlayoffGame(game));
+        const mapped = await fetchTeamScheduleFromApi(forceLiveRefresh);
         return scope === 'all' ? mapped : scopeGamesToMostRecentSeason(mapped, sport);
     } catch { return []; }
 };

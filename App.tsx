@@ -280,6 +280,7 @@ export const App: React.FC = () => {
   const lastScrolledGameId = useRef<string | null>(null);
   const isApplyingPopState = useRef(false);
   const lastKnownUrl = useRef<string>('');
+  const forceLiveRefreshOnNextLoad = useRef(false);
   const seenFinishedSnapshots = useRef<Map<string, string>>(new Map());
 
   // Filter State
@@ -700,12 +701,15 @@ export const App: React.FC = () => {
       let cancelled = false;
 
       if (selectedTeam) {
-          const loadTeamData = async (background = false) => {
+          const loadTeamData = async (background = false, forceRefresh = false) => {
               if (!background && !cancelled) setIsTeamLoading(true);
               try {
                   const [profile, recentSchedule] = await Promise.all([
                       fetchTeamProfile(selectedTeam.league, selectedTeam.id),
-                      fetchTeamSchedule(selectedTeam.league, selectedTeam.id, { scope: 'recent' }),
+                      fetchTeamSchedule(selectedTeam.league, selectedTeam.id, {
+                          scope: 'recent',
+                          forceLiveRefresh: forceRefresh,
+                      }),
                   ]);
                   if (cancelled) return;
                   setTeamProfile(profile);
@@ -728,11 +732,11 @@ export const App: React.FC = () => {
               }
           };
           
-          loadTeamData();
+          loadTeamData(false, true);
           window.scrollTo({ top: 0, behavior: 'smooth' });
 
           intervalId = setInterval(() => {
-              loadTeamData(true);
+              loadTeamData(true, false);
           }, 30000);
       } else {
           setTeamProfile(null);
@@ -858,7 +862,7 @@ export const App: React.FC = () => {
       return game.date;
   };
 
-  const loadData = async (tab: Tab, mode: ViewMode, isBackground = false) => {
+  const loadData = async (tab: Tab, mode: ViewMode, isBackground = false, forceLiveRefresh = false) => {
     if (tab === 'METHODOLOGY' || selectedTeam || mode === 'CALENDAR') return;
 
     if (!isBackground) {
@@ -907,7 +911,11 @@ export const App: React.FC = () => {
               }
 
               for (const chunk of chunks) {
-                  const chunkResults = await Promise.all(chunk.map((sport: Sport) => fetchUpcomingGames(sport)));
+                  const chunkResults = await Promise.all(
+                      chunk.map((sport: Sport) =>
+                          fetchUpcomingGames(sport, false, { forceLiveRefresh }),
+                      ),
+                  );
                   
                   chunkResults.forEach((result, idx) => {
                       const sportName = chunk[idx];
@@ -998,7 +1006,7 @@ export const App: React.FC = () => {
       
             } else {
               const needsFullHistory = mode === 'SCORES' || mode === 'LEAGUE_STATS';
-              const response = await fetchUpcomingGames(tab as Sport, needsFullHistory);
+              const response = await fetchUpcomingGames(tab as Sport, needsFullHistory, { forceLiveRefresh });
               fetchedGames = response.games;
               leagueActivityUpdates[tab as Sport] = {
                   seasonState: response.seasonState || (response.isSeasonActive ? 'in_season' : 'offseason'),
@@ -1096,7 +1104,9 @@ export const App: React.FC = () => {
 
   useEffect(() => {
     if (!selectedTeam) {
-        loadData(selectedTab, viewMode);
+        const forceRefresh = forceLiveRefreshOnNextLoad.current;
+        forceLiveRefreshOnNextLoad.current = false;
+        loadData(selectedTab, viewMode, false, forceRefresh);
     }
     
     setSelectedGame(null);
@@ -1110,7 +1120,7 @@ export const App: React.FC = () => {
         if (!selectedTeam && selectedTab !== 'METHODOLOGY') {
             // Only auto-refresh if we are in a view that benefits from live updates
             if (viewMode === 'LIVE' || viewMode === 'UPCOMING') {
-                loadData(selectedTab, viewMode, true);
+                loadData(selectedTab, viewMode, true, false);
             }
         }
     }, 15000);
@@ -1137,6 +1147,8 @@ export const App: React.FC = () => {
   }, [selectedTab, selectedRacingDriver?.sport]);
 
   const handleTabChange = (tab: Tab) => {
+      const isRepeatSelection = tab === selectedTab && !selectedTeam && viewMode === 'LIVE';
+      forceLiveRefreshOnNextLoad.current = true;
       setSelectedTab(tab);
       setViewMode('LIVE');
       setIsMenuOpen(false);
@@ -1147,6 +1159,10 @@ export const App: React.FC = () => {
       setIsFilterDropdownOpen(false);
       isTabSwitch.current = true;
       window.scrollTo({ top: 0, behavior: 'smooth' });
+      if (isRepeatSelection) {
+          forceLiveRefreshOnNextLoad.current = false;
+          loadData(tab, 'LIVE', false, true);
+      }
   };
 
   const handleRacingDriverClick = useCallback((sport: Sport, driverId: string, driverName: string) => {
@@ -1585,6 +1601,7 @@ export const App: React.FC = () => {
   }, [upsertGamesInRegistry]);
 
   const openFollowedGame = useCallback((game: Game) => {
+    forceLiveRefreshOnNextLoad.current = true;
     setIsMenuOpen(false);
     setSelectedTeam(null);
     const targetLeague = SPORTS.includes(game.league as Sport) ? (game.league as Sport) : 'HOME';
@@ -1908,7 +1925,11 @@ export const App: React.FC = () => {
          {selectedTeam ? (
              <div>
 	                <button 
-	                    onClick={() => { setSelectedTeam(null); setNavigatedGameId(null); }}
+	                    onClick={() => {
+                        forceLiveRefreshOnNextLoad.current = true;
+                        setSelectedTeam(null);
+                        setNavigatedGameId(null);
+                      }}
 	                    className="mb-4 flex items-center gap-2 text-sm font-medium text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 transition-colors"
 	                >
                     Back to Dashboard
@@ -1964,10 +1985,15 @@ export const App: React.FC = () => {
 	                        viewMode={viewMode}
 	                        selectedTab={selectedTab}
 	                        setViewMode={(mode) => {
+                                forceLiveRefreshOnNextLoad.current = true;
                                 setViewMode(mode);
                                 setSelectedGame(null);
                                 setNavigatedGameId(null);
                                 window.scrollTo({ top: 0, behavior: 'smooth' });
+                                if (mode === viewMode && !selectedTeam && selectedTab !== 'METHODOLOGY') {
+                                    forceLiveRefreshOnNextLoad.current = false;
+                                    loadData(selectedTab, mode, false, true);
+                                }
                             }}
 	                     />
                  </div>

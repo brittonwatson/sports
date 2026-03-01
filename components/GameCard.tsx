@@ -1,7 +1,8 @@
 
-import React from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Game, RACING_LEAGUES, SOCCER_LEAGUES, Sport } from '../types';
 import { Calendar, Clock, ChevronDown, Radio, Tv, MapPin, CloudSun, Bell, BellRing } from 'lucide-react';
+import { getRealtimeLiveStatus } from '../services/uiUtils';
 
 interface GameCardProps {
   game: Game;
@@ -42,6 +43,37 @@ export const GameCard: React.FC<GameCardProps> = ({ game, onSelect, isSelected, 
         },
       ].filter((row, index, rows) => row.name && rows.findIndex((candidate) => candidate.name === row.name) === index)
     : [];
+
+  const liveSeedRef = useRef<{ baseClock?: string; baseStatus?: string; startedAtMs: number }>({
+    baseClock: game.clock,
+    baseStatus: game.gameStatus,
+    startedAtMs: Date.now(),
+  });
+  const [liveTick, setLiveTick] = useState(0);
+
+  useEffect(() => {
+    liveSeedRef.current = {
+      baseClock: game.clock,
+      baseStatus: game.gameStatus,
+      startedAtMs: Date.now(),
+    };
+    setLiveTick(0);
+  }, [game.id, game.status, game.clock, game.gameStatus, game.homeScore, game.awayScore]);
+
+  useEffect(() => {
+    if (!isLive) return;
+    const timerId = window.setInterval(() => {
+      setLiveTick((prev) => prev + 1);
+    }, 1000);
+    return () => window.clearInterval(timerId);
+  }, [isLive, game.id]);
+
+  const liveStatusLabel = useMemo(() => {
+    if (!isLive) return game.gameStatus || game.clock || 'Live';
+    const seed = liveSeedRef.current;
+    const elapsedSeconds = Math.floor((Date.now() - seed.startedAtMs) / 1000);
+    return getRealtimeLiveStatus(game, seed, elapsedSeconds);
+  }, [isLive, game, liveTick]);
 
   const handleTeamClick = (e: React.MouseEvent, teamId: string | undefined) => {
       e.stopPropagation();
@@ -138,7 +170,7 @@ export const GameCard: React.FC<GameCardProps> = ({ game, onSelect, isSelected, 
                 {isLive && (
                 <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-emerald-50 dark:bg-emerald-900/30 border border-emerald-200 dark:border-emerald-800/50 text-[10px] font-bold text-emerald-700 dark:text-emerald-400 uppercase tracking-wider">
                     <Radio size={12} className="text-emerald-500 animate-pulse" />
-                    <span>{game.gameStatus || game.clock || 'Live'}</span>
+                    <span>{liveStatusLabel}</span>
                 </span>
                 )}
                 {/* Show title/context if available (e.g. Playoff Series Name) */}

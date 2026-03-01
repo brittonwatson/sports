@@ -44,6 +44,10 @@ interface UpcomingGamesResponse {
     hasLiveEvent: boolean;
 }
 
+interface FetchUpcomingGamesOptions {
+    forceLiveRefresh?: boolean;
+}
+
 const liveRefreshCache = new Map<string, LiveRefreshCacheEntry>();
 const oddsBackfillCache = new Map<string, OddsBackfillCacheEntry>();
 const LIVE_REFRESH_TTL_MS = 60 * 1000;
@@ -320,7 +324,12 @@ const backfillMissingOdds = async (sport: Sport, games: Game[]): Promise<Game[]>
     return next;
 };
 
-const fetchFreshGamesWindow = async (sport: Sport, start: Date, end: Date): Promise<Game[] | null> => {
+const fetchFreshGamesWindow = async (
+    sport: Sport,
+    start: Date,
+    end: Date,
+    forceBypassCache = false,
+): Promise<Game[] | null> => {
     const startDate = new Date(start);
     const endDate = new Date(end);
     startDate.setHours(0, 0, 0, 0);
@@ -328,9 +337,11 @@ const fetchFreshGamesWindow = async (sport: Sport, start: Date, end: Date): Prom
 
     const dateRange = `${formatEspnDate(startDate)}-${formatEspnDate(endDate)}`;
     const cacheKey = `${sport}:${dateRange}`;
-    const cached = liveRefreshCache.get(cacheKey);
-    if (cached && Date.now() - cached.fetchedAt < LIVE_REFRESH_TTL_MS) {
-        return cached.games;
+    if (!forceBypassCache) {
+        const cached = liveRefreshCache.get(cacheKey);
+        if (cached && Date.now() - cached.fetchedAt < LIVE_REFRESH_TTL_MS) {
+            return cached.games;
+        }
     }
 
     const endpoint = ESPN_ENDPOINTS[sport];
@@ -340,6 +351,7 @@ const fetchFreshGamesWindow = async (sport: Sport, start: Date, end: Date): Prom
     if ((sport === "NCAAM" || sport === "NCAAW") && !params.has("groups")) params.set("groups", "50");
     params.set("dates", dateRange);
     if (!params.has("limit")) params.set("limit", "1000");
+    if (forceBypassCache) params.set("_ts", String(Date.now()));
 
     try {
         const response = await fetchWithRetry(`${baseUrl}?${params.toString()}`);
@@ -354,7 +366,12 @@ const fetchFreshGamesWindow = async (sport: Sport, start: Date, end: Date): Prom
     }
 };
 
-export const fetchUpcomingGames = async (sport: Sport, fullHistory = false): Promise<UpcomingGamesResponse> => {
+export const fetchUpcomingGames = async (
+    sport: Sport,
+    fullHistory = false,
+    options?: FetchUpcomingGamesOptions,
+): Promise<UpcomingGamesResponse> => {
+    const forceLiveRefresh = options?.forceLiveRefresh === true;
     await ensureInternalSportLoaded(sport);
     const internalGames = getInternalGamesBySport(sport);
     const now = new Date();
@@ -382,7 +399,12 @@ export const fetchUpcomingGames = async (sport: Sport, fullHistory = false): Pro
             const refreshEnd = new Date(now);
             refreshStart.setDate(refreshStart.getDate() - 1);
             refreshEnd.setDate(refreshEnd.getDate() + 1);
-            const freshWindowGames = await fetchFreshGamesWindow(sport, refreshStart, refreshEnd);
+            const freshWindowGames = await fetchFreshGamesWindow(
+                sport,
+                refreshStart,
+                refreshEnd,
+                forceLiveRefresh,
+            );
             if (freshWindowGames && freshWindowGames.length > 0) {
                 games = mergeGamesByIdPreferFresh(games, freshWindowGames);
             }
@@ -427,6 +449,7 @@ export const fetchUpcomingGames = async (sport: Sport, fullHistory = false): Pro
     if ((sport === 'NCAAM' || sport === 'NCAAW') && !params.has('groups')) params.set('groups', '50');
     if (DAILY_CALENDAR_SPORTS.includes(sport) || sport === 'NFL' || sport === 'NCAAF') params.set('dates', getUpcomingDateRange(sport, fullHistory));
     if (!params.has('limit')) params.set('limit', fullHistory ? '1000' : '200');
+    if (forceLiveRefresh) params.set('_ts', String(Date.now()));
 
     try {
         const response = await fetchWithRetry(`${baseUrl}?${params.toString()}`);
