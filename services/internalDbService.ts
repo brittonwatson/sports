@@ -1,4 +1,14 @@
-import { Game, Sport, StandingsGroup, TeamStatItem, StatCategory } from "../types";
+import {
+  Game,
+  Sport,
+  StandingsGroup,
+  TeamStatItem,
+  StatCategory,
+  RacingCalendarPayload,
+  RacingStandingsPayload,
+  RacingEventBundle,
+  RacingDriverSeasonResults,
+} from "../types";
 
 interface InternalSportSnapshot {
   generatedAt?: string;
@@ -9,6 +19,10 @@ interface InternalSportSnapshot {
   teamStats?: Record<string, TeamStatItem[]>;
   teamPlayerStats?: Record<string, StatCategory[]>;
   liveScoringModel?: InternalLiveScoringModel;
+  racingCalendar?: RacingCalendarPayload;
+  racingStandings?: RacingStandingsPayload;
+  racingEventsById?: Record<string, RacingEventBundle>;
+  racingDriverSeasons?: Record<string, RacingDriverSeasonResults>;
 }
 
 export interface InternalLiveScoringTeamProfile {
@@ -32,6 +46,10 @@ interface InternalRuntimeDatabase {
   teamPlayerStats: Record<string, StatCategory[]>;
   standingsBySport: Partial<Record<Sport, StandingsGroup[]>>;
   liveScoringBySport: Partial<Record<Sport, InternalLiveScoringModel>>;
+  racingCalendarBySport: Partial<Record<Sport, RacingCalendarPayload>>;
+  racingStandingsBySport: Partial<Record<Sport, RacingStandingsPayload>>;
+  racingEventsBySport: Partial<Record<Sport, Record<string, RacingEventBundle>>>;
+  racingDriverSeasonsBySport: Partial<Record<Sport, Record<string, RacingDriverSeasonResults>>>;
 }
 
 const runtimeDb: InternalRuntimeDatabase = {
@@ -43,6 +61,10 @@ const runtimeDb: InternalRuntimeDatabase = {
   teamPlayerStats: {},
   standingsBySport: {},
   liveScoringBySport: {},
+  racingCalendarBySport: {},
+  racingStandingsBySport: {},
+  racingEventsBySport: {},
+  racingDriverSeasonsBySport: {},
 };
 
 const loadedSports = new Set<Sport>();
@@ -163,6 +185,30 @@ const hydrateSportSnapshot = (sport: Sport, snapshot: InternalSportSnapshot): vo
         teamProfiles: snapshot.liveScoringModel.teamProfiles || {},
       }
     : { binCount: 0, teamProfiles: {} };
+
+  if (snapshot.racingCalendar && Array.isArray(snapshot.racingCalendar.events)) {
+    runtimeDb.racingCalendarBySport[sport] = snapshot.racingCalendar;
+  } else {
+    delete runtimeDb.racingCalendarBySport[sport];
+  }
+
+  if (snapshot.racingStandings && Array.isArray(snapshot.racingStandings.tables)) {
+    runtimeDb.racingStandingsBySport[sport] = snapshot.racingStandings;
+  } else {
+    delete runtimeDb.racingStandingsBySport[sport];
+  }
+
+  if (snapshot.racingEventsById && typeof snapshot.racingEventsById === "object") {
+    runtimeDb.racingEventsBySport[sport] = snapshot.racingEventsById;
+  } else {
+    delete runtimeDb.racingEventsBySport[sport];
+  }
+
+  if (snapshot.racingDriverSeasons && typeof snapshot.racingDriverSeasons === "object") {
+    runtimeDb.racingDriverSeasonsBySport[sport] = snapshot.racingDriverSeasons;
+  } else {
+    delete runtimeDb.racingDriverSeasonsBySport[sport];
+  }
 };
 
 const isSameLocalDate = (a: Date, b: Date): boolean =>
@@ -357,6 +403,34 @@ export const getInternalTeamPlayerStats = (
 
 export const getInternalStandings = (sport: Sport): StandingsGroup[] => {
   return runtimeDb.standingsBySport[sport] || [];
+};
+
+export const getInternalRacingCalendar = (sport: Sport): RacingCalendarPayload | null => {
+  return runtimeDb.racingCalendarBySport[sport] || null;
+};
+
+export const getInternalRacingStandings = (sport: Sport): RacingStandingsPayload | null => {
+  return runtimeDb.racingStandingsBySport[sport] || null;
+};
+
+export const getInternalRacingEventBundle = (
+  sport: Sport,
+  eventId: string,
+): RacingEventBundle | null => {
+  if (!eventId) return null;
+  const events = runtimeDb.racingEventsBySport[sport];
+  if (!events) return null;
+  return events[String(eventId)] || null;
+};
+
+export const getInternalRacingDriverSeason = (
+  sport: Sport,
+  driverId: string,
+): RacingDriverSeasonResults | null => {
+  if (!driverId) return null;
+  const drivers = runtimeDb.racingDriverSeasonsBySport[sport];
+  if (!drivers) return null;
+  return drivers[String(driverId)] || null;
 };
 
 export const getInternalLiveScoringTeamProfile = (

@@ -65,8 +65,8 @@ Default sync behavior:
 - Uses smaller 7-day chunks for high-volume leagues (`NCAAM`, `NCAAW`) to avoid 1000-result caps
 
 Useful options:
-- `npm run sync:internal-db -- --sports="NBA,NFL,MLB,NHL,EPL,Bundesliga,La Liga,Ligue 1,Serie A,MLS,UCL,NCAAF,NCAAM,NCAAW,WNBA,UFC"`
-- `npm run sync:internal-db -- --sports=NCAAW,WNBA,UFC` (resume/continue only specific leagues)
+- `npm run sync:internal-db -- --sports="NBA,NFL,MLB,NHL,EPL,Bundesliga,La Liga,Ligue 1,Serie A,MLS,UCL,NCAAF,NCAAM,NCAAW,WNBA,F1,INDYCAR,NASCAR,UFC"`
+- `npm run sync:internal-db -- --sports=NCAAW,WNBA,UFC,F1,INDYCAR,NASCAR` (resume/continue only specific leagues)
 - `npm run sync:internal-db -- --sports=NBA,NFL`
 - `npm run sync:internal-db -- --fromYear=2016 --toYear=2027`
 - `npm run sync:internal-db -- --daysBack=120 --daysForward=60` (overrides year window)

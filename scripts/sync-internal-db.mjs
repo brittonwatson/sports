@@ -541,6 +541,552 @@ const SOCCER_SPORTS = new Set([
   "UCL",
 ]);
 
+const RACING_SERIES_POINTS = {
+  F1: [25, 18, 15, 12, 10, 8, 6, 4, 2, 1],
+  INDYCAR: [50, 40, 35, 32, 30, 28, 26, 24, 22, 20, 19, 18, 17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5],
+  NASCAR: [40, 35, 34, 33, 32, 31, 30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 20, 19, 18, 17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1],
+};
+
+const toRacingSessionStatus = (state) => {
+  if (state === "in_progress" || state === "finished" || state === "scheduled") return state;
+  if (state === "in") return "in_progress";
+  if (state === "post") return "finished";
+  return "scheduled";
+};
+
+const normalizeRacingSessionType = (name) => {
+  const text = String(name || "").toLowerCase();
+  if (text.includes("qualifying") || text.includes("shootout")) return "qualifying";
+  if (text.includes("practice") || text.startsWith("fp") || text.includes("warmup")) return "practice";
+  if (text.includes("race") || text === "sprint") return "race";
+  return "other";
+};
+
+const isRacingRaceSession = (sessionName) => normalizeRacingSessionType(sessionName) === "race";
+
+const normalizeRacingStatValues = (stats) => {
+  if (!Array.isArray(stats)) return [];
+  const out = [];
+  stats.forEach((stat, index) => {
+    const key = String(stat?.name || stat?.abbreviation || stat?.displayName || stat?.shortDisplayName || `stat_${index}`);
+    const label = String(stat?.displayName || stat?.shortDisplayName || stat?.name || stat?.abbreviation || key);
+    const abbreviation = String(stat?.abbreviation || stat?.shortDisplayName || stat?.name || "").trim() || undefined;
+    const value = normalizeStat(stat?.displayValue ?? stat?.value);
+    if (!value || value === "-") return;
+    out.push({
+      key,
+      label,
+      abbreviation,
+      value,
+    });
+  });
+  return out;
+};
+
+const extractRacingVenueAndLocation = (event, fallbackCompetition) => {
+  const raceVenue =
+    event?.circuit ||
+    fallbackCompetition?.circuit ||
+    event?.venues?.[0] ||
+    fallbackCompetition?.venue ||
+    null;
+  const venueName =
+    raceVenue?.fullName ||
+    raceVenue?.displayName ||
+    raceVenue?.name ||
+    fallbackCompetition?.venue?.fullName ||
+    fallbackCompetition?.venue?.name ||
+    undefined;
+  const city = raceVenue?.address?.city;
+  const region = raceVenue?.address?.state || raceVenue?.address?.country;
+  const location = city ? (region ? `${city}, ${region}` : city) : (region || undefined);
+  return { venueName, location };
+};
+
+const extractRacingCompetitor = (competitor, index) => {
+  const athlete = competitor?.athlete || competitor?.team || {};
+  const finish = Math.trunc(extractNumber(competitor?.order || competitor?.score || competitor?.curatedRank?.current));
+  const start = Math.trunc(extractNumber(
+    competitor?.startingPosition
+    || competitor?.startPosition
+    || competitor?.lineupPosition
+    || competitor?.curatedRank?.current,
+  ));
+  const stats = normalizeRacingStatValues(competitor?.statistics);
+  return {
+    competitorId: String(athlete?.id || competitor?.id || `${index + 1}`),
+    name: String(athlete?.displayName || athlete?.shortDisplayName || athlete?.name || competitor?.displayName || `Competitor ${index + 1}`),
+    shortName: String(athlete?.shortDisplayName || athlete?.displayName || athlete?.name || "").trim() || undefined,
+    abbreviation: String(athlete?.abbreviation || athlete?.shortName || "").trim() || undefined,
+    logo: athlete?.headshot?.href || athlete?.flag?.href || athlete?.logos?.[0]?.href || competitor?.team?.logo || competitor?.team?.logos?.[0]?.href,
+    flag: athlete?.flag?.href,
+    vehicleNumber: String(
+      athlete?.displayJersey
+      || athlete?.jersey
+      || competitor?.vehicle?.number
+      || competitor?.number
+      || "",
+    ).trim() || undefined,
+    teamName: String(
+      competitor?.team?.displayName
+      || competitor?.team?.shortDisplayName
+      || competitor?.team?.name
+      || athlete?.team?.displayName
+      || "",
+    ).trim() || undefined,
+    manufacturer: String(
+      competitor?.manufacturer?.displayName
+      || competitor?.manufacturer?.name
+      || "",
+    ).trim() || undefined,
+    startPosition: start > 0 ? start : undefined,
+    finishPosition: finish > 0 ? finish : undefined,
+    winner: Boolean(competitor?.winner) || finish === 1,
+    statusText: String(
+      competitor?.status?.type?.shortDetail
+      || competitor?.status?.type?.detail
+      || competitor?.status?.displayValue
+      || "",
+    ).trim() || undefined,
+    stats,
+  };
+};
+
+const sortRacingCompetitors = (competitors) => {
+  const rankFor = (row, index) => {
+    const finish = Number(row?.finishPosition);
+    if (Number.isFinite(finish) && finish > 0) return finish;
+    const start = Number(row?.startPosition);
+    if (Number.isFinite(start) && start > 0) return start;
+    return index + 1;
+  };
+
+  return [...competitors]
+    .map((row, index) => ({ row, index }))
+    .sort((a, b) => rankFor(a.row, a.index) - rankFor(b.row, b.index))
+    .map((entry) => entry.row);
+};
+
+const buildRacingSessionsFromEvent = (event) => {
+  const competitions = Array.isArray(event?.competitions) ? event.competitions : [];
+  return competitions
+    .map((competition, competitionIndex) => {
+      const sessionStatus = toRacingSessionStatus(competition?.status?.type?.state || event?.status?.type?.state);
+      const competitors = sortRacingCompetitors(
+        (competition?.competitors || []).map((competitor, index) => (
+          extractRacingCompetitor(competitor, index)
+        )),
+      );
+
+      return {
+        id: String(competition?.id || `${event?.id || "event"}-${competitionIndex + 1}`),
+        name: String(
+          competition?.type?.text
+          || competition?.name
+          || competition?.shortName
+          || event?.name
+          || "Session",
+        ),
+        shortName: String(competition?.shortName || competition?.name || "").trim() || undefined,
+        sessionNumber: competitionIndex + 1,
+        date: String(competition?.date || event?.date || ""),
+        status: sessionStatus,
+        statusText: String(
+          competition?.status?.type?.detail
+          || competition?.status?.type?.shortDetail
+          || event?.status?.type?.detail
+          || sessionStatus,
+        ),
+        competitors,
+      };
+    })
+    .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+};
+
+const findRaceSession = (sessions) => {
+  const explicitRace = sessions.find((session) => isRacingRaceSession(session.name));
+  if (explicitRace) return explicitRace;
+  const nonPractice = sessions.find((session) => normalizeRacingSessionType(session.name) !== "practice");
+  return nonPractice || sessions[0] || null;
+};
+
+const toRacingCalendarEvent = (sport, event, sessions) => {
+  const raceSession = findRaceSession(sessions);
+  const primaryCompetition = event?.competitions?.[0] || null;
+  const statusState = event?.status?.type?.state || raceSession?.status || "pre";
+  const status = toRacingSessionStatus(statusState);
+  const venueMeta = extractRacingVenueAndLocation(event, primaryCompetition);
+  const rawEventId = String(event?.id || "").trim();
+  const fallbackEventId = `${sport}-${String(event?.shortName || event?.name || "event")}-${String(event?.date || "")}`
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)/g, "")
+    .slice(0, 80);
+  const eventId = rawEventId || fallbackEventId || `${sport}-event`;
+  const orderedFinishers = raceSession ? sortRacingCompetitors(raceSession.competitors || []) : [];
+  const topFinishers = orderedFinishers
+    .slice(0, 5)
+    .map((competitor, index) => ({
+      rank: Number(competitor.finishPosition) > 0 ? Number(competitor.finishPosition) : (index + 1),
+      competitorId: String(competitor.competitorId || `${index + 1}`),
+      name: String(competitor.name || competitor.shortName || "Competitor"),
+      shortName: competitor.shortName,
+      abbreviation: competitor.abbreviation,
+      logo: competitor.logo,
+      vehicleNumber: competitor.vehicleNumber,
+      teamName: competitor.teamName,
+      manufacturer: competitor.manufacturer,
+      statusText: competitor.statusText,
+    }));
+
+  return {
+    eventId,
+    name: String(event?.name || event?.shortName || "Race Event"),
+    shortName: String(event?.shortName || event?.name || "Race Event"),
+    date: String(event?.date || raceSession?.date || ""),
+    endDate: event?.endDate ? String(event.endDate) : undefined,
+    venue: venueMeta.venueName,
+    location: venueMeta.location,
+    status,
+    statusText: String(event?.status?.type?.detail || raceSession?.statusText || status),
+    seasonYear: Number(event?.season?.year) || undefined,
+    seasonType: Number(event?.season?.type) || undefined,
+    topFinishers,
+    sessions: sessions.map((session) => ({
+      id: session.id,
+      name: session.name,
+      date: session.date,
+      status: session.status,
+      statusText: session.statusText,
+    })),
+  };
+};
+
+const buildRacingTablesFromStandingsGroups = (groups) => {
+  const parseCategory = (name) => {
+    const lower = String(name || "").toLowerCase();
+    if (lower.includes("driver") || lower.includes("athlete")) return "driver";
+    if (lower.includes("constructor")) return "constructor";
+    if (lower.includes("team") || lower.includes("owner") || lower.includes("manufacturer")) return "team";
+    return "other";
+  };
+
+  const toStatList = (statsObject) => {
+    if (!statsObject || typeof statsObject !== "object") return [];
+    return Object.entries(statsObject)
+      .filter(([, value]) => value !== undefined && value !== null && String(value).trim() !== "")
+      .map(([key, value]) => ({
+        key,
+        label: key,
+        abbreviation: String(key).replace(/([A-Z])/g, " $1").trim().slice(0, 12).toUpperCase(),
+        value: normalizeStat(value),
+      }));
+  };
+
+  return (groups || [])
+    .map((group, groupIndex) => {
+      const entries = (group?.standings || [])
+        .map((standing, entryIndex) => ({
+          rank: Number(standing?.rank) > 0 ? Number(standing.rank) : (entryIndex + 1),
+          competitorId: String(standing?.team?.id || `${groupIndex + 1}-${entryIndex + 1}`),
+          name: String(standing?.team?.name || standing?.team?.abbreviation || "Competitor"),
+          shortName: String(standing?.team?.abbreviation || standing?.team?.name || "").trim() || undefined,
+          abbreviation: String(standing?.team?.abbreviation || "").trim() || undefined,
+          logo: standing?.team?.logo,
+          stats: toStatList(standing?.stats),
+        }))
+        .filter((entry) => Boolean(entry.competitorId && entry.name));
+
+      return {
+        id: `official-${groupIndex + 1}`,
+        name: String(group?.name || `Standings ${groupIndex + 1}`),
+        category: parseCategory(group?.name),
+        entries,
+      };
+    })
+    .filter((table) => table.entries.length > 0);
+};
+
+const pointsByFinishForSeries = (sport, finishPosition) => {
+  const pointsTable = RACING_SERIES_POINTS[sport] || [];
+  if (!Number.isFinite(finishPosition) || finishPosition <= 0) return 0;
+  if (finishPosition <= pointsTable.length) return Number(pointsTable[finishPosition - 1] || 0);
+  return sport === "NASCAR" ? 1 : 0;
+};
+
+const extractPointsFromStats = (competitor) => {
+  const stats = Array.isArray(competitor?.stats) ? competitor.stats : [];
+  for (const stat of stats) {
+    const key = String(stat?.key || "").toLowerCase();
+    if (!["points", "championshippts", "championshippoints"].includes(key)) continue;
+    const parsed = parseNumericValue(stat?.value);
+    if (parsed !== null) return parsed;
+  }
+  return null;
+};
+
+const buildDerivedRacingStandingsFromEvents = (sport, eventBundlesById) => {
+  const aggregates = new Map();
+  Object.values(eventBundlesById || {}).forEach((bundle) => {
+    const raceSession = findRaceSession(bundle?.sessions || []);
+    if (!raceSession || raceSession.status !== "finished") return;
+    const competitors = sortRacingCompetitors(raceSession.competitors || []);
+    competitors.forEach((competitor, index) => {
+      const id = String(competitor.competitorId || "");
+      if (!id) return;
+      const finish = Number(competitor.finishPosition) > 0 ? Number(competitor.finishPosition) : (index + 1);
+      const start = Number(competitor.startPosition) > 0 ? Number(competitor.startPosition) : undefined;
+      const points = extractPointsFromStats(competitor);
+      const awarded = points !== null ? points : pointsByFinishForSeries(sport, finish);
+
+      if (!aggregates.has(id)) {
+        aggregates.set(id, {
+          competitorId: id,
+          name: competitor.name,
+          shortName: competitor.shortName,
+          abbreviation: competitor.abbreviation,
+          logo: competitor.logo,
+          vehicleNumber: competitor.vehicleNumber,
+          teamName: competitor.teamName,
+          manufacturer: competitor.manufacturer,
+          starts: 0,
+          wins: 0,
+          podiums: 0,
+          top5: 0,
+          top10: 0,
+          finishSum: 0,
+          points: 0,
+          lastFinish: undefined,
+          lastStart: undefined,
+        });
+      }
+
+      const row = aggregates.get(id);
+      row.starts += 1;
+      row.points += awarded;
+      row.finishSum += finish;
+      row.lastFinish = finish;
+      row.lastStart = start;
+      if (finish === 1) row.wins += 1;
+      if (finish <= 3) row.podiums += 1;
+      if (finish <= 5) row.top5 += 1;
+      if (finish <= 10) row.top10 += 1;
+    });
+  });
+
+  const entries = Array.from(aggregates.values())
+    .sort((a, b) => (
+      (b.points - a.points)
+      || (b.wins - a.wins)
+      || (b.podiums - a.podiums)
+      || (a.finishSum / Math.max(1, a.starts)) - (b.finishSum / Math.max(1, b.starts))
+      || a.name.localeCompare(b.name)
+    ))
+    .map((row, index) => ({
+      rank: index + 1,
+      competitorId: row.competitorId,
+      name: row.name,
+      shortName: row.shortName,
+      abbreviation: row.abbreviation,
+      logo: row.logo,
+      vehicleNumber: row.vehicleNumber,
+      teamName: row.teamName,
+      manufacturer: row.manufacturer,
+      stats: [
+        { key: "points", label: "Points", abbreviation: "PTS", value: String(Math.round(row.points * 10) / 10) },
+        { key: "starts", label: "Starts", abbreviation: "STARTS", value: String(row.starts) },
+        { key: "wins", label: "Wins", abbreviation: "WINS", value: String(row.wins) },
+        { key: "podiums", label: "Podiums", abbreviation: "POD", value: String(row.podiums) },
+        { key: "top5", label: "Top 5", abbreviation: "TOP5", value: String(row.top5) },
+        { key: "top10", label: "Top 10", abbreviation: "TOP10", value: String(row.top10) },
+        { key: "avgFinish", label: "Avg Finish", abbreviation: "AVG", value: (row.finishSum / Math.max(1, row.starts)).toFixed(2) },
+        { key: "lastFinish", label: "Last Finish", abbreviation: "LAST", value: row.lastFinish ? String(row.lastFinish) : "-" },
+      ],
+    }));
+
+  return {
+    id: "model-series-points",
+    name: "Model Series Points",
+    category: "driver",
+    entries,
+  };
+};
+
+const getOfficialDriverPoints = (tables) => {
+  const out = new Map();
+  (tables || []).forEach((table) => {
+    if (table?.category !== "driver") return;
+    (table.entries || []).forEach((entry) => {
+      const pointsStat = (entry.stats || []).find((stat) => {
+        const key = String(stat?.key || "").toLowerCase();
+        return key === "points" || key === "championshippts";
+      });
+      const points = parseNumericValue(pointsStat?.value);
+      if (points !== null) out.set(String(entry.competitorId), points);
+    });
+  });
+  return out;
+};
+
+const buildRacingDriverSeasonMap = (sport, seasonYear, eventBundlesById, standingsTables) => {
+  const pointOverrides = getOfficialDriverPoints(standingsTables);
+  const driverMap = new Map();
+  const orderedEvents = Object.values(eventBundlesById || {})
+    .slice()
+    .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+  orderedEvents.forEach((bundle) => {
+    const raceSession = findRaceSession(bundle?.sessions || []);
+    if (!raceSession) return;
+
+    const competitors = sortRacingCompetitors(raceSession.competitors || []);
+    competitors.forEach((competitor, index) => {
+      const driverId = String(competitor.competitorId || "");
+      if (!driverId) return;
+      if (!driverMap.has(driverId)) {
+        driverMap.set(driverId, {
+          sport,
+          seasonYear,
+          driverId,
+          driverName: competitor.name || competitor.shortName || `Driver ${driverId}`,
+          shortName: competitor.shortName,
+          abbreviation: competitor.abbreviation,
+          logo: competitor.logo || competitor.flag,
+          vehicleNumber: competitor.vehicleNumber,
+          teamName: competitor.teamName,
+          manufacturer: competitor.manufacturer,
+          starts: 0,
+          wins: 0,
+          podiums: 0,
+          top5: 0,
+          top10: 0,
+          finishSum: 0,
+          points: 0,
+          results: [],
+        });
+      }
+
+      const row = driverMap.get(driverId);
+      const finish = Number(competitor.finishPosition) > 0 ? Number(competitor.finishPosition) : undefined;
+      const start = Number(competitor.startPosition) > 0 ? Number(competitor.startPosition) : undefined;
+      const derivedPoints = finish ? pointsByFinishForSeries(sport, finish) : 0;
+      const explicitPoints = extractPointsFromStats(competitor);
+      const points = explicitPoints !== null ? explicitPoints : derivedPoints;
+      const status = raceSession.status;
+
+      row.results.push({
+        eventId: bundle.eventId,
+        eventName: bundle.name,
+        shortName: bundle.shortName,
+        date: raceSession.date || bundle.date,
+        status,
+        statusText: raceSession.statusText || status,
+        startPosition: start,
+        finishPosition: finish,
+        points,
+        lapsLed: undefined,
+        positionGain: (start && finish) ? (start - finish) : undefined,
+        teamName: competitor.teamName,
+        manufacturer: competitor.manufacturer,
+      });
+
+      if (status === "finished" && finish) {
+        row.starts += 1;
+        row.finishSum += finish;
+        row.points += points;
+        if (finish === 1) row.wins += 1;
+        if (finish <= 3) row.podiums += 1;
+        if (finish <= 5) row.top5 += 1;
+        if (finish <= 10) row.top10 += 1;
+      }
+    });
+  });
+
+  const out = {};
+  Array.from(driverMap.values()).forEach((row) => {
+    const officialPoints = pointOverrides.get(row.driverId);
+    const points = officialPoints !== undefined ? officialPoints : row.points;
+    const starts = row.starts;
+    out[row.driverId] = {
+      sport,
+      seasonYear,
+      driverId: row.driverId,
+      driverName: row.driverName,
+      shortName: row.shortName,
+      abbreviation: row.abbreviation,
+      logo: row.logo,
+      vehicleNumber: row.vehicleNumber,
+      teamName: row.teamName,
+      manufacturer: row.manufacturer,
+      starts,
+      wins: row.wins,
+      podiums: row.podiums,
+      top5: row.top5,
+      top10: row.top10,
+      avgFinish: starts > 0 ? row.finishSum / starts : 0,
+      points,
+      pointsSource: officialPoints !== undefined ? "official" : "derived",
+      results: row.results,
+    };
+  });
+
+  return out;
+};
+
+const buildRacingSnapshotFromEvents = (sport, rawEvents, standingsGroups, generatedAt) => {
+  const events = Array.isArray(rawEvents) ? rawEvents : [];
+  const bundlesById = {};
+  const calendarEvents = [];
+
+  events.forEach((event) => {
+    const sessions = buildRacingSessionsFromEvent(event);
+    if (!sessions.length) return;
+    const calendarEvent = toRacingCalendarEvent(sport, event, sessions);
+    calendarEvents.push(calendarEvent);
+    bundlesById[calendarEvent.eventId] = {
+      sport,
+      eventId: calendarEvent.eventId,
+      name: calendarEvent.name,
+      shortName: calendarEvent.shortName,
+      date: calendarEvent.date,
+      endDate: calendarEvent.endDate,
+      venue: calendarEvent.venue,
+      location: calendarEvent.location,
+      sessions,
+    };
+  });
+
+  calendarEvents.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+  const seasonYear = Number(calendarEvents.find((event) => Number.isFinite(event.seasonYear))?.seasonYear) || new Date().getFullYear();
+
+  const officialTables = buildRacingTablesFromStandingsGroups(standingsGroups);
+  const derivedTable = buildDerivedRacingStandingsFromEvents(sport, bundlesById);
+  const tables = derivedTable.entries.length > 0
+    ? [derivedTable, ...officialTables]
+    : officialTables;
+  const standings = {
+    sport,
+    updatedAt: generatedAt,
+    note: derivedTable.entries.length > 0
+      ? "Model series points are derived from completed race results when official standings are unavailable."
+      : undefined,
+    tables,
+  };
+  const driverSeasons = buildRacingDriverSeasonMap(sport, seasonYear, bundlesById, standings.tables);
+
+  return {
+    calendar: {
+      sport,
+      seasonYear,
+      updatedAt: generatedAt,
+      events: calendarEvents,
+    },
+    standings,
+    eventsById: bundlesById,
+    driverSeasons,
+  };
+};
+
 const normalizeStatCategory = (rawCategory, sport, label = "") => {
   const source = String(rawCategory || "General").trim();
   if (!source) return "General";
@@ -2039,7 +2585,12 @@ const fetchSportSnapshot = async ({
     await sleep(120);
   }
 
-  const standingsData = await fetchJson(standingsUrl.toString());
+  let standingsData = null;
+  try {
+    standingsData = await fetchJson(standingsUrl.toString());
+  } catch (err) {
+    console.warn(`[sync-internal-db] ${sport} standings fetch failed:`, err?.message || err);
+  }
   const gamesHistory = Array.from(scoreboardEvents.values())
     .map((event) => mapEventToGame(event, sport, leagueLogo))
     .sort((a, b) => new Date(a.dateTime).getTime() - new Date(b.dateTime).getTime());
@@ -2051,7 +2602,9 @@ const fetchSportSnapshot = async ({
     const d = new Date(game.dateTime);
     return d >= currentWindowStart && d <= currentWindowEnd;
   });
-  const { groups, teamStatsMap: standingsTeamStatsMap } = parseStandings(standingsData, sport);
+  const { groups, teamStatsMap: standingsTeamStatsMap } = standingsData
+    ? parseStandings(standingsData, sport)
+    : { groups: [], teamStatsMap: {} };
 
   const teamSchedules = {};
   if (includeSchedules) {
@@ -2110,6 +2663,14 @@ const fetchSportSnapshot = async ({
     gamesHistory,
     seasonYear: statsSeasonYear,
   });
+  const racingSnapshot = RACING_SPORTS.has(sport)
+    ? buildRacingSnapshotFromEvents(
+      sport,
+      Array.from(scoreboardEvents.values()),
+      groups,
+      new Date().toISOString(),
+    )
+    : null;
 
   return {
     sport,
@@ -2126,6 +2687,7 @@ const fetchSportSnapshot = async ({
     statsSeasonYear,
     integritySummary,
     qualityMetrics,
+    racingSnapshot,
   };
 };
 
@@ -2182,6 +2744,10 @@ const main = async () => {
         liveScoringModel: snapshot.liveScoringModel,
         integritySummary: snapshot.integritySummary,
         qualityMetrics: snapshot.qualityMetrics,
+        racingCalendar: snapshot.racingSnapshot?.calendar,
+        racingStandings: snapshot.racingSnapshot?.standings,
+        racingEventsById: snapshot.racingSnapshot?.eventsById,
+        racingDriverSeasons: snapshot.racingSnapshot?.driverSeasons,
       };
 
       const sportPath = path.join(outputDir, `${sportToFileName(sport)}.json`);
@@ -2204,6 +2770,11 @@ const main = async () => {
         qualityEvaluatedGames: snapshot.qualityMetrics?.evaluatedGames || 0,
         qualityBrier: snapshot.qualityMetrics?.brier,
         qualityCalibrationError: snapshot.qualityMetrics?.calibrationError,
+        racingCalendarEvents: Object.keys(snapshot.racingSnapshot?.eventsById || {}).length,
+        racingStandingsTables: Array.isArray(snapshot.racingSnapshot?.standings?.tables)
+          ? snapshot.racingSnapshot.standings.tables.length
+          : 0,
+        racingDriverSeasons: Object.keys(snapshot.racingSnapshot?.driverSeasons || {}).length,
       };
 
       console.log(

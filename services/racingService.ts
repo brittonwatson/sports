@@ -17,6 +17,13 @@ import {
   Sport,
 } from "../types";
 import { ESPN_ENDPOINTS } from "./constants";
+import {
+  ensureInternalSportLoaded,
+  getInternalRacingCalendar,
+  getInternalRacingDriverSeason,
+  getInternalRacingEventBundle,
+  getInternalRacingStandings,
+} from "./internalDbService";
 import { extractNumber, fetchWithRetry } from "./utils";
 
 const CORE_BASE = "https://sports.core.api.espn.com/v2";
@@ -2080,6 +2087,14 @@ export const fetchRacingCalendarPayload = async (sport: Sport): Promise<RacingCa
     if (ageMs < PERSISTED_CALENDAR_MAX_AGE_MS) return cached.data;
   }
 
+  await ensureInternalSportLoaded(sport);
+  const internalCalendar = getInternalRacingCalendar(sport);
+  if (internalCalendar && Array.isArray(internalCalendar.events) && internalCalendar.events.length > 0) {
+    calendarCache.set(cacheKey, { fetchedAt: Date.now(), data: internalCalendar });
+    schedulePersistRacingPayloadCaches();
+    return internalCalendar;
+  }
+
   const snapshot = await fetchSeasonDataSnapshot(sport);
   if (!snapshot) {
     const payload: RacingCalendarPayload = {
@@ -2111,6 +2126,14 @@ export const fetchRacingDriverSeasonResults = async (sport: Sport, driverId: str
     if (ageMs < PERSISTED_DRIVER_MAX_AGE_MS) return cached.data;
   }
 
+  await ensureInternalSportLoaded(sport);
+  const internalSeason = getInternalRacingDriverSeason(sport, driverId);
+  if (internalSeason) {
+    driverSeasonCache.set(cacheKey, { fetchedAt: Date.now(), data: internalSeason });
+    schedulePersistRacingPayloadCaches();
+    return internalSeason;
+  }
+
   const snapshot = await fetchSeasonDataSnapshot(sport);
   if (!snapshot) return null;
 
@@ -2133,6 +2156,18 @@ export const fetchRacingEventBundle = async (sport: Sport, eventId: string): Pro
     const hasLiveSession = (cached.data.sessions || []).some((session) => session.status === "in_progress");
     if (!hasLiveSession && ageMs < PERSISTED_EVENT_MAX_AGE_MS) return cached.data;
   }
+
+  await ensureInternalSportLoaded(sport);
+  const internalBundle = getInternalRacingEventBundle(sport, eventId);
+  if (internalBundle) {
+    const hasLiveSession = (internalBundle.sessions || []).some((session) => session.status === "in_progress");
+    if (!hasLiveSession) {
+      eventCache.set(cacheKey, { fetchedAt: Date.now(), data: internalBundle });
+      schedulePersistRacingPayloadCaches();
+      return internalBundle;
+    }
+  }
+
   const storedCompleted = getStoredCompletedEvent(sport, eventId);
 
   const eventUrl = buildCoreLeagueUrl(sport, `events/${eventId}`);
@@ -2142,6 +2177,11 @@ export const fetchRacingEventBundle = async (sport: Sport, eventId: string): Pro
       eventCache.set(cacheKey, { fetchedAt: Date.now(), data: storedCompleted });
       schedulePersistRacingPayloadCaches();
       return storedCompleted;
+    }
+    if (internalBundle) {
+      eventCache.set(cacheKey, { fetchedAt: Date.now(), data: internalBundle });
+      schedulePersistRacingPayloadCaches();
+      return internalBundle;
     }
     return null;
   }
@@ -2184,7 +2224,7 @@ export const fetchRacingEventBundle = async (sport: Sport, eventId: string): Pro
   const statsByCompetitorKey = new Map<string, RacingStatValue[]>();
   statsPayloads.forEach((entry) => statsByCompetitorKey.set(entry.key, entry.stats));
 
-  const sessions = competitions
+  const sessions: RacingSessionResult[] = competitions
     .filter((competition: any) => {
       if (sport !== "F1") return true;
       const typeText = normalizeCompetitionType(competition);
@@ -2239,6 +2279,14 @@ export const fetchRacingStandingsPayload = async (sport: Sport): Promise<RacingS
     const ageMs = Date.now() - cached.fetchedAt;
     if (ageMs < STANDINGS_CACHE_TTL_MS) return cached.data;
     if (ageMs < PERSISTED_STANDINGS_MAX_AGE_MS) return cached.data;
+  }
+
+  await ensureInternalSportLoaded(sport);
+  const internalStandings = getInternalRacingStandings(sport);
+  if (internalStandings && Array.isArray(internalStandings.tables) && internalStandings.tables.length > 0) {
+    standingsCache.set(cacheKey, { fetchedAt: Date.now(), data: internalStandings });
+    schedulePersistRacingPayloadCaches();
+    return internalStandings;
   }
 
   const root = await fetchJsonSafe(buildCoreLeagueUrl(sport, "standings"));
