@@ -241,6 +241,124 @@ const parseFavoriteTeams = (raw: string | null): Set<string> => {
   return new Set(parsed.filter((entry): entry is string => typeof entry === 'string'));
 };
 
+const normalizeTeamName = (value: string): string => {
+  return String(value || '')
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+};
+
+const buildTeamIdKey = (league: Sport | string, id: string | undefined | null): string => {
+  const normalizedId = String(id || '').trim();
+  return normalizedId ? `${league}|${normalizedId}` : '';
+};
+
+const buildTeamLogicalKey = (league: Sport | string, name: string | undefined | null): string => {
+  const normalizedName = normalizeTeamName(String(name || ''));
+  return `${league}|${normalizedName}`;
+};
+
+const sanitizeTeamOption = (team: TeamOption): TeamOption => ({
+  id: String(team.id || '').trim(),
+  name: String(team.name || '').trim(),
+  abbreviation: typeof team.abbreviation === 'string' ? team.abbreviation.trim() || undefined : undefined,
+  logo: typeof team.logo === 'string' ? team.logo.trim() || undefined : undefined,
+  league: team.league,
+});
+
+const parseTeamOptionFromFavoriteEntry = (entry: string): TeamOption | null => {
+  try {
+    const parsed = JSON.parse(entry) as Partial<TeamOption>;
+    if (!parsed || typeof parsed !== 'object') return null;
+    if (typeof parsed.name !== 'string' || typeof parsed.league !== 'string') return null;
+    if (!SPORTS.includes(parsed.league as Sport)) return null;
+    return sanitizeTeamOption({
+      id: typeof parsed.id === 'string' ? parsed.id : '',
+      name: parsed.name,
+      abbreviation: typeof parsed.abbreviation === 'string' ? parsed.abbreviation : undefined,
+      logo: typeof parsed.logo === 'string' ? parsed.logo : undefined,
+      league: parsed.league as Sport,
+    });
+  } catch {
+    return null;
+  }
+};
+
+const serializeFavoriteTeam = (team: TeamOption): string => {
+  const sanitized = sanitizeTeamOption(team);
+  return JSON.stringify({
+    id: sanitized.id,
+    name: sanitized.name,
+    abbreviation: sanitized.abbreviation,
+    league: sanitized.league,
+    logo: sanitized.logo,
+  });
+};
+
+const choosePreferredTeamOption = (a: TeamOption, b: TeamOption): TeamOption => {
+  const score = (team: TeamOption): number => {
+    let total = 0;
+    if (team.id) total += 3;
+    if (team.logo) total += 2;
+    if (team.abbreviation) total += 1;
+    total += Math.min(team.name.length, 40) / 100;
+    return total;
+  };
+  return score(b) > score(a) ? b : a;
+};
+
+const upsertTeamOption = (target: Map<string, TeamOption>, team: TeamOption): void => {
+  const sanitized = sanitizeTeamOption(team);
+  if (!sanitized.league || !sanitized.name) return;
+
+  const idKey = buildTeamIdKey(sanitized.league, sanitized.id);
+  const logicalKey = buildTeamLogicalKey(sanitized.league, sanitized.name);
+  const normalizedAbbreviation = sanitized.abbreviation?.toUpperCase();
+
+  let existingKey: string | null = null;
+  let existingValue: TeamOption | null = null;
+
+  if (idKey && target.has(idKey)) {
+    existingKey = idKey;
+    existingValue = target.get(idKey) || null;
+  } else {
+    for (const [candidateKey, candidateTeam] of target.entries()) {
+      if (candidateTeam.league !== sanitized.league) continue;
+      const sameLogicalName = buildTeamLogicalKey(candidateTeam.league, candidateTeam.name) === logicalKey;
+      const sameAbbreviation =
+        normalizedAbbreviation &&
+        candidateTeam.abbreviation &&
+        candidateTeam.abbreviation.toUpperCase() === normalizedAbbreviation;
+      if (sameLogicalName || sameAbbreviation) {
+        existingKey = candidateKey;
+        existingValue = candidateTeam;
+        break;
+      }
+    }
+  }
+
+  const merged = sanitizeTeamOption({
+    ...existingValue,
+    ...sanitized,
+    id: sanitized.id || existingValue?.id || '',
+    name: sanitized.name || existingValue?.name || '',
+    abbreviation: sanitized.abbreviation || existingValue?.abbreviation,
+    logo: sanitized.logo || existingValue?.logo,
+    league: sanitized.league,
+  });
+
+  const preferred = existingValue ? choosePreferredTeamOption(existingValue, merged) : merged;
+  const targetKey = buildTeamIdKey(preferred.league, preferred.id) || existingKey || logicalKey;
+
+  if (existingKey && existingKey !== targetKey) {
+    target.delete(existingKey);
+  }
+  target.set(targetKey, preferred);
+};
+
 const parseFollowedGames = (raw: string | null): Set<string> => {
   const parsed = parseJson<unknown>(raw, []);
   if (!Array.isArray(parsed)) return new Set();
@@ -661,8 +779,10 @@ export const App: React.FC = () => {
           const seedTeams = new Map<string, TeamOption>();
           Object.entries(LOCAL_TEAMS).forEach(([sport, teams]) => {
               teams.forEach(t => {
-                  const key = `${t.name}-${sport}`;
-                  seedTeams.set(key, t);
+                  upsertTeamOption(seedTeams, {
+                    ...t,
+                    league: sport as Sport,
+                  });
               });
           });
           setAllTeams(seedTeams);
@@ -676,16 +796,13 @@ export const App: React.FC = () => {
                                const next = new Map(prev);
                                groups.forEach(g => {
                                    g.standings.forEach(s => {
-                                       const key = `${s.team.name}-${sport}`;
-                                       if (!next.has(key)) {
-                                           next.set(key, { 
-                                               id: s.team.id, 
-                                               name: s.team.name, 
-                                               abbreviation: s.team.abbreviation,
-                                               logo: s.team.logo, 
-                                               league: sport 
-                                           });
-                                       }
+                                       upsertTeamOption(next, {
+                                         id: String(s.team.id || ''),
+                                         name: String(s.team.name || ''),
+                                         abbreviation: s.team.abbreviation,
+                                         logo: s.team.logo,
+                                         league: sport,
+                                       });
                                    });
                                });
                                return next;
@@ -1447,46 +1564,6 @@ export const App: React.FC = () => {
       handleTeamClick(team.id, team.league);
   };
 
-  const toggleFavoriteTeam = (team: TeamOption, e: React.MouseEvent) => {
-      e.stopPropagation();
-      const teamStr = JSON.stringify({
-          id: team.id,
-          name: team.name,
-          league: team.league,
-          logo: team.logo
-      });
-      setFavoriteTeams(prev => {
-          const next = new Set(prev);
-          let existingStr = null;
-          for (const s of Array.from(next) as string[]) {
-              try {
-                  const t = JSON.parse(s as string);
-                  if (t.id === team.id && t.league === team.league) {
-                      existingStr = s;
-                      break;
-                  }
-              } catch(e) {}
-          }
-
-          if (existingStr) {
-              next.delete(existingStr);
-          } else {
-              next.add(teamStr);
-          }
-          return next;
-      });
-  };
-
-  const isTeamFavorite = (teamId: string, league: Sport) => {
-      for (const s of Array.from(favoriteTeams) as string[]) {
-          try {
-              const t = JSON.parse(s);
-              if (t.id === teamId && t.league === league) return true;
-          } catch(e) {}
-      }
-      return false;
-  };
-
   const toggleFavoriteLeague = (sport: Sport, e: React.MouseEvent) => {
       e.stopPropagation();
       setFavoriteLeagues(prev => {
@@ -1506,38 +1583,200 @@ export const App: React.FC = () => {
     return SPORTS.filter(s => s.toLowerCase().includes(search));
   }, [teamSearchTerm]);
 
+  const allTeamOptions = useMemo(() => {
+    return (Array.from(allTeams.values()) as TeamOption[]).map((team) => sanitizeTeamOption(team));
+  }, [allTeams]);
+
+  const teamAliasIndex = useMemo(() => {
+    const idsByLogicalKey = new Map<string, Set<string>>();
+    const logicalKeyById = new Map<string, string>();
+    const canonicalByLogicalKey = new Map<string, TeamOption>();
+
+    allTeamOptions.forEach((team) => {
+      if (!team.name || !team.league) return;
+      const logicalKey = buildTeamLogicalKey(team.league, team.name);
+      if (logicalKey.endsWith('|')) return;
+
+      if (team.id) {
+        const idKey = buildTeamIdKey(team.league, team.id);
+        if (idKey) logicalKeyById.set(idKey, logicalKey);
+        const ids = idsByLogicalKey.get(logicalKey) || new Set<string>();
+        ids.add(team.id);
+        idsByLogicalKey.set(logicalKey, ids);
+      }
+
+      const currentCanonical = canonicalByLogicalKey.get(logicalKey);
+      canonicalByLogicalKey.set(
+        logicalKey,
+        currentCanonical ? choosePreferredTeamOption(currentCanonical, team) : team,
+      );
+    });
+
+    return { idsByLogicalKey, logicalKeyById, canonicalByLogicalKey };
+  }, [allTeamOptions]);
+
   const filteredTeams: TeamOption[] = useMemo(() => {
     if (!teamSearchTerm) return [];
     const search = teamSearchTerm.toLowerCase();
-    return (Array.from(allTeams.values()) as TeamOption[]).filter(team => {
+    return allTeamOptions.filter(team => {
       return team.name.toLowerCase().includes(search);
     }).slice(0, 50);
-  }, [teamSearchTerm, allTeams]);
+  }, [teamSearchTerm, allTeamOptions]);
 
   const menuTeamResults = useMemo(() => {
     if (!menuSearchTerm) return [];
     const search = menuSearchTerm.toLowerCase();
-    return (Array.from(allTeams.values()) as TeamOption[]).filter(team => {
+    return allTeamOptions.filter(team => {
       return team.name.toLowerCase().includes(search);
     }).slice(0, 15);
-  }, [menuSearchTerm, allTeams]);
+  }, [menuSearchTerm, allTeamOptions]);
 
   const parsedFavoriteTeams = useMemo(() => {
-    return (Array.from(favoriteTeams) as string[])
-      .map((s) => {
-        try {
-          return JSON.parse(s as string) as TeamOption;
-        } catch {
-          return null;
+    const byLogicalKey = new Map<string, TeamOption>();
+
+    (Array.from(favoriteTeams) as string[]).forEach((entry) => {
+      const parsed = parseTeamOptionFromFavoriteEntry(entry);
+      if (!parsed) return;
+
+      const parsedIdKey = buildTeamIdKey(parsed.league, parsed.id);
+      const logicalFromId = parsedIdKey ? teamAliasIndex.logicalKeyById.get(parsedIdKey) : undefined;
+      const fallbackLogical = buildTeamLogicalKey(parsed.league, parsed.name);
+      const logicalKey =
+        logicalFromId ||
+        (!fallbackLogical.endsWith('|') ? fallbackLogical : (parsedIdKey || fallbackLogical));
+
+      const canonical = logicalKey.endsWith('|')
+        ? undefined
+        : teamAliasIndex.canonicalByLogicalKey.get(logicalKey);
+
+      const normalized = sanitizeTeamOption({
+        ...parsed,
+        id: canonical?.id || parsed.id,
+        name: canonical?.name || parsed.name,
+        abbreviation: canonical?.abbreviation || parsed.abbreviation,
+        logo: canonical?.logo || parsed.logo,
+        league: parsed.league,
+      });
+
+      const existing = byLogicalKey.get(logicalKey);
+      byLogicalKey.set(
+        logicalKey,
+        existing ? choosePreferredTeamOption(existing, normalized) : normalized,
+      );
+    });
+
+    return Array.from(byLogicalKey.values()).sort((a, b) => {
+      if (a.league !== b.league) return a.league.localeCompare(b.league);
+      return a.name.localeCompare(b.name);
+    });
+  }, [favoriteTeams, teamAliasIndex]);
+
+  const favoriteLogicalKeySet = useMemo(() => {
+    const keys = new Set<string>();
+    parsedFavoriteTeams.forEach((team) => {
+      const idKey = buildTeamIdKey(team.league, team.id);
+      const logicalFromId = idKey ? teamAliasIndex.logicalKeyById.get(idKey) : undefined;
+      const logicalFromName = buildTeamLogicalKey(team.league, team.name);
+      const logicalKey = logicalFromId || logicalFromName;
+      if (!logicalKey.endsWith('|')) keys.add(logicalKey);
+    });
+    return keys;
+  }, [parsedFavoriteTeams, teamAliasIndex]);
+
+  const favoriteTeamKeySet = useMemo(() => {
+    const keys = new Set<string>();
+    parsedFavoriteTeams.forEach((team) => {
+      const directIdKey = buildTeamIdKey(team.league, team.id);
+      if (directIdKey) keys.add(directIdKey);
+
+      const logicalFromName = buildTeamLogicalKey(team.league, team.name);
+      const logicalFromId = directIdKey ? teamAliasIndex.logicalKeyById.get(directIdKey) : undefined;
+      const logicalKey = logicalFromId || logicalFromName;
+      if (!logicalKey.endsWith('|')) {
+        const aliasedIds = teamAliasIndex.idsByLogicalKey.get(logicalKey);
+        aliasedIds?.forEach((id) => {
+          const aliasedIdKey = buildTeamIdKey(team.league, id);
+          if (aliasedIdKey) keys.add(aliasedIdKey);
+        });
+      }
+    });
+    return keys;
+  }, [parsedFavoriteTeams, teamAliasIndex]);
+
+  const toggleFavoriteTeam = useCallback((team: TeamOption, e: React.MouseEvent) => {
+    e.stopPropagation();
+
+    const sanitized = sanitizeTeamOption(team);
+    const incomingIdKey = buildTeamIdKey(sanitized.league, sanitized.id);
+    const incomingLogicalFromId = incomingIdKey ? teamAliasIndex.logicalKeyById.get(incomingIdKey) : undefined;
+    const incomingLogicalFromName = buildTeamLogicalKey(sanitized.league, sanitized.name);
+    const incomingLogical = incomingLogicalFromId || incomingLogicalFromName;
+    const canonical = incomingLogical.endsWith('|')
+      ? undefined
+      : teamAliasIndex.canonicalByLogicalKey.get(incomingLogical);
+
+    const nextFavorite = sanitizeTeamOption({
+      ...sanitized,
+      id: canonical?.id || sanitized.id,
+      name: canonical?.name || sanitized.name,
+      abbreviation: canonical?.abbreviation || sanitized.abbreviation,
+      logo: canonical?.logo || sanitized.logo,
+      league: sanitized.league,
+    });
+
+    setFavoriteTeams((prev) => {
+      const next = new Set(prev);
+      let removedAny = false;
+
+      for (const entry of Array.from(next) as string[]) {
+        const parsed = parseTeamOptionFromFavoriteEntry(entry);
+        if (!parsed) {
+          next.delete(entry);
+          continue;
         }
-      })
-      .filter((t): t is TeamOption => t !== null);
-  }, [favoriteTeams]);
+
+        const parsedIdKey = buildTeamIdKey(parsed.league, parsed.id);
+        const parsedLogicalFromId = parsedIdKey ? teamAliasIndex.logicalKeyById.get(parsedIdKey) : undefined;
+        const parsedLogicalFromName = buildTeamLogicalKey(parsed.league, parsed.name);
+        const parsedLogical = parsedLogicalFromId || parsedLogicalFromName;
+
+        const sameLogical =
+          !incomingLogical.endsWith('|') &&
+          !parsedLogical.endsWith('|') &&
+          parsedLogical === incomingLogical;
+
+        const sameId =
+          parsed.league === sanitized.league &&
+          Boolean(parsed.id) &&
+          Boolean(sanitized.id) &&
+          parsed.id === sanitized.id;
+
+        if (sameLogical || sameId) {
+          next.delete(entry);
+          removedAny = true;
+        }
+      }
+
+      if (!removedAny) {
+        next.add(serializeFavoriteTeam(nextFavorite));
+      }
+
+      return next;
+    });
+  }, [teamAliasIndex]);
+
+  const isTeamFavorite = useCallback((teamId: string, league: Sport) => {
+    const idKey = buildTeamIdKey(league, teamId);
+    if (idKey && favoriteTeamKeySet.has(idKey)) return true;
+    const logical = idKey ? teamAliasIndex.logicalKeyById.get(idKey) : undefined;
+    if (logical && favoriteLogicalKeySet.has(logical)) return true;
+    return false;
+  }, [favoriteLogicalKeySet, favoriteTeamKeySet, teamAliasIndex]);
 
   const onboardingTeamResults = useMemo(() => {
       const query = onboardingTeamSearch.trim().toLowerCase();
       if (!query) return [] as TeamOption[];
-      return (Array.from(allTeams.values()) as TeamOption[])
+      return allTeamOptions
           .filter((team) => {
               const matchesName = team.name.toLowerCase().includes(query);
               const matchesLeague = team.league.toLowerCase().includes(query);
@@ -1545,23 +1784,40 @@ export const App: React.FC = () => {
               return inSelectedLeague && (matchesName || matchesLeague);
           })
           .slice(0, 24);
-  }, [allTeams, onboardingTeamSearch, onboardingLeagues]);
+  }, [allTeamOptions, onboardingTeamSearch, onboardingLeagues]);
 
-  const onboardingTeamKeySet = useMemo(() => {
-      const keySet = new Set<string>();
+  const onboardingSelection = useMemo(() => {
+      const idKeys = new Set<string>();
+      const logicalKeys = new Set<string>();
       (Array.from(onboardingTeams) as string[]).forEach((entry) => {
-          try {
-              const parsed = JSON.parse(entry) as TeamOption;
-              if (parsed?.id && parsed?.league) keySet.add(`${parsed.league}|${parsed.id}`);
-          } catch {
+          const parsed = parseTeamOptionFromFavoriteEntry(entry);
+          if (!parsed) return;
+
+          const parsedIdKey = buildTeamIdKey(parsed.league, parsed.id);
+          if (parsedIdKey) idKeys.add(parsedIdKey);
+
+          const logicalFromId = parsedIdKey ? teamAliasIndex.logicalKeyById.get(parsedIdKey) : undefined;
+          const logicalFromName = buildTeamLogicalKey(parsed.league, parsed.name);
+          const logicalKey = logicalFromId || logicalFromName;
+          if (!logicalKey.endsWith('|')) {
+              logicalKeys.add(logicalKey);
+              const aliases = teamAliasIndex.idsByLogicalKey.get(logicalKey);
+              aliases?.forEach((id) => {
+                  const aliasIdKey = buildTeamIdKey(parsed.league, id);
+                  if (aliasIdKey) idKeys.add(aliasIdKey);
+              });
           }
       });
-      return keySet;
-  }, [onboardingTeams]);
+      return { idKeys, logicalKeys };
+  }, [onboardingTeams, teamAliasIndex]);
 
   const isOnboardingTeamSelected = useCallback((teamId: string, league: Sport) => {
-      return onboardingTeamKeySet.has(`${league}|${teamId}`);
-  }, [onboardingTeamKeySet]);
+      const idKey = buildTeamIdKey(league, teamId);
+      if (idKey && onboardingSelection.idKeys.has(idKey)) return true;
+      const logical = idKey ? teamAliasIndex.logicalKeyById.get(idKey) : undefined;
+      if (logical && onboardingSelection.logicalKeys.has(logical)) return true;
+      return false;
+  }, [onboardingSelection, teamAliasIndex]);
 
   const toggleOnboardingLeague = useCallback((league: Sport) => {
       setOnboardingLeagues((prev) => {
@@ -1573,30 +1829,56 @@ export const App: React.FC = () => {
   }, []);
 
   const toggleOnboardingTeam = useCallback((team: TeamOption) => {
-      const teamStr = JSON.stringify({
-          id: team.id,
-          name: team.name,
-          league: team.league,
-          logo: team.logo
+      const sanitized = sanitizeTeamOption(team);
+      const incomingIdKey = buildTeamIdKey(sanitized.league, sanitized.id);
+      const incomingLogicalFromId = incomingIdKey ? teamAliasIndex.logicalKeyById.get(incomingIdKey) : undefined;
+      const incomingLogicalFromName = buildTeamLogicalKey(sanitized.league, sanitized.name);
+      const incomingLogical = incomingLogicalFromId || incomingLogicalFromName;
+      const canonical = incomingLogical.endsWith('|')
+          ? undefined
+          : teamAliasIndex.canonicalByLogicalKey.get(incomingLogical);
+      const normalizedIncoming = sanitizeTeamOption({
+          ...sanitized,
+          id: canonical?.id || sanitized.id,
+          name: canonical?.name || sanitized.name,
+          abbreviation: canonical?.abbreviation || sanitized.abbreviation,
+          logo: canonical?.logo || sanitized.logo,
+          league: sanitized.league,
       });
+
       setOnboardingTeams((prev) => {
           const next = new Set(prev);
-          let existingStr: string | null = null;
+          let removedAny = false;
           for (const entry of Array.from(next) as string[]) {
-              try {
-                  const parsed = JSON.parse(entry);
-                  if (parsed.id === team.id && parsed.league === team.league) {
-                      existingStr = entry;
-                      break;
-                  }
-              } catch {
+              const parsed = parseTeamOptionFromFavoriteEntry(entry);
+              if (!parsed) {
+                  next.delete(entry);
+                  continue;
+              }
+
+              const parsedIdKey = buildTeamIdKey(parsed.league, parsed.id);
+              const parsedLogicalFromId = parsedIdKey ? teamAliasIndex.logicalKeyById.get(parsedIdKey) : undefined;
+              const parsedLogicalFromName = buildTeamLogicalKey(parsed.league, parsed.name);
+              const parsedLogical = parsedLogicalFromId || parsedLogicalFromName;
+
+              const sameLogical =
+                  !incomingLogical.endsWith('|') &&
+                  !parsedLogical.endsWith('|') &&
+                  parsedLogical === incomingLogical;
+              const sameId =
+                  parsed.league === sanitized.league &&
+                  Boolean(parsed.id) &&
+                  Boolean(sanitized.id) &&
+                  parsed.id === sanitized.id;
+              if (sameLogical || sameId) {
+                  next.delete(entry);
+                  removedAny = true;
               }
           }
-          if (existingStr) next.delete(existingStr);
-          else next.add(teamStr);
+          if (!removedAny) next.add(serializeFavoriteTeam(normalizedIncoming));
           return next;
       });
-  }, []);
+  }, [teamAliasIndex]);
 
   const completeOnboarding = useCallback(() => {
       if (onboardingLeagues.size === 0) return;
@@ -1616,14 +1898,6 @@ export const App: React.FC = () => {
       setOnboardingTeamSearch('');
       setIsOnboardingOpen(false);
   }, [onboardingTeams, user?.sub]);
-
-  const favoriteTeamKeySet = useMemo(() => {
-    const keys = new Set<string>();
-    parsedFavoriteTeams.forEach((team) => {
-      keys.add(`${team.league}|${team.id}`);
-    });
-    return keys;
-  }, [parsedFavoriteTeams]);
 
   const autoFollowGameIds = useMemo(() => {
     const ids = new Set<string>();
