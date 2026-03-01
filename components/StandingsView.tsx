@@ -2,6 +2,8 @@
 import React, { useMemo } from 'react';
 import { StandingsGroup, Sport, StandingsType, SOCCER_LEAGUES } from '../types';
 import { Info, AlertCircle, Trophy, List, GitMerge } from 'lucide-react';
+import { getInternalHistoricalGamesBySport, getInternalTeamStats } from '../services/internalDbService';
+import { canonicalizeStatLabel, isInverseMetricLabel } from '../services/statDictionary';
 
 interface StandingsViewProps {
     groups: StandingsGroup[];
@@ -35,6 +37,164 @@ const SHOW_CONF_RECORD_LEAGUES: Sport[] = ['NCAAF', 'NCAAM', 'NCAAW', 'WNBA', 'N
 // Sports eligible for the toggle
 const TOGGLE_ELIGIBLE_SPORTS: Sport[] = ['NFL', 'NBA', 'NHL', 'MLB', 'WNBA'];
 
+interface ProjectionRow {
+    teamId: string;
+    teamName: string;
+    teamAbbreviation: string;
+    logo?: string;
+    groupName: string;
+    rank: number;
+    playoffProbability: number; // 0..1
+    championshipProbability: number; // 0..1
+    eliminated: boolean;
+    clinched: boolean;
+}
+
+interface GroupPlayoffMeta {
+    cutoff: number;
+    cutoffWinPct: number;
+    cutoffWins: number;
+    seasonTarget: number;
+}
+
+const SEASON_GAME_TARGET: Partial<Record<Sport, number>> = {
+    NBA: 82,
+    WNBA: 44,
+    NFL: 17,
+    NCAAF: 12,
+    MLB: 162,
+    NHL: 82,
+    MLS: 34,
+    EPL: 38,
+    Bundesliga: 34,
+    'La Liga': 38,
+    'Serie A': 38,
+    'Ligue 1': 34,
+    UCL: 8,
+    NCAAM: 31,
+    NCAAW: 31,
+};
+
+const CHAMPIONSHIP_ROUNDS: Partial<Record<Sport, number>> = {
+    NFL: 4,
+    NBA: 4,
+    NHL: 4,
+    MLB: 4,
+    WNBA: 3,
+    MLS: 4,
+    NCAAF: 3,
+    NCAAM: 6,
+    NCAAW: 6,
+    UCL: 4,
+    EPL: 1,
+    Bundesliga: 1,
+    'La Liga': 1,
+    'Serie A': 1,
+    'Ligue 1': 1,
+};
+
+const parseLooseNumber = (value: string | number | undefined, label?: string): number | null => {
+    if (value === undefined || value === null) return null;
+    const raw = String(value).trim();
+    if (!raw || raw === '-' || raw === '--' || raw.toLowerCase() === 'n/a') return null;
+
+    const timeMatch = raw.match(/^(\d+):(\d{2})(?::(\d{2}))?$/);
+    if (timeMatch) {
+        const a = parseInt(timeMatch[1], 10);
+        const b = parseInt(timeMatch[2], 10);
+        const c = timeMatch[3] ? parseInt(timeMatch[3], 10) : 0;
+        if (!Number.isFinite(a) || !Number.isFinite(b) || !Number.isFinite(c)) return null;
+        if (timeMatch[3]) return (a * 60) + b + (c / 60);
+        return a + (b / 60);
+    }
+
+    const pairMatch = raw.match(/^(-?\d+(?:\.\d+)?)\s*[-/]\s*(-?\d+(?:\.\d+)?)$/);
+    if (pairMatch) {
+        const made = parseFloat(pairMatch[1]);
+        const attempts = parseFloat(pairMatch[2]);
+        if (!Number.isFinite(made) || !Number.isFinite(attempts) || attempts === 0) return null;
+        const lowerLabel = String(label || '').toLowerCase();
+        const looksRate =
+            lowerLabel.includes('%') ||
+            lowerLabel.includes('pct') ||
+            lowerLabel.includes('rate') ||
+            lowerLabel.includes('ratio') ||
+            lowerLabel.includes('efficiency') ||
+            lowerLabel.includes('completion') ||
+            lowerLabel.includes('field goal') ||
+            lowerLabel.includes('free throw') ||
+            lowerLabel.includes('three point');
+        if (!looksRate) return null;
+        return (made / attempts) * 100;
+    }
+
+    const numeric = parseFloat(raw.replace(/,/g, '').replace('%', '').replace('+', ''));
+    if (!Number.isFinite(numeric)) return null;
+    if (raw.includes('%') && Math.abs(numeric) <= 1) return numeric * 100;
+    return numeric;
+};
+
+const sigmoid = (x: number): number => 1 / (1 + Math.exp(-x));
+
+const clamp = (value: number, min: number, max: number): number => {
+    if (Number.isNaN(value)) return min;
+    return Math.min(max, Math.max(min, value));
+};
+
+const formatProbability = (probability: number): string => {
+    const pct = clamp(probability * 100, 0, 100);
+    if (pct <= 0.05 || pct >= 99.95) return `${Math.round(pct)}%`;
+    return `${pct.toFixed(1)}%`;
+};
+
+const toWinPct = (wins: number, losses: number, ties: number): number => {
+    const games = wins + losses + ties;
+    if (games <= 0) return 0;
+    return (wins + (ties * 0.5)) / games;
+};
+
+const parseStreakScore = (streak?: string): number => {
+    if (!streak) return 0;
+    const normalized = streak.trim().toUpperCase();
+    const match = normalized.match(/^([WLTD])\s*([0-9]+)/);
+    if (!match) return 0;
+    const count = parseInt(match[2], 10);
+    if (!Number.isFinite(count)) return 0;
+    if (match[1] === 'W') return count;
+    if (match[1] === 'L') return -count;
+    return 0;
+};
+
+const parseGamesBehind = (value?: string): number => {
+    if (!value) return 0;
+    const normalized = value.trim().toUpperCase();
+    if (!normalized || normalized === '-' || normalized === '--' || normalized === 'GB' || normalized === 'E') return 0;
+    const parsed = parseFloat(normalized.replace(/[A-Z]/g, '').trim());
+    return Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
+};
+
+const scoreScaleBySport = (sport: Sport): number => {
+    if (sport === 'NBA' || sport === 'WNBA' || sport === 'NCAAM' || sport === 'NCAAW') return 12;
+    if (sport === 'NFL' || sport === 'NCAAF') return 9;
+    if (sport === 'MLB') return 2;
+    if (sport === 'NHL') return 2;
+    if (SOCCER_LEAGUES.includes(sport)) return 1.6;
+    return 6;
+};
+
+const cutoffForGroup = (
+    sport: Sport,
+    groupSize: number,
+    conf?: { rank: number; label: string; secondaryRank?: number; secondaryLabel?: string },
+): number => {
+    if (conf?.secondaryRank) return Math.min(groupSize, conf.secondaryRank);
+    if (conf?.rank) return Math.min(groupSize, conf.rank);
+    if (SOCCER_LEAGUES.includes(sport)) return Math.max(1, Math.round(groupSize * 0.25));
+    if (sport === 'NCAAF') return Math.min(groupSize, 12);
+    if (sport === 'NCAAM' || sport === 'NCAAW') return Math.min(groupSize, Math.max(4, Math.round(groupSize * 0.45)));
+    return Math.max(1, Math.round(groupSize * 0.5));
+};
+
 export const StandingsView: React.FC<StandingsViewProps> = ({ groups, sport, type = 'STANDINGS', activeType = 'PLAYOFF', onTypeChange, onTeamClick, isLoading = false, useApiRankForNCAA = false }) => {
     const config = CUTOFF_CONFIG[sport];
     const isNCAA = sport.startsWith('NCAA');
@@ -50,8 +210,255 @@ export const StandingsView: React.FC<StandingsViewProps> = ({ groups, sport, typ
 
     const showConf = SHOW_CONF_RECORD_LEAGUES.includes(sport) && !isRankings && hasConfData;
     const showToggle = TOGGLE_ELIGIBLE_SPORTS.includes(sport) && !isRankings && onTypeChange;
+    const showPlayoffProjection = !isRankings && groups.length > 0 && (activeType === 'PLAYOFF' || !showToggle);
 
     const divisionLabel = ['NBA', 'WNBA', 'NFL', 'NCAAF'].includes(sport) ? 'Conference' : 'Division';
+
+    const playoffProjection = useMemo(() => {
+        if (!showPlayoffProjection) return null;
+
+        const flatTeams = groups.flatMap((group) =>
+            group.standings.map((standing) => ({ groupName: group.name, standing })),
+        );
+        if (flatTeams.length < 2) return null;
+
+        const teamIds = new Set(flatTeams.map((entry) => String(entry.standing.team.id)));
+        const labelValues = new Map<string, number[]>();
+        const teamStatValues = new Map<string, Map<string, number>>();
+
+        flatTeams.forEach(({ standing }) => {
+            const teamId = String(standing.team.id);
+            const stats = getInternalTeamStats(sport, teamId);
+            const values = new Map<string, number>();
+            stats.forEach((item) => {
+                if (!item?.label) return;
+                const canonicalLabel = canonicalizeStatLabel(sport, item.label);
+                if (!canonicalLabel) return;
+                const numeric = parseLooseNumber(item.value, canonicalLabel);
+                if (numeric === null || !Number.isFinite(numeric)) return;
+                if (!values.has(canonicalLabel)) values.set(canonicalLabel, numeric);
+            });
+            teamStatValues.set(teamId, values);
+            values.forEach((value, label) => {
+                const arr = labelValues.get(label) || [];
+                arr.push(value);
+                labelValues.set(label, arr);
+            });
+        });
+
+        const minCoverage = Math.max(4, Math.ceil(flatTeams.length * 0.4));
+        const distributions = new Map<string, { mean: number; stdev: number; inverse: boolean }>();
+        labelValues.forEach((values, label) => {
+            if (values.length < minCoverage) return;
+            const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+            const variance = values.reduce((sum, value) => sum + ((value - mean) ** 2), 0) / values.length;
+            const stdev = Math.sqrt(Math.max(0, variance));
+            if (!Number.isFinite(stdev) || stdev <= 1e-6) return;
+            distributions.set(label, { mean, stdev, inverse: isInverseMetricLabel(label) });
+        });
+
+        const groupMeta = new Map<string, GroupPlayoffMeta>();
+        groups.forEach((group) => {
+            const sorted = [...group.standings].sort((a, b) => a.rank - b.rank);
+            if (sorted.length === 0) return;
+            const cutoff = cutoffForGroup(sport, sorted.length, config);
+            const cutoffTeam = sorted[Math.max(0, Math.min(sorted.length - 1, cutoff - 1))];
+            const cutoffWins = Number(cutoffTeam.stats.wins || 0);
+            const cutoffLosses = Number(cutoffTeam.stats.losses || 0);
+            const cutoffTies = Number(cutoffTeam.stats.ties || 0);
+            const cutoffWinPct = toWinPct(cutoffWins, cutoffLosses, cutoffTies);
+            const maxGamesPlayed = Math.max(
+                ...sorted.map((row) => Number(row.stats.wins || 0) + Number(row.stats.losses || 0) + Number(row.stats.ties || 0)),
+            );
+            const seasonTarget = Math.max(SEASON_GAME_TARGET[sport] || 0, maxGamesPlayed || 0);
+            groupMeta.set(group.name, { cutoff, cutoffWinPct, cutoffWins, seasonTarget });
+        });
+
+        const historicalGames = getInternalHistoricalGamesBySport(sport).filter((game) => {
+            if (game.status !== 'finished') return false;
+            if (!game.homeTeamId || !game.awayTeamId) return false;
+            return teamIds.has(String(game.homeTeamId)) && teamIds.has(String(game.awayTeamId));
+        });
+
+        const h2hMap = new Map<string, { games: number; wins: number; losses: number; draws: number; margin: number }>();
+        const updateH2H = (teamA: string, teamB: string, margin: number, isWin: boolean, isLoss: boolean, isDraw: boolean) => {
+            const key = `${teamA}|${teamB}`;
+            const existing = h2hMap.get(key) || { games: 0, wins: 0, losses: 0, draws: 0, margin: 0 };
+            existing.games += 1;
+            if (isWin) existing.wins += 1;
+            if (isLoss) existing.losses += 1;
+            if (isDraw) existing.draws += 1;
+            existing.margin += margin;
+            h2hMap.set(key, existing);
+        };
+
+        historicalGames.forEach((game) => {
+            const homeId = String(game.homeTeamId);
+            const awayId = String(game.awayTeamId);
+            const homeScore = parseLooseNumber(game.homeScore) ?? 0;
+            const awayScore = parseLooseNumber(game.awayScore) ?? 0;
+            const margin = homeScore - awayScore;
+            const isDraw = Math.abs(margin) < 0.0001;
+            updateH2H(homeId, awayId, margin, margin > 0, margin < 0, isDraw);
+            updateH2H(awayId, homeId, -margin, margin < 0, margin > 0, isDraw);
+        });
+
+        const baseRows = flatTeams.map(({ groupName, standing }) => {
+            const teamId = String(standing.team.id);
+            const wins = Number(standing.stats.wins || 0);
+            const losses = Number(standing.stats.losses || 0);
+            const ties = Number(standing.stats.ties || 0);
+            const gamesPlayed = wins + losses + ties;
+            const group = groupMeta.get(groupName);
+            const seasonTarget = Math.max(group?.seasonTarget || 0, gamesPlayed);
+            const remaining = Math.max(0, seasonTarget - gamesPlayed);
+            const winPct = toWinPct(wins, losses, ties);
+            const pointDiffRaw = Number(standing.stats.pointDifferential || 0);
+            const pointDiffPerGame = gamesPlayed > 0 ? pointDiffRaw / gamesPlayed : 0;
+            const rank = Number(standing.rank || 0);
+            const cutoff = group?.cutoff || Math.max(1, Math.round(flatTeams.length * 0.5));
+            const cutoffWinPct = group?.cutoffWinPct || 0.5;
+            const cutoffWins = group?.cutoffWins || 0;
+            const streakScore = parseStreakScore(standing.stats.streak);
+            const gamesBehind = parseGamesBehind(standing.stats.gamesBehind);
+            const values = teamStatValues.get(teamId) || new Map<string, number>();
+
+            let statPowerSum = 0;
+            let statPowerCount = 0;
+            distributions.forEach((dist, label) => {
+                const value = values.get(label);
+                if (value === undefined) return;
+                let z = (value - dist.mean) / dist.stdev;
+                if (dist.inverse) z = -z;
+                statPowerSum += clamp(z, -3, 3);
+                statPowerCount += 1;
+            });
+            const statPower = statPowerCount > 0 ? clamp(statPowerSum / statPowerCount, -2.5, 2.5) : 0;
+            const reliability = seasonTarget > 0 ? clamp(gamesPlayed / seasonTarget, 0.1, 1) : 0.5;
+
+            const clincherToken = String(standing.clincher || '').toLowerCase().replace(/[^a-z]/g, '');
+            const eliminatedByFlag = clincherToken.includes('e');
+            const clinched = standing.isChampion || (!!clincherToken && !eliminatedByFlag);
+
+            const rankEdge = (cutoff - rank) / Math.max(1, cutoff);
+            const pctEdge = (winPct - cutoffWinPct) * 6.2;
+            const winsEdge = (wins - cutoffWins) / Math.max(1, Math.round(seasonTarget * 0.08));
+            const diffEdge = pointDiffPerGame / scoreScaleBySport(sport);
+            const gbPenalty = gamesBehind * 0.55;
+            const momentumEdge = streakScore * 0.08;
+            const strengthEdge = statPower * 0.95;
+            const maxPossibleWins = wins + remaining + (ties * 0.5);
+            const impossibleByRecord = rank > cutoff && remaining > 0 && maxPossibleWins + 0.001 < cutoffWins;
+
+            let playoffProbability = 0;
+            if (eliminatedByFlag || impossibleByRecord) {
+                playoffProbability = 0;
+            } else if (clinched) {
+                playoffProbability = 1;
+            } else if (remaining <= 0) {
+                playoffProbability = rank <= cutoff ? 1 : 0;
+            } else {
+                const rawScore = (rankEdge * 1.45) + pctEdge + winsEdge + diffEdge + strengthEdge + momentumEdge - gbPenalty;
+                const uncertaintyDamp = 0.7 + ((1 - reliability) * 0.9);
+                const base = sigmoid(rawScore / uncertaintyDamp);
+                playoffProbability = 0.5 + ((base - 0.5) * reliability);
+                if (rank <= cutoff) playoffProbability = Math.max(playoffProbability, 0.52);
+                playoffProbability = clamp(playoffProbability, 0, 0.995);
+            }
+
+            return {
+                teamId,
+                teamName: standing.team.name,
+                teamAbbreviation: standing.team.abbreviation,
+                logo: standing.team.logo,
+                groupName,
+                rank,
+                wins,
+                losses,
+                ties,
+                winPct,
+                pointDiffPerGame,
+                streakScore,
+                statPower,
+                playoffProbability,
+                cutoff,
+            };
+        });
+
+        const rowsWithElimination = baseRows.map((row) => ({
+            ...row,
+            eliminated: row.playoffProbability <= 0.0001,
+        }));
+
+        const sportRounds = CHAMPIONSHIP_ROUNDS[sport] || (SOCCER_LEAGUES.includes(sport) ? 1 : 3);
+        const scoreScale = scoreScaleBySport(sport);
+        const contenderScores = new Map<string, number>();
+        rowsWithElimination.forEach((team) => {
+            if (team.eliminated) {
+                contenderScores.set(team.teamId, 0);
+                return;
+            }
+            let matchupWeighted = 0;
+            let matchupWeightTotal = 0;
+            rowsWithElimination.forEach((opponent) => {
+                if (team.teamId === opponent.teamId || opponent.eliminated) return;
+                const powerEdge = (team.statPower - opponent.statPower) * 1.05;
+                const winEdge = (team.winPct - opponent.winPct) * 2.4;
+                const diffEdge = (team.pointDiffPerGame - opponent.pointDiffPerGame) / scoreScale;
+                const h2h = h2hMap.get(`${team.teamId}|${opponent.teamId}`);
+                let h2hEdge = 0;
+                if (h2h && h2h.games > 0) {
+                    const recordEdge = (h2h.wins - h2h.losses) / h2h.games;
+                    const marginEdge = (h2h.margin / h2h.games) / scoreScale;
+                    h2hEdge = (recordEdge * 0.65) + (marginEdge * 0.5);
+                }
+                const matchupProb = sigmoid(powerEdge + winEdge + diffEdge + h2hEdge);
+                const weight = Math.max(0.02, opponent.playoffProbability);
+                matchupWeighted += matchupProb * weight;
+                matchupWeightTotal += weight;
+            });
+            const versusField = matchupWeightTotal > 0 ? (matchupWeighted / matchupWeightTotal) : 0.5;
+            const seedEdge = (team.cutoff - team.rank + 1) / Math.max(1, team.cutoff);
+            const seedFactor = clamp(0.84 + (seedEdge * 0.24), 0.62, 1.24);
+            const momentumFactor = clamp(1 + (team.streakScore * 0.02), 0.8, 1.25);
+            const playoffFactor = Math.pow(clamp(team.playoffProbability, 0, 1), 1.12);
+            const pathFactor = Math.pow(clamp(versusField, 0.2, 0.95), Math.max(1, sportRounds));
+            const statFactor = Math.exp(clamp(team.statPower, -2.5, 2.5) * 0.32);
+            const score = playoffFactor * pathFactor * seedFactor * momentumFactor * statFactor;
+            contenderScores.set(team.teamId, Number.isFinite(score) ? Math.max(0, score) : 0);
+        });
+
+        const scoreSum = Array.from(contenderScores.values()).reduce((sum, value) => sum + value, 0);
+        const rows: ProjectionRow[] = rowsWithElimination.map((row) => {
+            const championshipProbability = row.eliminated || scoreSum <= 0
+                ? 0
+                : (contenderScores.get(row.teamId) || 0) / scoreSum;
+            const clinched = row.playoffProbability >= 0.999;
+            return {
+                teamId: row.teamId,
+                teamName: row.teamName,
+                teamAbbreviation: row.teamAbbreviation,
+                logo: row.logo,
+                groupName: row.groupName,
+                rank: row.rank,
+                playoffProbability: row.eliminated ? 0 : clamp(row.playoffProbability, 0, 1),
+                championshipProbability: row.eliminated ? 0 : clamp(championshipProbability, 0, 1),
+                eliminated: row.eliminated,
+                clinched,
+            };
+        });
+
+        rows.sort((a, b) => b.championshipProbability - a.championshipProbability);
+
+        const qualificationLabel = config?.secondaryLabel
+            ? `${config.secondaryLabel} / ${config.label}`
+            : (config?.label || (SOCCER_LEAGUES.includes(sport) ? 'Qualification' : 'Postseason'));
+
+        return {
+            rows,
+            qualificationLabel,
+        };
+    }, [config, groups, showPlayoffProjection, sport]);
 
     if (isLoading) {
         return (
@@ -111,6 +518,113 @@ export const StandingsView: React.FC<StandingsViewProps> = ({ groups, sport, typ
                         >
                             {divisionLabel} Standings
                         </button>
+                    </div>
+                </div>
+            )}
+
+            {playoffProjection && playoffProjection.rows.length > 0 && (
+                <div className="bg-white dark:bg-slate-900/55 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm">
+                    <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-4">
+                        <div className="flex items-center gap-2">
+                            <Trophy size={15} className="text-amber-500" />
+                            <h3 className="text-xs sm:text-sm font-bold text-slate-800 dark:text-slate-100 uppercase tracking-wider">
+                                Playoff Probability Model
+                            </h3>
+                        </div>
+                        <span className="text-[10px] text-slate-500 dark:text-slate-400 font-semibold uppercase tracking-wider">
+                            Updates after completed games
+                        </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 p-4">
+                        <div className="space-y-2">
+                            <div className="flex items-center gap-2 text-[11px] font-bold text-slate-600 dark:text-slate-300 uppercase tracking-wider">
+                                <GitMerge size={13} className="text-indigo-500" />
+                                Championship Probability
+                            </div>
+                            <div className="space-y-2 max-h-[24rem] overflow-y-auto pr-1">
+                                {[...playoffProjection.rows]
+                                    .sort((a, b) => b.championshipProbability - a.championshipProbability)
+                                    .map((row, index) => (
+                                        <button
+                                            key={`champ-${row.teamId}`}
+                                            type="button"
+                                            onClick={() => onTeamClick?.(row.teamId, sport)}
+                                            className={`w-full text-left px-3 py-2.5 rounded-xl border transition-colors ${
+                                                row.eliminated
+                                                    ? 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/40 opacity-50 grayscale'
+                                                    : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/60 hover:border-indigo-300 dark:hover:border-indigo-700'
+                                            }`}
+                                            aria-label={`Open ${row.teamName} team page`}
+                                        >
+                                            <div className="flex items-center gap-3">
+                                                <span className="w-5 text-[11px] font-mono text-slate-500 dark:text-slate-400">{index + 1}</span>
+                                                {row.logo ? (
+                                                    <img src={row.logo} alt="" className="w-6 h-6 object-contain shrink-0" loading="lazy" />
+                                                ) : (
+                                                    <div className="w-6 h-6 rounded-full bg-slate-200 dark:bg-slate-800 shrink-0" />
+                                                )}
+                                                <div className="min-w-0 flex-1">
+                                                    <p className="font-semibold text-sm text-slate-800 dark:text-slate-100 truncate">{row.teamName}</p>
+                                                    <p className="text-[10px] text-slate-500 dark:text-slate-400 uppercase tracking-wide truncate">
+                                                        Seed {row.rank} {row.clinched ? '• Clinched' : row.eliminated ? '• Eliminated' : ''}
+                                                    </p>
+                                                </div>
+                                                <span className={`font-mono font-bold text-sm ${row.eliminated ? 'text-slate-400 dark:text-slate-500' : 'text-indigo-600 dark:text-indigo-400'}`}>
+                                                    {formatProbability(row.championshipProbability)}
+                                                </span>
+                                            </div>
+                                        </button>
+                                    ))}
+                            </div>
+                        </div>
+
+                        <div className="space-y-2">
+                            <div className="flex items-center gap-2 text-[11px] font-bold text-slate-600 dark:text-slate-300 uppercase tracking-wider">
+                                <List size={13} className="text-emerald-500" />
+                                {playoffProjection.qualificationLabel} Probability
+                            </div>
+                            <div className="space-y-2 max-h-[24rem] overflow-y-auto pr-1">
+                                {[...playoffProjection.rows]
+                                    .sort((a, b) => b.playoffProbability - a.playoffProbability)
+                                    .map((row, index) => (
+                                        <button
+                                            key={`playoff-${row.teamId}`}
+                                            type="button"
+                                            onClick={() => onTeamClick?.(row.teamId, sport)}
+                                            className={`w-full text-left px-3 py-2.5 rounded-xl border transition-colors ${
+                                                row.eliminated
+                                                    ? 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/40 opacity-50 grayscale'
+                                                    : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/60 hover:border-emerald-300 dark:hover:border-emerald-700'
+                                            }`}
+                                            aria-label={`Open ${row.teamName} team page`}
+                                        >
+                                            <div className="flex items-center gap-3">
+                                                <span className="w-5 text-[11px] font-mono text-slate-500 dark:text-slate-400">{index + 1}</span>
+                                                {row.logo ? (
+                                                    <img src={row.logo} alt="" className="w-6 h-6 object-contain shrink-0" loading="lazy" />
+                                                ) : (
+                                                    <div className="w-6 h-6 rounded-full bg-slate-200 dark:bg-slate-800 shrink-0" />
+                                                )}
+                                                <div className="min-w-0 flex-1">
+                                                    <p className="font-semibold text-sm text-slate-800 dark:text-slate-100 truncate">{row.teamName}</p>
+                                                    <p className="text-[10px] text-slate-500 dark:text-slate-400 uppercase tracking-wide truncate">
+                                                        Seed {row.rank} {row.clinched ? '• Clinched' : row.eliminated ? '• Eliminated' : ''}
+                                                    </p>
+                                                </div>
+                                                <span className={`font-mono font-bold text-sm ${row.eliminated ? 'text-slate-400 dark:text-slate-500' : 'text-emerald-600 dark:text-emerald-400'}`}>
+                                                    {formatProbability(row.playoffProbability)}
+                                                </span>
+                                            </div>
+                                        </button>
+                                    ))}
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="px-5 py-3 border-t border-slate-200 dark:border-slate-800 text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
+                        Uses each team&apos;s current-season record, point differential, full internal stat profile, and direct head-to-head game outcomes to estimate
+                        postseason qualification and championship share. Eliminated teams are fixed at 0%.
                     </div>
                 </div>
             )}
