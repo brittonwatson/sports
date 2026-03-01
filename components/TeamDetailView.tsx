@@ -657,26 +657,26 @@ export const TeamDetailView: React.FC<TeamDetailViewProps> = ({
                                     No season statistics available.
                                 </div>
                             ) : (
-                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-x-8 gap-y-10">
+                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
                                     {statsSections.map(({ category, stats }) => (
-                                        <div key={category} className="space-y-3">
-                                            <h5 className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2 pl-2 border-l-2 border-slate-200 dark:border-slate-700">
+                                        <div key={category} className="space-y-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/40 p-3 sm:p-4">
+                                            <h5 className="text-[10px] font-bold text-slate-500 dark:text-slate-300 uppercase tracking-wider mb-2 pl-2 border-l-2 border-slate-300 dark:border-slate-600">
                                                 {category}
                                             </h5>
-                                            <div className="space-y-1">
+                                            <div className="space-y-2">
                                                 {stats.map((stat, idx: number) => {
                                                     const leagueRank = (typeof stat.rank === 'number' && stat.rank > 0) ? stat.rank : undefined;
                                                     return (
                                                         <div 
                                                             key={idx} 
-                                                            className="flex items-center justify-between p-2 hover:bg-slate-50 dark:hover:bg-slate-800/50 rounded-lg transition-colors cursor-pointer group"
+                                                            className="flex items-center justify-between px-3 py-2.5 rounded-lg border border-slate-200/80 dark:border-slate-800/70 bg-white/85 dark:bg-slate-900/65 hover:bg-white dark:hover:bg-slate-900 transition-colors cursor-pointer group"
                                                             onClick={() => handleStatClick(stat, 'DETAILS')}
                                                         >
-                                                            <span className="text-xs font-medium text-slate-600 dark:text-slate-300 truncate pr-2 group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors">
+                                                            <span className="text-xs font-semibold text-slate-700 dark:text-slate-200 truncate pr-2 group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors">
                                                                 {stat.label}
                                                             </span>
                                                             <div className="flex items-center gap-2">
-                                                                <span className="text-sm font-mono font-bold text-slate-900 dark:text-white">
+                                                                <span className="text-base font-mono font-bold text-slate-900 dark:text-white">
                                                                     {cleanStatValue(stat.label, stat.value)}
                                                                 </span>
                                                                 {leagueRank && (

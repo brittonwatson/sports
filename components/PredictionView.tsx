@@ -583,6 +583,64 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
             </div>
         </div>
 
+        {Object.keys(categorizedStats).length > 0 && (
+            <div className="mb-8 border-t border-slate-100 dark:border-slate-800 pt-6">
+                <div className="mb-4 flex items-center justify-between gap-3">
+                    <h4 className="text-xs font-bold text-slate-500 dark:text-slate-300 uppercase tracking-wider flex items-center gap-2 font-display">
+                        <BarChart2 size={14} className="text-indigo-500" />
+                        Matchup Data Snapshot
+                    </h4>
+                    <span className="text-[10px] font-semibold text-slate-500 dark:text-slate-300 uppercase tracking-wider">
+                        {awayAbbr} vs {homeAbbr}
+                    </span>
+                </div>
+                <div className="space-y-4">
+                    {Object.entries(categorizedStats).map(([category, items]) => (
+                        <div key={category} className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-900/35 p-3 sm:p-4">
+                            <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-300 mb-3">
+                                {category}
+                            </div>
+                            <div className="space-y-2">
+                                {items.map((stat, idx) => {
+                                    const homeNum = parseStatValue(stat.homeValue);
+                                    const awayNum = parseStatValue(stat.awayValue);
+                                    const homeEdge = homeNum > awayNum;
+                                    const awayEdge = awayNum > homeNum;
+                                    return (
+                                        <div key={`${category}-${stat.label}-${idx}`} className="grid grid-cols-[minmax(84px,auto)_1fr_minmax(84px,auto)] items-center gap-3 rounded-lg border border-slate-200/80 dark:border-slate-800/70 bg-white/85 dark:bg-slate-900/65 px-3 py-2">
+                                            <div className="text-right">
+                                                <div className={`text-base font-mono font-bold leading-none ${awayEdge ? 'text-indigo-700 dark:text-indigo-300' : 'text-slate-700 dark:text-slate-200'}`}>
+                                                    {stat.awayValue}
+                                                </div>
+                                                {typeof stat.awayRank === 'number' && stat.awayRank > 0 && (
+                                                    <div className="text-[9px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mt-1">
+                                                        Lg #{stat.awayRank}
+                                                    </div>
+                                                )}
+                                            </div>
+                                            <div className="text-center text-xs font-semibold text-slate-700 dark:text-slate-200 truncate">
+                                                {stat.label}
+                                            </div>
+                                            <div className="text-left">
+                                                <div className={`text-base font-mono font-bold leading-none ${homeEdge ? 'text-indigo-700 dark:text-indigo-300' : 'text-slate-700 dark:text-slate-200'}`}>
+                                                    {stat.homeValue}
+                                                </div>
+                                                {typeof stat.homeRank === 'number' && stat.homeRank > 0 && (
+                                                    <div className="text-[9px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mt-1">
+                                                        Lg #{stat.homeRank}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            </div>
+        )}
+
         {displayOdds && (
             <div className="mb-8 border-t border-slate-100 dark:border-slate-800 pt-6">
                  <h4 className="text-xs font-bold text-slate-400 dark:text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2 font-display">

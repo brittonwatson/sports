@@ -2,9 +2,10 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Sport, StandingsGroup, LeagueStatRow } from '../types';
 import { getStoredLeagueStats } from '../services/teamService';
 import { dbEvents } from '../services/statsDb';
-import { Loader2, ArrowUp, ArrowDown, Activity, Database, CheckCircle2, RefreshCw, AlertTriangle } from 'lucide-react';
+import { Loader2, ArrowUp, ArrowDown, Activity, Database, CheckCircle2, RefreshCw, AlertTriangle, Info } from 'lucide-react';
 import { isInverseMetricLabel } from '../services/statDictionary';
 import { auditInternalSportData, SportIntegrityReport } from '../services/dataIntegrity';
+import { StatDetailModal } from './modals/StatDetailModal';
 
 interface LeagueStatsViewProps {
     groups: StandingsGroup[];
@@ -62,26 +63,7 @@ const parseVal = (v: string, key?: string): number | null => {
     return raw.includes('%') && Math.abs(n) <= 1 ? n * 100 : n;
 };
 
-const CATEGORY_ORDER = [
-    'Overview',
-    'Team',
-    'Opponent',
-    'Differential',
-    'Offense',
-    'Defense',
-    'Special Teams',
-    'Shooting',
-    'Rebounding',
-    'Ball Control',
-    'Passing',
-    'Rushing',
-    'Efficiency',
-    'Batting',
-    'Pitching',
-    'Fielding',
-    'Other',
-    'General'
-];
+const CATEGORY_ORDER = ['Offense', 'Defense', 'Differential', 'Efficiency', 'Special Teams', 'General', 'Other'];
 
 const SPORT_PRIORITY_LABELS: Record<string, string[]> = {
     NBA: [
@@ -131,12 +113,127 @@ const isInverseMetricKey = (key: string): boolean => {
     return isInverseMetricLabel(label);
 };
 
+const splitStatKey = (fullKey: string): { sourceCategory: string; label: string } => {
+    const separator = fullKey.indexOf('|');
+    if (separator === -1) {
+        return { sourceCategory: 'General', label: fullKey };
+    }
+    return {
+        sourceCategory: fullKey.slice(0, separator) || 'General',
+        label: fullKey.slice(separator + 1) || fullKey,
+    };
+};
+
+const inferDisplayCategory = (sourceCategory: string, label: string, sport: Sport): string => {
+    const lowerLabel = label.toLowerCase();
+    const sourceCategoryLower = sourceCategory.toLowerCase().trim();
+
+    const offenseSourceCategories = new Set([
+        'team',
+        'offense',
+        'passing',
+        'rushing',
+        'receiving',
+        'shooting',
+        'rebounding',
+        'batting',
+    ]);
+    const defenseSourceCategories = new Set([
+        'defense',
+        'opponent',
+        'fielding',
+        'pitching',
+    ]);
+    const otherSourceCategories = new Set([
+        'general',
+        'differential',
+        'special teams',
+        'ball control',
+        'efficiency',
+    ]);
+
+    if (
+        lowerLabel === 'wins' ||
+        lowerLabel === 'losses' ||
+        lowerLabel === 'ties' ||
+        lowerLabel === 'games played' ||
+        lowerLabel === 'games' ||
+        lowerLabel === 'gp'
+    ) {
+        return 'General';
+    }
+    if (lowerLabel.includes('differential') || lowerLabel.includes('margin')) return 'Differential';
+    if (lowerLabel.includes('opponent') || lowerLabel.includes('allowed') || lowerLabel.includes('against')) return 'Defense';
+    if (lowerLabel.includes('kick') || lowerLabel.includes('punt') || lowerLabel.includes('return')) return 'Special Teams';
+
+    if (sourceCategoryLower && !otherSourceCategories.has(sourceCategoryLower)) {
+        if (offenseSourceCategories.has(sourceCategoryLower)) return 'Offense';
+        if (defenseSourceCategories.has(sourceCategoryLower)) return 'Defense';
+    }
+
+    if (sport === 'NFL' || sport === 'NCAAF') {
+        if (
+            lowerLabel.includes('pass') ||
+            lowerLabel.includes('rush') ||
+            lowerLabel.includes('touchdown') ||
+            lowerLabel.includes('yard') ||
+            lowerLabel.includes('first down') ||
+            lowerLabel.includes('play') ||
+            lowerLabel.includes('drive')
+        ) {
+            return 'Offense';
+        }
+        if (lowerLabel.includes('interception') || lowerLabel.includes('sack') || lowerLabel.includes('fumble')) return 'Defense';
+    }
+
+    if (sourceCategoryLower === 'special teams') return 'Special Teams';
+    if (sourceCategoryLower === 'ball control' || sourceCategoryLower === 'efficiency') return 'Efficiency';
+    if (sourceCategoryLower === 'general') return 'General';
+    if (sourceCategoryLower === 'differential') return 'Differential';
+
+    if (
+        lowerLabel.includes('field goal') ||
+        lowerLabel.includes('three point') ||
+        lowerLabel.includes('free throw') ||
+        lowerLabel.includes('rebound') ||
+        lowerLabel.includes('assist') ||
+        lowerLabel.includes('points in paint') ||
+        lowerLabel.includes('fast break')
+    ) {
+        return 'Offense';
+    }
+    if (
+        lowerLabel.includes('steal') ||
+        lowerLabel.includes('block') ||
+        lowerLabel.includes('foul') ||
+        lowerLabel.includes('save') ||
+        lowerLabel.includes('clearance') ||
+        lowerLabel.includes('tackle') ||
+        lowerLabel.includes('interception')
+    ) {
+        return 'Defense';
+    }
+    if (lowerLabel.includes('ratio') || lowerLabel.includes('rate') || lowerLabel.includes('per ') || lowerLabel.includes('efficiency')) return 'Efficiency';
+    if (lowerLabel.includes('%')) return 'Efficiency';
+
+    return 'Other';
+};
+
 export const LeagueStatsView: React.FC<LeagueStatsViewProps> = ({ groups, sport, onTeamClick }) => {
     const [statsData, setStatsData] = useState<LeagueStatRow[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const [lastUpdated, setLastUpdated] = useState<number | null>(null);
     const [sortConfig, setSortConfig] = useState<{ key: string, direction: 'asc' | 'desc' } | null>(null);
     const [integrityReport, setIntegrityReport] = useState<SportIntegrityReport | null>(null);
+    const [selectedStat, setSelectedStat] = useState<{
+        label: string;
+        value: string;
+        rank?: number;
+        category?: string;
+        teamId: string;
+        teamName: string;
+        initialView?: 'DETAILS' | 'LEADERBOARD';
+    } | null>(null);
     const rootRef = useRef<HTMLDivElement>(null);
     const scrollContainerRef = useRef<HTMLDivElement>(null);
 
@@ -236,23 +333,23 @@ export const LeagueStatsView: React.FC<LeagueStatsViewProps> = ({ groups, sport,
     // Group stats by category and surface every tracked stat column from the internal dataset.
     const categorizedColumns = useMemo<Record<string, string[]>>(() => {
         if (statsData.length === 0) return {};
-        const keyMeta = new Map<string, { category: string; label: string; coverage: number }>();
+        const keyMeta = new Map<string, { sourceCategory: string; displayCategory: string; label: string; coverage: number }>();
 
         statsData.forEach(row => {
             const seen = new Set<string>();
             Object.keys(row.stats).forEach(fullKey => {
-                if (!fullKey.includes('|') || seen.has(fullKey)) return;
+                if (seen.has(fullKey)) return;
                 seen.add(fullKey);
-                const [rawCategory = 'General', rawLabel = ''] = fullKey.split('|');
-                const category = rawCategory || 'General';
-                const label = (rawLabel || rawCategory || 'Unknown').trim();
-                if (!label) return;
+                const { sourceCategory, label } = splitStatKey(fullKey);
+                const safeLabel = (label || sourceCategory || 'Unknown').trim();
+                if (!safeLabel) return;
+                const displayCategory = inferDisplayCategory(sourceCategory, safeLabel, sport);
 
                 const existing = keyMeta.get(fullKey);
                 if (existing) {
                     existing.coverage += 1;
                 } else {
-                    keyMeta.set(fullKey, { category, label, coverage: 1 });
+                    keyMeta.set(fullKey, { sourceCategory, displayCategory, label: safeLabel, coverage: 1 });
                 }
             });
         });
@@ -286,7 +383,7 @@ export const LeagueStatsView: React.FC<LeagueStatsViewProps> = ({ groups, sport,
         allMetas
             .sort(sortByPriorityCoverage)
             .forEach(meta => {
-                const category = meta.category || 'General';
+                const category = meta.displayCategory || 'Other';
                 addKey(category, meta.key);
             });
 
@@ -336,6 +433,27 @@ export const LeagueStatsView: React.FC<LeagueStatsViewProps> = ({ groups, sport,
             return sortConfig.direction === 'asc' ? valA - valB : valB - valA;
         });
     }, [statsData, sortConfig]);
+
+    const openStatModal = (row: LeagueStatRow, key: string, viewMode: 'DETAILS' | 'LEADERBOARD') => {
+        const rawValue = row.stats[key];
+        if (rawValue === undefined || rawValue === null) return;
+        const { sourceCategory, label } = splitStatKey(key);
+        setSelectedStat({
+            label,
+            value: String(rawValue),
+            rank: row.ranks[key],
+            category: sourceCategory,
+            teamId: row.team.id,
+            teamName: row.team.name,
+            initialView: viewMode,
+        });
+    };
+
+    const openColumnExplainer = (key: string) => {
+        const row = sortedData.find((candidate) => candidate.stats[key] !== undefined && candidate.stats[key] !== null);
+        if (!row) return;
+        openStatModal(row, key, 'DETAILS');
+    };
 
     if (isLoading) {
         return (
@@ -410,19 +528,19 @@ export const LeagueStatsView: React.FC<LeagueStatsViewProps> = ({ groups, sport,
                     <table className="w-full text-left border-collapse min-w-max">
                         <thead>
                             <tr className="bg-slate-50/80 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800">
-                                <th className="sticky left-0 z-20 bg-slate-50 dark:bg-slate-900 p-4 min-w-[200px] border-r border-slate-100 dark:border-slate-800 shadow-[2px_0_5px_rgba(0,0,0,0.05)] dark:shadow-[2px_0_5px_rgba(0,0,0,0.2)]">
+                                <th className="sticky left-0 z-20 bg-slate-50 dark:bg-slate-900 p-4 min-w-[220px] border-r border-slate-100 dark:border-slate-800 shadow-[2px_0_5px_rgba(0,0,0,0.05)] dark:shadow-[2px_0_5px_rgba(0,0,0,0.2)]">
                                     <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Team</span>
                                 </th>
                                 {Object.entries(categorizedColumns).map(([category, keys]) => (
                                     <React.Fragment key={category}>
                                         {(keys as string[]).map((key, idx) => {
-                                            const label = key.split('|')[1];
+                                            const { label } = splitStatKey(key);
                                             const isSort = sortConfig?.key === key;
                                             return (
-                                                <th 
+                                                <th
                                                     key={key} 
                                                     onClick={() => handleSort(key)}
-                                                    className={`p-3 min-w-[100px] cursor-pointer transition-colors hover:bg-slate-100 dark:hover:bg-slate-800 group relative ${idx === 0 ? 'border-l border-slate-100 dark:border-slate-800' : ''}`}
+                                                    className={`p-3 min-w-[110px] cursor-pointer transition-colors hover:bg-slate-100 dark:hover:bg-slate-800 group relative ${idx === 0 ? 'border-l border-slate-100 dark:border-slate-800' : ''}`}
                                                 >
                                                     <div className="flex flex-col gap-1">
                                                         {idx === 0 && (
@@ -430,9 +548,21 @@ export const LeagueStatsView: React.FC<LeagueStatsViewProps> = ({ groups, sport,
                                                                 {category}
                                                             </span>
                                                         )}
-                                                        <div className={`flex items-center gap-1 mt-3 text-xs font-bold whitespace-nowrap ${isSort ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-500 dark:text-slate-400 group-hover:text-slate-800 dark:group-hover:text-slate-200'}`}>
+                                                        <div className={`flex items-center gap-1 mt-3 text-[11px] font-bold whitespace-nowrap ${isSort ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-500 dark:text-slate-300 group-hover:text-slate-800 dark:group-hover:text-slate-100'}`}>
                                                             {label}
                                                             {isSort && (sortConfig.direction === 'asc' ? <ArrowUp size={12} /> : <ArrowDown size={12} />)}
+                                                            <button
+                                                                type="button"
+                                                                onClick={(event) => {
+                                                                    event.stopPropagation();
+                                                                    openColumnExplainer(key);
+                                                                }}
+                                                                className="p-0.5 rounded text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors"
+                                                                aria-label={`Explain ${label}`}
+                                                                title={`Explain ${label}`}
+                                                            >
+                                                                <Info size={11} />
+                                                            </button>
                                                         </div>
                                                     </div>
                                                 </th>
@@ -443,8 +573,8 @@ export const LeagueStatsView: React.FC<LeagueStatsViewProps> = ({ groups, sport,
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100 dark:divide-slate-800/50">
-                            {sortedData.map((row) => (
-                                <tr key={row.team.id} className="group hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors">
+                            {sortedData.map((row, rowIndex) => (
+                                <tr key={row.team.id} className={`group transition-colors ${rowIndex % 2 === 0 ? 'bg-white/70 dark:bg-slate-950/45' : 'bg-slate-50/45 dark:bg-slate-900/20'} hover:bg-slate-50 dark:hover:bg-slate-800/30`}>
                                     <td className="sticky left-0 z-10 bg-white dark:bg-slate-950 group-hover:bg-slate-50 dark:group-hover:bg-slate-900 p-3 border-r border-slate-100 dark:border-slate-800 shadow-[2px_0_5px_rgba(0,0,0,0.05)] dark:shadow-[2px_0_5px_rgba(0,0,0,0.2)]">
                                         <button
                                             type="button"
@@ -457,7 +587,7 @@ export const LeagueStatsView: React.FC<LeagueStatsViewProps> = ({ groups, sport,
                                             ) : (
                                                 <div className="w-8 h-8 rounded-full bg-slate-200 dark:bg-slate-800" />
                                             )}
-                                            <span className="font-bold text-sm text-slate-800 dark:text-slate-200 truncate max-w-[140px] group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors">
+                                            <span className="font-bold text-[15px] text-slate-800 dark:text-slate-200 truncate max-w-[150px] group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors">
                                                 {row.team.name}
                                             </span>
                                         </button>
@@ -465,6 +595,7 @@ export const LeagueStatsView: React.FC<LeagueStatsViewProps> = ({ groups, sport,
                                     {Object.entries(categorizedColumns).map(([category, keys]) => (
                                         <React.Fragment key={category}>
                                             {(keys as string[]).map((key, idx) => {
+                                                const { label } = splitStatKey(key);
                                                 const val = row.stats[key];
                                                 const rank = row.ranks[key];
                                                 if (val === undefined || val === null) {
@@ -479,14 +610,34 @@ export const LeagueStatsView: React.FC<LeagueStatsViewProps> = ({ groups, sport,
                                                 
                                                 return (
                                                     <td key={key} className={`p-3 text-center ${idx === 0 ? 'border-l border-slate-100 dark:border-slate-800' : ''}`}>
-                                                        <div className="flex flex-col items-center">
-                                                            <span className={`font-mono text-sm font-bold ${isTop3 ? 'text-emerald-600 dark:text-emerald-400' : isBottom3 ? 'text-rose-500' : 'text-slate-700 dark:text-slate-300'}`}>
+                                                        <div className="flex flex-col items-center gap-1">
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => openStatModal(row, key, 'DETAILS')}
+                                                                className={`font-mono text-base font-bold hover:underline underline-offset-2 decoration-dotted ${
+                                                                    isTop3
+                                                                        ? 'text-emerald-600 dark:text-emerald-400'
+                                                                        : isBottom3
+                                                                            ? 'text-rose-500'
+                                                                            : 'text-slate-700 dark:text-slate-200'
+                                                                }`}
+                                                                aria-label={`Open ${label} details for ${row.team.name}`}
+                                                            >
                                                                 {val}
-                                                            </span>
+                                                            </button>
                                                             {rank && (
-                                                                <span className={`text-[9px] font-bold px-1.5 rounded ${isTop3 ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400' : 'text-slate-400'}`}>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => openStatModal(row, key, 'LEADERBOARD')}
+                                                                    className={`text-[10px] font-bold px-1.5 rounded hover:opacity-90 transition-opacity ${
+                                                                        isTop3
+                                                                            ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400'
+                                                                            : 'text-slate-500 dark:text-slate-400'
+                                                                    }`}
+                                                                    aria-label={`Open ${label} league rankings`}
+                                                                >
                                                                     #{rank}
-                                                                </span>
+                                                                </button>
                                                             )}
                                                         </div>
                                                     </td>
@@ -500,6 +651,23 @@ export const LeagueStatsView: React.FC<LeagueStatsViewProps> = ({ groups, sport,
                     </table>
                 </div>
             </div>
+            {selectedStat && (
+                <StatDetailModal
+                    isOpen={true}
+                    onClose={() => setSelectedStat(null)}
+                    stat={{
+                        label: selectedStat.label,
+                        value: selectedStat.value,
+                        rank: selectedStat.rank,
+                        category: selectedStat.category,
+                    }}
+                    teamId={selectedStat.teamId}
+                    teamName={selectedStat.teamName}
+                    sport={sport}
+                    initialView={selectedStat.initialView}
+                    onTeamClick={onTeamClick}
+                />
+            )}
         </div>
     );
 };

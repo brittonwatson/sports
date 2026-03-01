@@ -223,7 +223,7 @@ const FOOTBALL_PROFILE: SportProfile = {
 const BASKETBALL_PROFILE: SportProfile = {
     family: "basketball",
     baseTotal: 220,
-    minTotal: 130,
+    minTotal: 0,
     maxTotal: 290,
     maxTeamScore: 170,
     homeAdvantage: 2.9,
@@ -1990,29 +1990,6 @@ const computePregameModel = (
     }
 
     if (profile.family === "basketball" && game.status === "scheduled" && historyPrior) {
-        const pointsMetric = findMetric(sourceStats, ["points per game", "points", "ppg", "pts"], game.league as Sport);
-        const oppPointsMetric = findMetric(sourceStats, ["opponent points", "points allowed", "opp points"], game.league as Sport);
-        const statExpectedTotal = pointsMetric && oppPointsMetric
-            ? (((pointsMetric.home + oppPointsMetric.away) / 2) + ((pointsMetric.away + oppPointsMetric.home) / 2))
-            : historyPrior.total;
-
-        const matchupFloor = Math.max(
-            profile.minTotal,
-            historyPrior.total * 0.82,
-            statExpectedTotal * 0.76,
-        );
-
-        if (projectedTotal < matchupFloor) {
-            projectedTotal = matchupFloor;
-            findings.push({
-                label: "Basketball Total Guardrail",
-                value: `${projectedTotal.toFixed(1)}`,
-                impact: "neutral",
-                description: "Floor enforced from team-scoring history and opponent-adjusted matchup context",
-                magnitude: 0.52,
-            });
-        }
-
         const historyHomeBaseline = (historyPrior.homeOffense + historyPrior.awayDefense) / 2;
         const historyAwayBaseline = (historyPrior.awayOffense + historyPrior.homeDefense) / 2;
         let projectedHome = (projectedTotal + projectedMargin) / 2;

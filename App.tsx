@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { SPORTS, Sport, Game, PredictionResult, GroundingChunk, StandingsGroup, GameDetails, UserProfile, TeamOption, PredictionStats, StandingsType, TeamProfile, SOCCER_LEAGUES } from './types';
 import { fetchUpcomingGames, fetchBracketGames, fetchGameDetails } from './services/gameService';
 import { fetchStandings, fetchRankings, fetchTeamProfile, fetchTeamSchedule, syncFullDatabase } from './services/teamService';
@@ -25,6 +25,7 @@ import { FilterBar } from './components/App/FilterBar';
 import { MenuDrawer } from './components/App/MenuDrawer';
 import { SearchModal } from './components/App/SearchModal';
 import { SettingsModal } from './components/App/SettingsModal';
+import { FollowingBar } from './components/App/FollowingBar';
 
 type Tab = Sport | 'HOME' | 'METHODOLOGY';
 type ViewMode = 'LIVE' | 'UPCOMING' | 'SCORES' | 'STANDINGS' | 'BRACKET' | 'RANKINGS' | 'CALENDAR' | 'TEAMS' | 'LEAGUE_STATS';
@@ -42,7 +43,7 @@ const RANKED_LEAGUES: Sport[] = ['NCAAF', 'NCAAM', 'NCAAW'];
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID?.trim() || '';
 const ENABLE_RUNTIME_SYNC = import.meta.env.VITE_ENABLE_RUNTIME_SYNC === 'true';
 const ALL_VIEW_MODES: ViewMode[] = ['LIVE', 'UPCOMING', 'SCORES', 'STANDINGS', 'BRACKET', 'RANKINGS', 'CALENDAR', 'TEAMS', 'LEAGUE_STATS'];
-const PREDICTION_MODEL_VERSION = '2026-03-01-r5';
+const PREDICTION_MODEL_VERSION = '2026-03-01-r6';
 
 const isThemeMode = (value: string | null): value is ThemeMode =>
   value === 'light' || value === 'dark' || value === 'system';
@@ -134,6 +135,17 @@ const parseFavoriteTeams = (raw: string | null): Set<string> => {
   return new Set(parsed.filter((entry): entry is string => typeof entry === 'string'));
 };
 
+const parseFollowedGames = (raw: string | null): Set<string> => {
+  const parsed = parseJson<unknown>(raw, []);
+  if (!Array.isArray(parsed)) return new Set();
+  return new Set(
+    parsed
+      .filter((entry): entry is string => typeof entry === 'string')
+      .map((entry) => entry.trim())
+      .filter(Boolean),
+  );
+};
+
 const parseUserSession = (raw: string | null): UserProfile | null => {
   const parsed = parseJson<unknown>(raw, null);
   return isUserProfile(parsed) ? parsed : null;
@@ -181,6 +193,8 @@ export const App: React.FC = () => {
   // Favorites State
   const [favoriteLeagues, setFavoriteLeagues] = useState<Set<Sport>>(new Set(SPORTS));
   const [favoriteTeams, setFavoriteTeams] = useState<Set<string>>(new Set());
+  const [followedGames, setFollowedGames] = useState<Set<string>>(new Set());
+  const [isFollowingBarOpen, setIsFollowingBarOpen] = useState(true);
   
   // Team Search State
   const [teamSearchTerm, setTeamSearchTerm] = useState('');
@@ -192,6 +206,7 @@ export const App: React.FC = () => {
   const [games, setGames] = useState<Game[]>([]);
   const [bracketGames, setBracketGames] = useState<Game[]>([]);
   const [standings, setStandings] = useState<StandingsGroup[]>([]);
+  const [gameRegistry, setGameRegistry] = useState<Map<string, Game>>(new Map());
   const [selectedGame, setSelectedGame] = useState<Game | null>(null);
   const [navigatedGameId, setNavigatedGameId] = useState<string | null>(initialNavRef.current.gameId);
   const [prediction, setPrediction] = useState<PredictionResult | null>(null);
@@ -222,6 +237,26 @@ export const App: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [isPredicting, setIsPredicting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const upsertGamesInRegistry = useCallback((incoming: Game[]) => {
+    if (incoming.length === 0) return;
+    setGameRegistry((prev) => {
+      const next = new Map(prev);
+      incoming.forEach((game) => {
+        const existing = next.get(game.id);
+        next.set(game.id, existing ? { ...existing, ...game } : game);
+      });
+
+      const staleFinishedCutoffMs = Date.now() - (14 * 24 * 60 * 60 * 1000);
+      for (const [id, game] of next.entries()) {
+        const gameTime = new Date(game.dateTime).getTime();
+        if (game.status === 'finished' && Number.isFinite(gameTime) && gameTime < staleFinishedCutoffMs) {
+          next.delete(id);
+        }
+      }
+      return next;
+    });
+  }, []);
 
   // Initialize Theme
   useEffect(() => {
@@ -298,6 +333,9 @@ export const App: React.FC = () => {
 
         const teamKey = currentUser ? `favorite_teams_${currentUser.sub}` : 'favorite_teams';
         setFavoriteTeams(parseFavoriteTeams(localStorage.getItem(teamKey)));
+
+        const followKey = currentUser ? `followed_games_${currentUser.sub}` : 'followed_games';
+        setFollowedGames(parseFollowedGames(localStorage.getItem(followKey)));
     };
     loadFavorites();
 
@@ -324,6 +362,11 @@ export const App: React.FC = () => {
     const key = user ? `favorite_teams_${user.sub}` : 'favorite_teams';
     localStorage.setItem(key, JSON.stringify(Array.from(favoriteTeams)));
   }, [favoriteTeams, user]);
+
+  useEffect(() => {
+    const key = user ? `followed_games_${user.sub}` : 'followed_games';
+    localStorage.setItem(key, JSON.stringify(Array.from(followedGames)));
+  }, [followedGames, user]);
 
   useEffect(() => {
     const root = window.document.documentElement;
@@ -576,6 +619,7 @@ export const App: React.FC = () => {
                   ]);
                   setTeamProfile(profile);
                   setTeamSchedule(schedule);
+                  upsertGamesInRegistry(schedule);
               } catch (e) {
                   console.error("Failed to load team data", e);
               } finally {
@@ -597,7 +641,7 @@ export const App: React.FC = () => {
       return () => {
           if (intervalId) clearInterval(intervalId);
       }
-  }, [selectedTeam]);
+  }, [selectedTeam, upsertGamesInRegistry]);
 
   const handleCredentialResponse = (response: GoogleCredentialResponse) => {
       if (!response?.credential) return;
@@ -625,6 +669,15 @@ export const App: React.FC = () => {
               setFavoriteTeams(parseFavoriteTeams(localTeams));
           }
 
+          const followKey = `followed_games_${profile.sub}`;
+          const cloudFollowed = localStorage.getItem(followKey);
+          if (cloudFollowed) {
+              setFollowedGames(parseFollowedGames(cloudFollowed));
+          } else {
+              const localFollowed = localStorage.getItem('followed_games');
+              setFollowedGames(parseFollowedGames(localFollowed));
+          }
+
           setIsSettingsOpen(false);
       }
   };
@@ -639,6 +692,9 @@ export const App: React.FC = () => {
 
       const localTeams = localStorage.getItem('favorite_teams');
       setFavoriteTeams(parseFavoriteTeams(localTeams));
+
+      const localFollowed = localStorage.getItem('followed_games');
+      setFollowedGames(parseFollowedGames(localFollowed));
 
       setIsSettingsOpen(false);
   };
@@ -783,6 +839,7 @@ export const App: React.FC = () => {
             }
       
             setGames(fetchedGames);
+            upsertGamesInRegistry(fetchedGames);
 
 	            if (isTabSwitch.current && !isBackground) {
 	                const hasLive = fetchedGames.some(g => g.status === 'in_progress');
@@ -829,6 +886,14 @@ export const App: React.FC = () => {
                                     awayScore: details.awayScore,
                                     situation: details.situation || prev.situation
                                 } : null);
+                                upsertGamesInRegistry([{
+                                    ...liveGame,
+                                    clock: details.clock,
+                                    period: details.period,
+                                    homeScore: details.homeScore,
+                                    awayScore: details.awayScore,
+                                    situation: details.situation || liveGame.situation,
+                                }]);
                             }
                         }
                     } catch (err) {
@@ -893,6 +958,7 @@ export const App: React.FC = () => {
       } else {
           setNavigatedGameId(game.id);
           setSelectedGame(game);
+          upsertGamesInRegistry([game]);
           setPrediction(null);
           setGameDetails(null);
           activeRequestId.current = game.id;
@@ -943,6 +1009,15 @@ export const App: React.FC = () => {
                       situation: details.situation || prev.situation,
                       odds: updatedOdds
                   } : null);
+                  upsertGamesInRegistry([{
+                      ...game,
+                      clock: details.clock,
+                      period: details.period,
+                      homeScore: details.homeScore,
+                      awayScore: details.awayScore,
+                      situation: details.situation || game.situation,
+                      odds: updatedOdds,
+                  }]);
               }
               
               const gameWithLatestOdds = { ...game, odds: details?.odds || game.odds };
@@ -1101,9 +1176,91 @@ export const App: React.FC = () => {
     }).slice(0, 15);
   }, [menuSearchTerm, allTeams]);
 
-  const parsedFavoriteTeams = (Array.from(favoriteTeams) as string[]).map(s => {
-      try { return JSON.parse(s as string) as TeamOption; } catch { return null; }
-  }).filter(t => t !== null) as TeamOption[];
+  const parsedFavoriteTeams = useMemo(() => {
+    return (Array.from(favoriteTeams) as string[])
+      .map((s) => {
+        try {
+          return JSON.parse(s as string) as TeamOption;
+        } catch {
+          return null;
+        }
+      })
+      .filter((t): t is TeamOption => t !== null);
+  }, [favoriteTeams]);
+
+  const favoriteTeamKeySet = useMemo(() => {
+    const keys = new Set<string>();
+    parsedFavoriteTeams.forEach((team) => {
+      keys.add(`${team.league}|${team.id}`);
+    });
+    return keys;
+  }, [parsedFavoriteTeams]);
+
+  const autoFollowGameIds = useMemo(() => {
+    const ids = new Set<string>();
+    gameRegistry.forEach((game) => {
+      if (game.status === 'finished') return;
+      const league = game.league as Sport;
+      const homeKey = game.homeTeamId ? `${league}|${game.homeTeamId}` : '';
+      const awayKey = game.awayTeamId ? `${league}|${game.awayTeamId}` : '';
+      if ((homeKey && favoriteTeamKeySet.has(homeKey)) || (awayKey && favoriteTeamKeySet.has(awayKey))) {
+        ids.add(game.id);
+      }
+    });
+    return ids;
+  }, [gameRegistry, favoriteTeamKeySet]);
+
+  const followedGamesForBar = useMemo(() => {
+    const ids = new Set<string>([...Array.from(followedGames), ...Array.from(autoFollowGameIds)]);
+    const tracked = new Map(gameRegistry);
+    if (selectedGame) tracked.set(selectedGame.id, selectedGame);
+    games.forEach((game) => tracked.set(game.id, { ...(tracked.get(game.id) || {} as Game), ...game }));
+    teamSchedule.forEach((game) => tracked.set(game.id, { ...(tracked.get(game.id) || {} as Game), ...game }));
+
+    return Array.from(ids)
+      .map((id) => tracked.get(id))
+      .filter((game): game is Game => Boolean(game) && game.status !== 'finished')
+      .sort((a, b) => {
+        const aLive = a.status === 'in_progress' ? 0 : 1;
+        const bLive = b.status === 'in_progress' ? 0 : 1;
+        if (aLive !== bLive) return aLive - bLive;
+        return new Date(a.dateTime).getTime() - new Date(b.dateTime).getTime();
+      });
+  }, [autoFollowGameIds, followedGames, gameRegistry, games, selectedGame, teamSchedule]);
+
+  const isGameFollowed = useCallback((game: Game) => {
+    return followedGames.has(game.id) || autoFollowGameIds.has(game.id);
+  }, [followedGames, autoFollowGameIds]);
+
+  const toggleFollowGame = useCallback((game: Game, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setFollowedGames((prev) => {
+      const next = new Set(prev);
+      if (next.has(game.id)) next.delete(game.id);
+      else next.add(game.id);
+      return next;
+    });
+    setIsFollowingBarOpen(true);
+    upsertGamesInRegistry([game]);
+  }, [upsertGamesInRegistry]);
+
+  const openFollowedGame = useCallback((game: Game) => {
+    setIsMenuOpen(false);
+    setSelectedTeam(null);
+    const targetLeague = SPORTS.includes(game.league as Sport) ? (game.league as Sport) : 'HOME';
+    setSelectedTab(targetLeague);
+    setViewMode(game.status === 'in_progress' ? 'LIVE' : 'UPCOMING');
+    setNavigatedGameId(game.id);
+    handleGameToggle(game);
+  }, [handleGameToggle]);
+
+  const closeActiveGameButKeepFollowing = useCallback(() => {
+    setNavigatedGameId(null);
+    setSelectedGame(null);
+    setPrediction(null);
+    setGameDetails(null);
+    activeRequestId.current = null;
+  }, []);
 
   const availableConferencesList = useMemo(() => {
       if (!RANKED_LEAGUES.includes(selectedTab as Sport)) return [];
@@ -1221,6 +1378,8 @@ export const App: React.FC = () => {
                          onSelect={handleGameToggle} 
                          isSelected={isSelected} 
                          onTeamClick={handleTeamClick}
+                         isFollowed={isGameFollowed(game)}
+                         onToggleFollow={toggleFollowGame}
                      />
                      
                      {isSelected && (
@@ -1288,7 +1447,19 @@ export const App: React.FC = () => {
         onMenuClick={() => setIsMenuOpen(true)}
       />
 
-      <main className="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-6">
+      <FollowingBar
+        games={followedGamesForBar}
+        isOpen={isFollowingBarOpen}
+        selectedGameId={selectedGame?.id || null}
+        onOpen={() => setIsFollowingBarOpen(true)}
+        onClose={() => setIsFollowingBarOpen(false)}
+        onGameClick={openFollowedGame}
+        onCloseActiveGame={closeActiveGameButKeepFollowing}
+      />
+
+      <main className={`max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-6 transition-[padding] duration-300 ${
+        followedGamesForBar.length > 0 && isFollowingBarOpen ? 'pt-28' : 'pt-6'
+      }`}>
          {selectedTeam ? (
              <div>
 	                <button 
@@ -1315,6 +1486,8 @@ export const App: React.FC = () => {
                         isDarkMode={isDarkMode}
                         onGenerateAnalysis={handleGenerateAnalysis}
                         onTeamClick={handleTeamClick}
+                        isGameFollowed={isGameFollowed}
+                        onToggleFollowGame={toggleFollowGame}
                     />
                 ) : (
                     <div className="text-center py-20 text-slate-500">Failed to load team data.</div>
@@ -1411,6 +1584,8 @@ export const App: React.FC = () => {
                                         onSelect={() => {}} // Already selected
                                         isSelected={true} 
                                         onTeamClick={handleTeamClick}
+                                        isFollowed={isGameFollowed(selectedGame)}
+                                        onToggleFollow={toggleFollowGame}
                                     />
                                     <div className="relative mt-4 border-t border-slate-100 dark:border-slate-800 pt-6">
                                          {isPredicting ? (
@@ -1464,6 +1639,8 @@ export const App: React.FC = () => {
                         onGameSelect={handleGameToggle}
                         selectedGameId={selectedGame?.id}
                         onTeamClick={handleTeamClick}
+                        isGameFollowed={isGameFollowed}
+                        onToggleFollowGame={toggleFollowGame}
                      />
                  ) : viewMode === 'TEAMS' ? (
                      <TeamsListView 

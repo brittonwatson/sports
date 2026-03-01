@@ -37,7 +37,7 @@ const parseStatValue = (val: string): number => {
 
 export const LiveGameView: React.FC<LiveGameViewProps> = ({ game, gameDetails, prediction, isDarkMode, onGenerateAnalysis, onTeamClick }) => {
   const [activeTab, setActiveTab] = useState<'ACTION' | 'PREDICTION'>('ACTION');
-  const [showLiveStats, setShowLiveStats] = useState(false);
+  const [showLiveStats, setShowLiveStats] = useState(true);
   const [showAllPlays, setShowAllPlays] = useState(false); 
   const [mounted, setMounted] = useState(false);
   
@@ -333,9 +333,20 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({ game, gameDetails, p
                       
                       {showLiveStats && (
                           <div className="p-5 space-y-6 animate-fade-in">
+                              <div className="grid grid-cols-[minmax(72px,auto)_1fr_minmax(72px,auto)] items-center gap-3 pb-2 border-b border-slate-100 dark:border-slate-800/70">
+                                  <div className="text-right text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-300">
+                                      {awayAbbr}
+                                  </div>
+                                  <div className="text-center text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-400">
+                                      Stat
+                                  </div>
+                                  <div className="text-left text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-300">
+                                      {homeAbbr}
+                                  </div>
+                              </div>
                               {Object.entries(categorizedStats).map(([category, items]) => (
                                   <div key={category}>
-                                      <h5 className="text-[10px] font-bold text-slate-600 dark:text-slate-300 uppercase tracking-wider mb-3 pl-1 border-l-2 border-slate-300 dark:border-slate-600">{category}</h5>
+                                      <h5 className="text-[10px] font-bold text-slate-600 dark:text-slate-300 uppercase tracking-wider mb-3 pl-2 border-l-2 border-slate-300 dark:border-slate-600">{category}</h5>
                                       <div className="space-y-3">
                                           {items.map((stat, idx) => {
                                               const hVal = parseStatValue(stat.homeValue);
@@ -344,10 +355,10 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({ game, gameDetails, p
                                               const aBold = aVal > hVal;
                                               
                                               return (
-                                                  <div key={idx} className="flex items-center justify-between text-xs">
-                                                      <span className={`w-12 text-right font-mono ${aBold ? 'font-bold text-slate-900 dark:text-white' : 'text-slate-700 dark:text-slate-200'}`}>{stat.awayValue}</span>
-                                                      <span className="flex-1 text-center font-medium text-slate-700 dark:text-slate-200 px-2 truncate">{stat.label}</span>
-                                                      <span className={`w-12 text-left font-mono ${hBold ? 'font-bold text-slate-900 dark:text-white' : 'text-slate-700 dark:text-slate-200'}`}>{stat.homeValue}</span>
+                                                  <div key={idx} className="grid grid-cols-[minmax(72px,auto)_1fr_minmax(72px,auto)] items-center gap-3 rounded-lg border border-slate-200/80 dark:border-slate-800/70 bg-white/85 dark:bg-slate-900/60 px-3 py-2">
+                                                      <span className={`text-right text-base font-mono leading-none ${aBold ? 'font-bold text-indigo-700 dark:text-indigo-300' : 'text-slate-700 dark:text-slate-200'}`}>{stat.awayValue}</span>
+                                                      <span className="text-center text-xs font-semibold text-slate-700 dark:text-slate-200 px-2 truncate">{stat.label}</span>
+                                                      <span className={`text-left text-base font-mono leading-none ${hBold ? 'font-bold text-indigo-700 dark:text-indigo-300' : 'text-slate-700 dark:text-slate-200'}`}>{stat.homeValue}</span>
                                                   </div>
                                               );
                                           })}
