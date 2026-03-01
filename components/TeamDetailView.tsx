@@ -123,7 +123,7 @@ export const TeamDetailView: React.FC<TeamDetailViewProps> = ({
     const [isPlayerLoading, setIsPlayerLoading] = useState(false);
     
     // Stat Detail State
-    const [selectedStat, setSelectedStat] = useState<{ label: string; value: string; rank?: number; initialView?: 'DETAILS' | 'LEADERBOARD' } | null>(null);
+    const [selectedStat, setSelectedStat] = useState<{ label: string; value: string; rank?: number; category?: string; initialView?: 'DETAILS' | 'LEADERBOARD' } | null>(null);
 
     // Team Statistics State (For Player Leaders)
     const [teamStats, setTeamStats] = useState<TeamStatistics | null>(null);
@@ -571,6 +571,7 @@ export const TeamDetailView: React.FC<TeamDetailViewProps> = ({
             label: stat.label,
             value: cleanStatValue(stat.label, stat.value),
             rank: stat.rank,
+            category: stat.category,
             initialView: viewMode
         });
     };
@@ -782,6 +783,7 @@ export const TeamDetailView: React.FC<TeamDetailViewProps> = ({
                     isOpen={true}
                     onClose={() => setSelectedStat(null)}
                     stat={selectedStat}
+                    teamId={team.id}
                     teamName={team.name}
                     sport={league}
                     initialView={selectedStat.initialView}

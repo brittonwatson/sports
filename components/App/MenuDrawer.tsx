@@ -130,7 +130,6 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                   </div>
                   <input 
                     type="text" 
-                    autoFocus
                     value={menuSearchTerm}
                     onChange={(e) => setMenuSearchTerm(e.target.value)}
                     placeholder="Search to add teams..." 
