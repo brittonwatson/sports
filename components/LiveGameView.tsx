@@ -23,7 +23,7 @@ interface LiveGameViewProps {
   gameDetails: GameDetails | null;
   prediction: PredictionResult | null;
   isDarkMode: boolean;
-  onGenerateAnalysis?: () => void;
+  onGenerateAnalysis?: () => void | Promise<void>;
   onTeamClick?: (teamId: string, league: Sport) => void;
 }
 
@@ -60,6 +60,12 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({ game, gameDetails, p
   } | null>(null);
 
   useEffect(() => { setMounted(true); }, []);
+  useEffect(() => {
+      if ((prediction?.analysis?.length || 0) > 0) {
+          setIsAnalysisOpen(true);
+          setIsGenerating(false);
+      }
+  }, [prediction?.analysis?.length, game.id]);
 
   const isSoccer = SOCCER_LEAGUES.includes(game.league as Sport);
   const isFootball = game.league === 'NFL' || game.league === 'NCAAF';
@@ -173,6 +179,14 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({ game, gameDetails, p
       if (!teamId) return;
       e.stopPropagation();
       onTeamClick(teamId, game.league as Sport);
+  };
+
+  const triggerAnalysis = () => {
+      if (!onGenerateAnalysis || isGenerating) return;
+      setIsGenerating(true);
+      Promise.resolve(onGenerateAnalysis())
+          .catch((error) => console.error(error))
+          .finally(() => setIsGenerating(false));
   };
 
   const renderProjectedScoreRow = (type: 'home' | 'away') => {
@@ -653,15 +667,19 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({ game, gameDetails, p
               {/* AI Analysis Section */}
               {( (prediction?.analysis && prediction.analysis.length > 0) || (onGenerateAnalysis) ) && (
                   <div className="bg-indigo-50 dark:bg-indigo-900/10 rounded-2xl p-5 border border-indigo-100 dark:border-indigo-900/30 transition-all duration-500 ease-in-out">
-                      <div 
-                          className="flex justify-between items-center cursor-pointer mb-2"
-                          onClick={() => prediction?.analysis?.length ? setIsAnalysisOpen(!isAnalysisOpen) : null}
-                      >
+                      <div className="flex justify-between items-center mb-2">
                           <h4 className="text-xs font-bold text-indigo-700 dark:text-indigo-300 uppercase tracking-wider flex items-center gap-2">
                               <Sparkles size={14} /> AI Match Analysis
                           </h4>
                           {prediction?.analysis && prediction.analysis.length > 0 && (
-                              isAnalysisOpen ? <ChevronUp size={16} className="text-indigo-400" /> : <ChevronDown size={16} className="text-indigo-400" />
+                              <button
+                                  type="button"
+                                  onClick={() => setIsAnalysisOpen((prev) => !prev)}
+                                  className="inline-flex items-center justify-center rounded-md p-1 text-indigo-400 hover:bg-indigo-100 dark:hover:bg-indigo-900/30"
+                                  aria-label={isAnalysisOpen ? 'Collapse analysis' : 'Expand analysis'}
+                              >
+                                  {isAnalysisOpen ? <ChevronUp size={16} className="text-indigo-400" /> : <ChevronDown size={16} className="text-indigo-400" />}
+                              </button>
                           )}
                       </div>
                       
@@ -679,11 +697,7 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({ game, gameDetails, p
                               )
                           ) : (
                               <button 
-                                  onClick={() => { 
-                                      setIsGenerating(true); 
-                                      if(onGenerateAnalysis) onGenerateAnalysis();
-                                      setTimeout(() => { setIsGenerating(false); }, 10000); 
-                                  }}
+                                  onClick={triggerAnalysis}
                                   disabled={isGenerating}
                                   className="w-full py-3 rounded-xl bg-slate-900 dark:bg-white text-white dark:text-slate-900 font-bold text-sm flex items-center justify-center gap-2 hover:shadow-lg hover:-translate-y-0.5 transition-all disabled:opacity-70 disabled:cursor-not-allowed"
                               >

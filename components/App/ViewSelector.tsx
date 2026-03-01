@@ -49,7 +49,7 @@ export const ViewSelector: React.FC<ViewSelectorProps> = ({ viewMode, selectedTa
                 : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'
             }`}
       >
-        Final Scores
+        {isRacing ? 'Results' : 'Final Scores'}
       </button>
       
       {selectedTab !== 'HOME' && (

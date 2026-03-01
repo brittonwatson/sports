@@ -68,6 +68,63 @@ const loadProbabilityModule = async (): Promise<ProbabilityModule> => {
   return probabilityModulePromise;
 };
 
+const CLOCK_PATTERN = /^\s*(\d{1,3}):(\d{2})(?::(\d{2}))?\s*$/;
+const SOCCER_MINUTE_PATTERN = /^\s*(\d{1,3})(?:\+(\d{1,2}))?\s*['’]?\s*$/;
+
+const parseClockRemainingSeconds = (value: string | undefined): number | null => {
+  const text = String(value || '').trim();
+  if (!text) return null;
+  const match = text.match(CLOCK_PATTERN);
+  if (!match) return null;
+  const first = parseInt(match[1], 10);
+  const second = parseInt(match[2], 10);
+  const third = match[3] !== undefined ? parseInt(match[3], 10) : null;
+  if (!Number.isFinite(first) || !Number.isFinite(second)) return null;
+  if (third !== null && !Number.isFinite(third)) return null;
+  return third !== null ? (first * 3600) + (second * 60) + third : (first * 60) + second;
+};
+
+const parseSoccerMinute = (value: string | undefined): number | null => {
+  const text = String(value || '').trim();
+  if (!text) return null;
+  const match = text.match(SOCCER_MINUTE_PATTERN);
+  if (!match) return null;
+  const minute = parseInt(match[1], 10);
+  const added = match[2] ? parseInt(match[2], 10) : 0;
+  if (!Number.isFinite(minute) || !Number.isFinite(added)) return null;
+  return minute + added;
+};
+
+const compareLiveGamesNatural = (a: Game, b: Game): number => {
+  if (a.isPlayoff !== b.isPlayoff) return a.isPlayoff ? -1 : 1;
+
+  const aPeriod = Number(a.period) || 0;
+  const bPeriod = Number(b.period) || 0;
+  if (aPeriod !== bPeriod) return bPeriod - aPeriod;
+
+  const aClockRemaining = parseClockRemainingSeconds(a.clock);
+  const bClockRemaining = parseClockRemainingSeconds(b.clock);
+  if (aClockRemaining !== null && bClockRemaining !== null && aClockRemaining !== bClockRemaining) {
+    return aClockRemaining - bClockRemaining;
+  }
+
+  const aSoccerMinute = parseSoccerMinute(a.clock);
+  const bSoccerMinute = parseSoccerMinute(b.clock);
+  if (aSoccerMinute !== null && bSoccerMinute !== null && aSoccerMinute !== bSoccerMinute) {
+    return bSoccerMinute - aSoccerMinute;
+  }
+
+  const aStart = new Date(a.dateTime).getTime();
+  const bStart = new Date(b.dateTime).getTime();
+  if (Number.isFinite(aStart) && Number.isFinite(bStart) && aStart !== bStart) {
+    return aStart - bStart;
+  }
+
+  const leagueCompare = String(a.league || '').localeCompare(String(b.league || ''));
+  if (leagueCompare !== 0) return leagueCompare;
+  return String(a.id || '').localeCompare(String(b.id || ''));
+};
+
 const hasRenderableGameDetails = (details: GameDetails | null | undefined): boolean => {
   if (!details) return false;
   return (
@@ -1040,10 +1097,11 @@ export const App: React.FC = () => {
 	                if (mode === 'LIVE' && !hasLive) {
 	                    setViewMode('UPCOMING');
                       setNavigatedGameId(null);
-	                    isTabSwitch.current = false;
-	                } else {
-	                    isTabSwitch.current = false;
-	                }
+	                } else if (mode !== 'LIVE' && hasLive) {
+	                    setViewMode('LIVE');
+                      setNavigatedGameId(null);
+                  }
+	                isTabSwitch.current = false;
 	            }
 
             if (isBackground && activeRequestId.current) {
@@ -1379,12 +1437,10 @@ export const App: React.FC = () => {
 
   const handleGenerateAnalysis = async () => {
     if (!selectedGame || !prediction) return;
-    setIsPredicting(true);
     try {
         const { analysis, groundingChunks } = await generateAIAnalysis(selectedGame, prediction.stats);
         setPrediction(prev => prev ? { ...prev, analysis, groundingChunks } : null);
     } catch(e) { console.error(e); }
-    finally { setIsPredicting(false); }
   };
 
   const navigateToTeam = (team: TeamOption) => {
@@ -1711,7 +1767,10 @@ export const App: React.FC = () => {
       let next = seasonScopedGames;
 
       if (viewMode === 'LIVE') {
-          next = seasonScopedGames.filter((g) => g.status === 'in_progress');
+          next = seasonScopedGames
+              .filter((g) => g.status === 'in_progress')
+              .slice()
+              .sort(compareLiveGamesNatural);
       } else if (viewMode === 'UPCOMING') {
           next = seasonScopedGames
               .filter((g) => g.status === 'scheduled')
@@ -1999,7 +2058,7 @@ export const App: React.FC = () => {
                                  {selectedTab === 'HOME' ? 'Live & Upcoming Action' : 
                                   viewMode === 'STANDINGS' && SOCCER_LEAGUES.includes(selectedTab as Sport) ? 'League Table' :
                                   viewMode === 'LEAGUE_STATS' ? 'Season Statistics' :
-                                  `${viewMode === 'LIVE' ? 'Live Games' : viewMode === 'UPCOMING' ? 'Scheduled Matchups' : viewMode === 'SCORES' ? 'Final Scores' : viewMode === 'CALENDAR' ? 'Season Calendar' : viewMode === 'TEAMS' ? 'Team Directory' : viewMode.charAt(0) + viewMode.slice(1).toLowerCase()}`}
+                                  `${viewMode === 'LIVE' ? 'Live Games' : viewMode === 'UPCOMING' ? (RACING_LEAGUES.includes(selectedTab as Sport) ? 'Upcoming Events' : 'Scheduled Matchups') : viewMode === 'SCORES' ? (RACING_LEAGUES.includes(selectedTab as Sport) ? 'Results' : 'Final Scores') : viewMode === 'CALENDAR' ? 'Season Calendar' : viewMode === 'TEAMS' ? 'Team Directory' : viewMode.charAt(0) + viewMode.slice(1).toLowerCase()}`}
                              </p>
                          </div>
                      </div>
@@ -2169,7 +2228,7 @@ export const App: React.FC = () => {
                             </div>
                          )}
                      </div>
-                 ) : viewMode === 'CALENDAR' ? (
+                 ) : (viewMode === 'CALENDAR' || (viewMode === 'UPCOMING' && RACING_LEAGUES.includes(selectedTab as Sport))) ? (
                      <CalendarView 
                         sport={selectedTab as Sport}
                         onGameSelect={handleGameToggle}

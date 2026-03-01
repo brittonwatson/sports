@@ -3,6 +3,11 @@ import { GoogleGenAI } from "@google/genai";
 import { Game, PredictionStats } from "../types";
 import { API_KEY } from "./constants";
 
+const GEMINI_FLASH_MODELS = [
+    'gemini-flash-latest',
+    'gemini-3-flash-preview',
+];
+
 export const generateAIAnalysis = async (game: Game, stats: PredictionStats): Promise<{ analysis: string[], groundingChunks: any[] }> => {
     const ai = new GoogleGenAI({ apiKey: API_KEY });
     const prompt = `
@@ -15,17 +20,21 @@ export const generateAIAnalysis = async (game: Game, stats: PredictionStats): Pr
     Provide 5 short, insightful, bullet points explaining the key factors determining this prediction. Focus on recent performance, injuries, or matchup specifics.
     Return strictly a JSON object with a property "analysis" containing an array of 5 strings.
     `;
-    try {
-        const response = await ai.models.generateContent({
-            model: 'gemini-3-flash-preview',
-            contents: prompt,
-            config: { responseMimeType: 'application/json', tools: [{ googleSearch: {} }] }
-        });
-        const text = response.text || '{ "analysis": [] }';
-        const json = JSON.parse(text);
-        return { analysis: json.analysis || [], groundingChunks: response.candidates?.[0]?.groundingMetadata?.groundingChunks || [] };
-    } catch (e) {
-        console.error("AI Analysis Failed", e);
-        return { analysis: ["AI Analysis unavailable at this moment."], groundingChunks: [] };
+    let lastError: unknown = null;
+    for (const model of GEMINI_FLASH_MODELS) {
+        try {
+            const response = await ai.models.generateContent({
+                model,
+                contents: prompt,
+                config: { responseMimeType: 'application/json', tools: [{ googleSearch: {} }] }
+            });
+            const text = response.text || '{ "analysis": [] }';
+            const json = JSON.parse(text);
+            return { analysis: json.analysis || [], groundingChunks: response.candidates?.[0]?.groundingMetadata?.groundingChunks || [] };
+        } catch (e) {
+            lastError = e;
+        }
     }
+    console.error("AI Analysis Failed", lastError);
+    return { analysis: ["AI Analysis unavailable at this moment."], groundingChunks: [] };
 };

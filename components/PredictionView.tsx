@@ -15,7 +15,7 @@ interface PredictionViewProps {
   game: Game;
   prediction: PredictionResult;
   isDarkMode: boolean;
-  onGenerateAnalysis?: () => void;
+  onGenerateAnalysis?: () => void | Promise<void>;
   gameDetails?: GameDetails | null;
   hideAnalysis?: boolean;
   hideLeaders?: boolean;
@@ -120,8 +120,9 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
   const handleAnalysisClick = () => {
       if (onGenerateAnalysis) {
           setIsGenerating(true);
-          onGenerateAnalysis();
-          setTimeout(() => setIsGenerating(false), 8000); 
+          Promise.resolve(onGenerateAnalysis())
+              .catch((error) => console.error(error))
+              .finally(() => setIsGenerating(false));
       }
   };
 
@@ -1012,7 +1013,7 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
                             {!isGenerating && <div className="absolute inset-0 -translate-x-full group-hover:animate-[shimmer_1.5s_infinite] bg-gradient-to-r from-transparent via-white/20 to-transparent z-10" />}
                         </button>
                         <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
-                            Generate a 5-point rigorous breakdown using Gemini 3 Flash.
+                            Generate a 5-point rigorous breakdown using Gemini Flash (latest).
                         </p>
                     </div>
                 )}

@@ -125,6 +125,14 @@ const inferSeasonStateFromLeagueSeason = (
     return buildSeasonStateFromWindow(leagueSeason?.startDate, leagueSeason?.endDate, now, preseasonBufferDays);
 };
 
+const shouldForceNcaafOffseason = (sport: Sport, now: Date): boolean => {
+    if (sport !== "NCAAF") return false;
+    // Keep college football in offseason from February through July.
+    // August+ can transition into preseason/in-season naturally.
+    const month = now.getMonth(); // 0 = Jan
+    return month >= 1 && month < 7;
+};
+
 const fetchRacingSeasonContext = async (sport: Sport, now: Date): Promise<SeasonContext | null> => {
     if (!RACING_SPORTS.has(sport)) return null;
     const cached = racingSeasonContextCache.get(sport);
@@ -430,11 +438,17 @@ export const fetchUpcomingGames = async (
                 }
             }
         }
+        const forceOffseason = shouldForceNcaafOffseason(sport, now);
+        if (forceOffseason) {
+            seasonState = "offseason";
+            internalSeasonActive = false;
+            hasLiveEvent = false;
+        }
         if (games.length > 0) {
             return {
                 games: sortGamesByDateTime(games),
                 groundingChunks: [],
-                isSeasonActive: internalSeasonActive || games.length > 0,
+                isSeasonActive: forceOffseason ? false : (internalSeasonActive || games.length > 0),
                 seasonState,
                 nextEventDate,
                 hasLiveEvent,
@@ -486,6 +500,13 @@ export const fetchUpcomingGames = async (
                     isSeasonActive = true;
                 }
             }
+        }
+
+        const forceOffseason = shouldForceNcaafOffseason(sport, now);
+        if (forceOffseason) {
+            seasonState = "offseason";
+            isSeasonActive = false;
+            hasLiveEvent = false;
         }
 
         if (games.length > 0 && seasonState !== "offseason") isSeasonActive = true;

@@ -41,7 +41,7 @@ export const MethodologyView = () => {
                 </div>
                 <h3 className="font-bold text-slate-900 dark:text-white mb-2 font-display">Qualitative AI</h3>
                 <p className="text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
-                    Gemini 3 Flash provides the "Why" behind the numbers, analyzing matchups, injuries, and historical context to complement the rigorous math.
+                    Gemini Flash (latest) provides the "Why" behind the numbers, analyzing matchups, injuries, and historical context to complement the rigorous math.
                 </p>
             </div>
         </div>
