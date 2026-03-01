@@ -25,6 +25,7 @@ interface MatchupPair {
     defenseAllowAliases: string[];
     weight: number;
     scale: number;
+    totalContributionWeight?: number;
 }
 
 interface DirectAxis {
@@ -81,6 +82,16 @@ interface ModelOutcome {
     keyFactors: string[];
     factorBreakdown: FactorComparison[];
     calculationBreakdown: CalculationDetailItem[];
+}
+
+interface MonteCarloOutcome {
+    home: number;
+    away: number;
+    draw: number;
+    meanHome: number;
+    meanAway: number;
+    tieRate: number;
+    simulations: number;
 }
 
 interface TeamGameLog {
@@ -189,6 +200,7 @@ const FOOTBALL_PROFILE: SportProfile = {
             defenseAllowAliases: ["opponent points", "points allowed", "opp points", "scoring defense"],
             weight: 2.0,
             scale: 6.0,
+            totalContributionWeight: 1.0,
         },
         {
             label: "Passing Matchup",
@@ -196,6 +208,7 @@ const FOOTBALL_PROFILE: SportProfile = {
             defenseAllowAliases: ["opponent pass", "passing yards allowed", "pass defense", "opp pass yds"],
             weight: 1.2,
             scale: 35,
+            totalContributionWeight: 0.0,
         },
         {
             label: "Rushing Matchup",
@@ -203,6 +216,7 @@ const FOOTBALL_PROFILE: SportProfile = {
             defenseAllowAliases: ["opponent rush", "rushing yards allowed", "rush defense", "opp rush yds"],
             weight: 1.1,
             scale: 30,
+            totalContributionWeight: 0.0,
         },
     ],
     directAxes: [
@@ -241,6 +255,7 @@ const BASKETBALL_PROFILE: SportProfile = {
             defenseAllowAliases: ["opponent points", "points allowed", "opp points"],
             weight: 2.3,
             scale: 9,
+            totalContributionWeight: 1.0,
         },
         {
             label: "Perimeter Matchup",
@@ -248,6 +263,7 @@ const BASKETBALL_PROFILE: SportProfile = {
             defenseAllowAliases: ["opponent three point %", "opponent 3pt %", "opponent 3p%"],
             weight: 1.0,
             scale: 5.5,
+            totalContributionWeight: 0.0,
         },
     ],
     directAxes: [
@@ -287,6 +303,7 @@ const BASEBALL_PROFILE: SportProfile = {
             defenseAllowAliases: ["runs allowed", "opponent runs", "era"],
             weight: 1.6,
             scale: 1.1,
+            totalContributionWeight: 1.0,
         },
     ],
     directAxes: [
@@ -322,6 +339,7 @@ const SOCCER_PROFILE: SportProfile = {
             defenseAllowAliases: ["opponent points", "goals against", "ga", "goals allowed"],
             weight: 1.25,
             scale: 1.15,
+            totalContributionWeight: 1.0,
         },
         {
             label: "Shot Quality Matchup",
@@ -329,6 +347,7 @@ const SOCCER_PROFILE: SportProfile = {
             defenseAllowAliases: ["shots on target allowed", "shots allowed", "opponent shots on target"],
             weight: 0.65,
             scale: 3.0,
+            totalContributionWeight: 0.0,
         },
     ],
     directAxes: [
@@ -366,6 +385,7 @@ const HOCKEY_PROFILE: SportProfile = {
             defenseAllowAliases: ["goals against", "ga/gp", "goals allowed"],
             weight: 1.7,
             scale: 0.55,
+            totalContributionWeight: 1.0,
         },
     ],
     directAxes: [
@@ -400,6 +420,7 @@ const OTHER_PROFILE: SportProfile = {
 };
 
 const STRICT_TEAM_HISTORY_MODE = true;
+const MONTE_CARLO_SIMULATIONS = 10000;
 
 const normalizeLabel = (label: string): string => normalizeStatToken(label);
 
@@ -440,6 +461,68 @@ const weightedStdDev = (items: Array<{ value: number; weight: number }>, fallbac
 };
 
 const blend = (base: number, next: number, weight: number): number => (base * (1 - weight)) + (next * weight);
+
+const hashToSeed = (input: string): number => {
+    let hash = 2166136261;
+    for (let i = 0; i < input.length; i += 1) {
+        hash ^= input.charCodeAt(i);
+        hash = Math.imul(hash, 16777619);
+    }
+    return hash >>> 0;
+};
+
+const createSeededRandom = (seed: number): (() => number) => {
+    let s = seed >>> 0;
+    return () => {
+        s = (s + 0x6D2B79F5) >>> 0;
+        let t = Math.imul(s ^ (s >>> 15), 1 | s);
+        t ^= t + Math.imul(t ^ (t >>> 7), 61 | t);
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+};
+
+const sampleStandardNormal = (rand: () => number): number => {
+    const u1 = Math.max(1e-12, rand());
+    const u2 = Math.max(1e-12, rand());
+    return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+};
+
+const sampleNormal = (meanValue: number, stdDevValue: number, rand: () => number): number => {
+    if (!Number.isFinite(meanValue)) return 0;
+    if (!Number.isFinite(stdDevValue) || stdDevValue <= 0) return meanValue;
+    return meanValue + (sampleStandardNormal(rand) * stdDevValue);
+};
+
+const samplePoisson = (lambda: number, rand: () => number): number => {
+    if (!Number.isFinite(lambda) || lambda <= 0) return 0;
+    if (lambda > 28) {
+        const approx = sampleNormal(lambda, Math.sqrt(lambda), rand);
+        return Math.max(0, Math.round(approx));
+    }
+
+    const threshold = Math.exp(-lambda);
+    let product = 1;
+    let k = 0;
+    while (product > threshold) {
+        k += 1;
+        product *= Math.max(1e-12, rand());
+    }
+    return Math.max(0, k - 1);
+};
+
+const splitTotalMargin = (total: number, margin: number): { home: number; away: number } => {
+    let home = (total + margin) / 2;
+    let away = (total - margin) / 2;
+    if (home < 0) {
+        away += home;
+        home = 0;
+    }
+    if (away < 0) {
+        home += away;
+        away = 0;
+    }
+    return { home: Math.max(0, home), away: Math.max(0, away) };
+};
 
 const isMissingValue = (value: string): boolean => {
     const trimmed = String(value || "").trim();
@@ -1713,6 +1796,8 @@ const computePregameModel = (
             : (shouldFallbackToGameStats ? (details?.stats || []) : []),
         game.league as Sport,
     );
+    const basketballScoringAliases = ["points per game", "points", "ppg", "pts"];
+    const basketballOpponentScoringAliases = ["opponent points", "points allowed", "opp points", "scoring defense"];
     let projectedMargin = 0;
     let projectedTotal = profile.baseTotal;
     let baseMarginStdDev = Math.max(0.75, Math.sqrt(Math.max(1, profile.baseTotal)) * 0.62);
@@ -1892,7 +1977,7 @@ const computePregameModel = (
         }
     }
 
-    const matchupTotals: number[] = [];
+    const matchupTotals: Array<{ total: number; weight: number }> = [];
     profile.matchupPairs.forEach((pair) => {
             const offenseMetric = findMetric(sourceStats, pair.offenseAliases, game.league as Sport);
             const defenseMetric = findMetric(sourceStats, pair.defenseAllowAliases, game.league as Sport);
@@ -1901,7 +1986,13 @@ const computePregameModel = (
 
         const homeExpected = (offenseMetric.home + defenseMetric.away) / 2;
         const awayExpected = (offenseMetric.away + defenseMetric.home) / 2;
-        matchupTotals.push(homeExpected + awayExpected);
+        const totalContributionWeight = pair.totalContributionWeight ?? 1;
+        if (totalContributionWeight > 0) {
+            matchupTotals.push({
+                total: homeExpected + awayExpected,
+                weight: totalContributionWeight,
+            });
+        }
 
         const edge = ((homeExpected - awayExpected) / pair.scale) * pair.weight;
         projectedMargin += edge;
@@ -1932,7 +2023,10 @@ const computePregameModel = (
     });
 
     if (matchupTotals.length > 0) {
-        const meanMatchupTotal = matchupTotals.reduce((sum, v) => sum + v, 0) / matchupTotals.length;
+        const totalWeight = matchupTotals.reduce((sum, entry) => sum + entry.weight, 0);
+        const meanMatchupTotal = totalWeight > 0
+            ? matchupTotals.reduce((sum, entry) => sum + (entry.total * entry.weight), 0) / totalWeight
+            : matchupTotals.reduce((sum, entry) => sum + entry.total, 0) / matchupTotals.length;
         const referenceTotal = historyPrior ? historyPrior.total : profile.baseTotal;
         const ratioToReference = referenceTotal > 0 ? (meanMatchupTotal / referenceTotal) : 1;
         let minRatio = 0.4;
@@ -1970,6 +2064,35 @@ const computePregameModel = (
     projectedMargin += directAxisResult.marginImpact;
     foundSignals += directAxisResult.found;
 
+    if (profile.family === "basketball" && game.status === "scheduled") {
+        const pointsMetric = findMetric(sourceStats, basketballScoringAliases, game.league as Sport);
+        const oppPointsMetric = findMetric(sourceStats, basketballOpponentScoringAliases, game.league as Sport);
+        if (pointsMetric && oppPointsMetric) {
+            const seasonHomeExpected = (pointsMetric.home + oppPointsMetric.away) / 2;
+            const seasonAwayExpected = (pointsMetric.away + oppPointsMetric.home) / 2;
+            const seasonTotal = seasonHomeExpected + seasonAwayExpected;
+            const seasonMargin = seasonHomeExpected - seasonAwayExpected;
+            const blendWeight = historyPrior ? 0.34 : 0.72;
+            projectedTotal = blend(projectedTotal, seasonTotal, blendWeight);
+            projectedMargin = blend(projectedMargin, seasonMargin, blendWeight * 0.58);
+            findings.push({
+                label: "Season Offense vs Opponent Defense",
+                value: `${seasonHomeExpected.toFixed(1)}-${seasonAwayExpected.toFixed(1)}`,
+                impact: seasonMargin > 0 ? "positive" : seasonMargin < 0 ? "negative" : "neutral",
+                description: `Team scoring rate blended with opponent points allowed (${pointsMetric.label} vs ${oppPointsMetric.label})`,
+                magnitude: Math.max(0.3, Math.abs(seasonMargin) / 8.5),
+            });
+            upsertFactorComparison(
+                factorBreakdown,
+                "Season Matchup Scoring Baseline",
+                seasonHomeExpected,
+                seasonAwayExpected,
+                seasonHomeExpected.toFixed(1),
+                seasonAwayExpected.toFixed(1),
+            );
+        }
+    }
+
     const marketTotal = shouldUseFallbackContext ? parseOverUnder(game.odds?.overUnder) : null;
     if (marketTotal && marketTotal > 0) {
         projectedTotal = (projectedTotal * 0.75) + (marketTotal * 0.25);
@@ -1992,13 +2115,49 @@ const computePregameModel = (
     if (profile.family === "basketball" && game.status === "scheduled" && historyPrior) {
         const historyHomeBaseline = (historyPrior.homeOffense + historyPrior.awayDefense) / 2;
         const historyAwayBaseline = (historyPrior.awayOffense + historyPrior.homeDefense) / 2;
+        const seasonPointsMetric = findMetric(sourceStats, basketballScoringAliases, game.league as Sport);
+        const seasonOppMetric = findMetric(sourceStats, basketballOpponentScoringAliases, game.league as Sport);
+        const seasonHomeBaseline = seasonPointsMetric && seasonOppMetric
+            ? (seasonPointsMetric.home + seasonOppMetric.away) / 2
+            : null;
+        const seasonAwayBaseline = seasonPointsMetric && seasonOppMetric
+            ? (seasonPointsMetric.away + seasonOppMetric.home) / 2
+            : null;
+        const anchorHomeBaseline = seasonHomeBaseline !== null
+            ? blend(historyHomeBaseline, seasonHomeBaseline, 0.45)
+            : historyHomeBaseline;
+        const anchorAwayBaseline = seasonAwayBaseline !== null
+            ? blend(historyAwayBaseline, seasonAwayBaseline, 0.45)
+            : historyAwayBaseline;
         let projectedHome = (projectedTotal + projectedMargin) / 2;
         let projectedAway = (projectedTotal - projectedMargin) / 2;
+        projectedHome = blend(projectedHome, anchorHomeBaseline, seasonHomeBaseline !== null ? 0.34 : 0.28);
+        projectedAway = blend(projectedAway, anchorAwayBaseline, seasonAwayBaseline !== null ? 0.34 : 0.28);
 
-        const floorHome = Math.max(1, historyHomeBaseline * 0.78);
-        const floorAway = Math.max(1, historyAwayBaseline * 0.78);
-        const ceilHome = Math.max(floorHome + 1, historyHomeBaseline * 1.34);
-        const ceilAway = Math.max(floorAway + 1, historyAwayBaseline * 1.34);
+        const floorHome = Math.max(
+            1,
+            historyHomeBaseline * 0.82,
+            anchorHomeBaseline * 0.85,
+            seasonHomeBaseline !== null ? seasonHomeBaseline * 0.88 : 0,
+        );
+        const floorAway = Math.max(
+            1,
+            historyAwayBaseline * 0.82,
+            anchorAwayBaseline * 0.85,
+            seasonAwayBaseline !== null ? seasonAwayBaseline * 0.88 : 0,
+        );
+        const ceilHome = Math.max(
+            floorHome + 1,
+            historyHomeBaseline * 1.3,
+            anchorHomeBaseline * 1.22,
+            seasonHomeBaseline !== null ? seasonHomeBaseline * 1.16 : 0,
+        );
+        const ceilAway = Math.max(
+            floorAway + 1,
+            historyAwayBaseline * 1.3,
+            anchorAwayBaseline * 1.22,
+            seasonAwayBaseline !== null ? seasonAwayBaseline * 1.16 : 0,
+        );
 
         const originalHome = projectedHome;
         const originalAway = projectedAway;
@@ -2009,7 +2168,9 @@ const computePregameModel = (
                 label: "Basketball Matchup Side Floors",
                 value: `${projectedHome.toFixed(1)}-${projectedAway.toFixed(1)}`,
                 impact: "neutral",
-                description: "Side projections anchored to opponent-adjusted team scoring history",
+                description: seasonHomeBaseline !== null && seasonAwayBaseline !== null
+                    ? "Side projections anchored to team history and season offense-vs-opponent-defense baselines"
+                    : "Side projections anchored to opponent-adjusted team scoring history",
                 magnitude: 0.58,
             });
         }
@@ -2454,6 +2615,147 @@ const applyOutcomeCertaintyCap = (
     return renormalizeOutcomes(outcomes[0].value, outcomes[1].value, outcomes[2].value);
 };
 
+const runMonteCarloOutcome = (
+    game: Game,
+    profile: SportProfile,
+    projectedHome: number,
+    projectedAway: number,
+    projectedMargin: number,
+    baseMarginStdDev: number,
+    scoringVolatility: number,
+    elapsedFraction: number,
+): MonteCarloOutcome | null => {
+    if (game.status === "finished") return null;
+
+    const currentHome = parseScore(game.homeScore);
+    const currentAway = parseScore(game.awayScore);
+    const currentMargin = currentHome - currentAway;
+    const currentTotal = currentHome + currentAway;
+    const projectedTotal = Math.max(currentTotal, projectedHome + projectedAway);
+    const remainingFraction = game.status === "in_progress" ? clamp(1 - elapsedFraction, 0, 1) : 1;
+    const isCountSport = profile.family === "soccer" || profile.family === "hockey" || profile.family === "baseball";
+    const seed = hashToSeed(
+        [
+            game.id,
+            game.status,
+            game.homeScore || "0",
+            game.awayScore || "0",
+            game.clock || "",
+            String(game.period || 0),
+            projectedHome.toFixed(3),
+            projectedAway.toFixed(3),
+            projectedMargin.toFixed(3),
+            baseMarginStdDev.toFixed(3),
+            scoringVolatility.toFixed(3),
+            elapsedFraction.toFixed(4),
+        ].join("|"),
+    );
+    const rand = createSeededRandom(seed);
+    const tieBreakHomeShare = clamp(
+        0.5 + ((projectedMargin / Math.max(1.5, baseMarginStdDev * 3.2)) * 0.28),
+        0.3,
+        0.7,
+    );
+
+    let homeWinCount = 0;
+    let awayWinCount = 0;
+    let drawCount = 0;
+    let tieCount = 0;
+    let sumHome = 0;
+    let sumAway = 0;
+
+    for (let i = 0; i < MONTE_CARLO_SIMULATIONS; i += 1) {
+        let finalHome = 0;
+        let finalAway = 0;
+
+        if (isCountSport) {
+            if (game.status === "in_progress") {
+                const homeRemainingLambda = clamp(projectedHome - currentHome, 0, 10);
+                const awayRemainingLambda = clamp(projectedAway - currentAway, 0, 10);
+                finalHome = currentHome + samplePoisson(homeRemainingLambda, rand);
+                finalAway = currentAway + samplePoisson(awayRemainingLambda, rand);
+            } else {
+                finalHome = samplePoisson(clamp(projectedHome, 0.05, 10), rand);
+                finalAway = samplePoisson(clamp(projectedAway, 0.05, 10), rand);
+            }
+        } else if (game.status === "in_progress") {
+            const remainingTotalMean = Math.max(0, projectedTotal - currentTotal);
+            const remainingTotalStd = Math.max(
+                1,
+                (scoringVolatility * 1.55) * Math.sqrt(Math.max(0.03, remainingFraction)),
+            );
+            const remainingMarginMean = projectedMargin - currentMargin;
+            const remainingMarginStd = Math.max(
+                0.8,
+                baseMarginStdDev * Math.sqrt(Math.max(0.03, remainingFraction)),
+            );
+            const simulatedRemainingTotal = Math.max(
+                0,
+                sampleNormal(remainingTotalMean, remainingTotalStd, rand),
+            );
+            const simulatedRemainingMargin = sampleNormal(
+                remainingMarginMean,
+                remainingMarginStd,
+                rand,
+            );
+            const split = splitTotalMargin(simulatedRemainingTotal, simulatedRemainingMargin);
+            finalHome = currentHome + split.home;
+            finalAway = currentAway + split.away;
+        } else {
+            const simulatedTotal = Math.max(
+                0,
+                sampleNormal(projectedTotal, Math.max(2.2, scoringVolatility * 2.1), rand),
+            );
+            const simulatedMargin = sampleNormal(
+                projectedMargin,
+                Math.max(1, baseMarginStdDev),
+                rand,
+            );
+            const split = splitTotalMargin(simulatedTotal, simulatedMargin);
+            finalHome = split.home;
+            finalAway = split.away;
+        }
+
+        finalHome = clamp(
+            finalHome,
+            game.status === "in_progress" ? currentHome : 0,
+            profile.maxTeamScore,
+        );
+        finalAway = clamp(
+            finalAway,
+            game.status === "in_progress" ? currentAway : 0,
+            profile.maxTeamScore,
+        );
+
+        sumHome += finalHome;
+        sumAway += finalAway;
+
+        if (finalHome > finalAway) homeWinCount += 1;
+        else if (finalAway > finalHome) awayWinCount += 1;
+        else if (profile.hasDraw) drawCount += 1;
+        else {
+            tieCount += 1;
+            homeWinCount += tieBreakHomeShare;
+            awayWinCount += 1 - tieBreakHomeShare;
+        }
+    }
+
+    const homePct = (homeWinCount / MONTE_CARLO_SIMULATIONS) * 100;
+    const awayPct = (awayWinCount / MONTE_CARLO_SIMULATIONS) * 100;
+    const drawPct = profile.hasDraw ? (drawCount / MONTE_CARLO_SIMULATIONS) * 100 : 0;
+    const normalized = renormalizeOutcomes(homePct, awayPct, drawPct);
+
+    return {
+        home: normalized.home,
+        away: normalized.away,
+        draw: normalized.draw,
+        meanHome: sumHome / MONTE_CARLO_SIMULATIONS,
+        meanAway: sumAway / MONTE_CARLO_SIMULATIONS,
+        tieRate: (tieCount / MONTE_CARLO_SIMULATIONS) * 100,
+        simulations: MONTE_CARLO_SIMULATIONS,
+    };
+};
+
 const finalizeConfidence = (
     game: Game,
     homeWinProb: number,
@@ -2690,12 +2992,9 @@ export const runProbabilityModel = (game: Game, details: GameDetails | null): Mo
             } else {
                 let homeRemainingLambda = Math.max(0, projectedHome - currentHome);
                 let awayRemainingLambda = Math.max(0, projectedAway - currentAway);
-                const timing = profile.family === "soccer" ? getSoccerTimingContext(game, details) : null;
                 const remainingFraction = clamp(1 - elapsedFraction, 0, 1);
                 const matchupRatePerMinute = Math.max(0.0001, baseProjectedTotal / Math.max(profile.regulationMinutes, 1));
-                const expectedRemainingTotal = matchupRatePerMinute * (timing
-                    ? timing.remainingMinutes
-                    : (profile.regulationMinutes * remainingFraction));
+                const expectedRemainingTotal = matchupRatePerMinute * (profile.regulationMinutes * remainingFraction);
                 const conservativeFloor = Math.max(0, expectedRemainingTotal * 0.4);
                 const currentRemainingTotal = homeRemainingLambda + awayRemainingLambda;
 
@@ -2796,6 +3095,48 @@ export const runProbabilityModel = (game: Game, details: GameDetails | null): Mo
     }
 
     if (game.status !== "finished") {
+        const monteCarlo = runMonteCarloOutcome(
+            game,
+            profile,
+            projectedHome,
+            projectedAway,
+            projectedMargin,
+            baseMarginStdDev,
+            scoringVolatility,
+            elapsedFraction,
+        );
+        if (monteCarlo) {
+            const mcBlendWeight = game.status === "in_progress" ? 0.88 : 0.84;
+            const blended = renormalizeOutcomes(
+                blend(winProbabilityHome, monteCarlo.home, mcBlendWeight),
+                blend(winProbabilityAway, monteCarlo.away, mcBlendWeight),
+                profile.hasDraw ? blend(drawProbability, monteCarlo.draw, mcBlendWeight) : 0,
+            );
+            winProbabilityHome = blended.home;
+            winProbabilityAway = blended.away;
+            drawProbability = blended.draw;
+            projectedHome = blend(projectedHome, monteCarlo.meanHome, 0.9);
+            projectedAway = blend(projectedAway, monteCarlo.meanAway, 0.9);
+            projectedMargin = projectedHome - projectedAway;
+
+            findings.push({
+                label: `Monte Carlo (${monteCarlo.simulations.toLocaleString()} sims)`,
+                value: `${monteCarlo.meanHome.toFixed(profile.family === "soccer" || profile.family === "hockey" || profile.family === "baseball" ? 2 : 1)}-${monteCarlo.meanAway.toFixed(profile.family === "soccer" || profile.family === "hockey" || profile.family === "baseball" ? 2 : 1)}`,
+                impact: monteCarlo.meanHome > monteCarlo.meanAway ? "positive" : monteCarlo.meanHome < monteCarlo.meanAway ? "negative" : "neutral",
+                description: `Outcome probabilities and projected score are stabilized via ${monteCarlo.simulations.toLocaleString()} matchup simulations`,
+                magnitude: 0.68,
+            });
+            if (!profile.hasDraw && monteCarlo.tieRate > 0.15) {
+                findings.push({
+                    label: "Overtime/Tie Split Handling",
+                    value: `${monteCarlo.tieRate.toFixed(1)}%`,
+                    impact: "neutral",
+                    description: "Simulated tie states converted into overtime win-share allocation",
+                    magnitude: 0.38,
+                });
+            }
+        }
+
         const remainingFraction = game.status === "in_progress" ? clamp(1 - elapsedFraction, 0, 1) : 1;
         const certaintyCap = game.status === "in_progress"
             ? (profile.family === "soccer"

@@ -48,10 +48,68 @@ const runtimeDb: InternalRuntimeDatabase = {
 const loadedSports = new Set<Sport>();
 const failedSports = new Set<Sport>();
 const inFlightLoads = new Map<Sport, Promise<void>>();
+const LOCAL_FINISHED_GAMES_STORAGE_KEY = "sports_internal_finished_games_v1";
+let localFinishedGamesLoaded = false;
+const localFinishedGamesBySport: Partial<Record<Sport, Game[]>> = {};
 
 const keyForTeam = (sport: Sport, teamId: string): string => `${sport}-${teamId}`;
 
 const sportToFileName = (sport: Sport): string => `${sport.replace(/\s+/g, "_")}.json`;
+
+const gameStorageKey = (game: Game): string =>
+  String(game.id || `${game.dateTime}-${game.homeTeamId || "home"}-${game.awayTeamId || "away"}`);
+
+const mergeGamesById = (base: Game[], overlay: Game[]): Game[] => {
+  const merged = new Map<string, Game>();
+  [...base, ...overlay].forEach((game) => {
+    const key = gameStorageKey(game);
+    const existing = merged.get(key);
+    if (!existing) {
+      merged.set(key, game);
+      return;
+    }
+    const preferIncoming =
+      !(existing.status === "finished" && game.status !== "finished");
+    merged.set(key, preferIncoming ? { ...existing, ...game } : { ...game, ...existing });
+  });
+  return Array.from(merged.values()).sort(
+    (a, b) => new Date(a.dateTime).getTime() - new Date(b.dateTime).getTime(),
+  );
+};
+
+const canUseLocalStorage = (): boolean =>
+  typeof window !== "undefined" && typeof window.localStorage !== "undefined";
+
+const loadLocalFinishedGames = (): void => {
+  if (localFinishedGamesLoaded || !canUseLocalStorage()) return;
+  localFinishedGamesLoaded = true;
+  try {
+    const raw = window.localStorage.getItem(LOCAL_FINISHED_GAMES_STORAGE_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    Object.entries(parsed || {}).forEach(([sportKey, value]) => {
+      if (!Array.isArray(value)) return;
+      localFinishedGamesBySport[sportKey as Sport] = value
+        .filter((entry): entry is Game => Boolean(entry && typeof entry === "object"))
+        .map((entry) => ({ ...(entry as Game) }))
+        .filter((entry) => entry.status === "finished");
+    });
+  } catch {
+    // Ignore corrupted local storage payloads.
+  }
+};
+
+const persistLocalFinishedGames = (): void => {
+  if (!canUseLocalStorage()) return;
+  try {
+    window.localStorage.setItem(
+      LOCAL_FINISHED_GAMES_STORAGE_KEY,
+      JSON.stringify(localFinishedGamesBySport),
+    );
+  } catch {
+    // Ignore storage quota/private mode failures.
+  }
+};
 
 const getSportAssetUrl = (sport: Sport): string => {
   const base = import.meta.env.BASE_URL || "/";
@@ -74,18 +132,21 @@ const mergeTeamMap = <T>(
 };
 
 const hydrateSportSnapshot = (sport: Sport, snapshot: InternalSportSnapshot): void => {
+  loadLocalFinishedGames();
   if (snapshot.generatedAt) {
     if (!runtimeDb.generatedAt || snapshot.generatedAt > runtimeDb.generatedAt) {
       runtimeDb.generatedAt = snapshot.generatedAt;
     }
   }
 
-  runtimeDb.gamesBySport[sport] = Array.isArray(snapshot.games) ? snapshot.games : [];
+  const baseGames = Array.isArray(snapshot.games) ? snapshot.games : [];
+  const localFinished = localFinishedGamesBySport[sport] || [];
+  runtimeDb.gamesBySport[sport] = mergeGamesById(baseGames, localFinished);
 
   if (Array.isArray(snapshot.gamesHistory) && snapshot.gamesHistory.length > 0) {
-    runtimeDb.gamesHistoryBySport[sport] = snapshot.gamesHistory;
+    runtimeDb.gamesHistoryBySport[sport] = mergeGamesById(snapshot.gamesHistory, localFinished);
   } else {
-    runtimeDb.gamesHistoryBySport[sport] = runtimeDb.gamesBySport[sport] || [];
+    runtimeDb.gamesHistoryBySport[sport] = mergeGamesById(runtimeDb.gamesBySport[sport] || [], localFinished);
   }
 
   runtimeDb.standingsBySport[sport] = Array.isArray(snapshot.standings)
@@ -145,6 +206,34 @@ export const getInternalGamesBySport = (sport: Sport): Game[] => {
 
 export const getInternalHistoricalGamesBySport = (sport: Sport): Game[] => {
   return runtimeDb.gamesHistoryBySport[sport] || runtimeDb.gamesBySport[sport] || [];
+};
+
+export const recordCompletedGame = (game: Game): void => {
+  if (!game || game.status !== "finished") return;
+  const sport = game.league as Sport;
+  if (!sport) return;
+
+  loadLocalFinishedGames();
+  const existingStored = localFinishedGamesBySport[sport] || [];
+  const mergedStored = mergeGamesById(existingStored, [game]).filter((entry) => entry.status === "finished");
+  localFinishedGamesBySport[sport] = mergedStored;
+  persistLocalFinishedGames();
+
+  const existingHistory = runtimeDb.gamesHistoryBySport[sport] || [];
+  runtimeDb.gamesHistoryBySport[sport] = mergeGamesById(existingHistory, [game]);
+
+  const existingGames = runtimeDb.gamesBySport[sport] || [];
+  runtimeDb.gamesBySport[sport] = mergeGamesById(existingGames, [game]);
+
+  if (game.homeTeamId) delete runtimeDb.teamSchedules[keyForTeam(sport, String(game.homeTeamId))];
+  if (game.awayTeamId) delete runtimeDb.teamSchedules[keyForTeam(sport, String(game.awayTeamId))];
+};
+
+export const recordCompletedGames = (games: Game[]): void => {
+  if (!Array.isArray(games) || games.length === 0) return;
+  games.forEach((game) => {
+    recordCompletedGame(game);
+  });
 };
 
 export const getInternalGamesForDate = (sport: Sport, date: Date): Game[] => {

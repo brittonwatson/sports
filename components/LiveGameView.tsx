@@ -8,6 +8,7 @@ import { PredictionView } from './PredictionView';
 import { GroundingSources } from './GroundingSources';
 import { getScoringPlayPoints } from '../services/uiUtils';
 import { getGameTeamAbbreviation } from '../services/teamAbbreviation';
+import { StatDetailModal } from './modals/StatDetailModal';
 
 // Modular Components
 import { FootballField } from './live/FootballField';
@@ -47,6 +48,15 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({ game, gameDetails, p
   
   const [isGenerating, setIsGenerating] = useState(false);
   const [isAnalysisOpen, setIsAnalysisOpen] = useState(true);
+  const [selectedStat, setSelectedStat] = useState<{
+      label: string;
+      value: string;
+      rank?: number;
+      category?: string;
+      teamId: string;
+      teamName: string;
+      initialView?: 'DETAILS' | 'LEADERBOARD';
+  } | null>(null);
 
   useEffect(() => { setMounted(true); }, []);
 
@@ -214,6 +224,24 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({ game, gameDetails, p
       return null;
   };
 
+  const openLiveStatModal = (
+      stat: TeamStat,
+      side: 'home' | 'away',
+      category: string,
+      viewMode: 'DETAILS' | 'LEADERBOARD' = 'DETAILS',
+  ) => {
+      const isHome = side === 'home';
+      setSelectedStat({
+          label: stat.label,
+          value: isHome ? stat.homeValue : stat.awayValue,
+          rank: isHome ? stat.homeRank : stat.awayRank,
+          category,
+          teamId: (isHome ? game.homeTeamId : game.awayTeamId) || `${side}-${game.id}`,
+          teamName: isHome ? game.homeTeam : game.awayTeam,
+          initialView: viewMode,
+      });
+  };
+
   if (!mounted) return null;
 
   return (
@@ -356,9 +384,53 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({ game, gameDetails, p
                                               
                                               return (
                                                   <div key={idx} className="grid grid-cols-[minmax(72px,auto)_1fr_minmax(72px,auto)] items-center gap-3 rounded-lg border border-slate-200/80 dark:border-slate-800/70 bg-white/85 dark:bg-slate-900/60 px-3 py-2">
-                                                      <span className={`text-right text-base font-mono leading-none ${aBold ? 'font-bold text-indigo-700 dark:text-indigo-300' : 'text-slate-700 dark:text-slate-200'}`}>{stat.awayValue}</span>
-                                                      <span className="text-center text-xs font-semibold text-slate-700 dark:text-slate-200 px-2 truncate">{stat.label}</span>
-                                                      <span className={`text-left text-base font-mono leading-none ${hBold ? 'font-bold text-indigo-700 dark:text-indigo-300' : 'text-slate-700 dark:text-slate-200'}`}>{stat.homeValue}</span>
+                                                      <div className="text-right">
+                                                          <button
+                                                              type="button"
+                                                              onClick={() => openLiveStatModal(stat, 'away', category, 'DETAILS')}
+                                                              className={`text-base font-mono leading-none hover:underline underline-offset-2 decoration-dotted ${
+                                                                  aBold ? 'font-bold text-indigo-700 dark:text-indigo-300' : 'text-slate-700 dark:text-slate-200'
+                                                              }`}
+                                                          >
+                                                              {stat.awayValue}
+                                                          </button>
+                                                          {typeof stat.awayRank === 'number' && stat.awayRank > 0 && (
+                                                              <button
+                                                                  type="button"
+                                                                  onClick={() => openLiveStatModal(stat, 'away', category, 'LEADERBOARD')}
+                                                                  className="ml-1 text-[10px] font-bold text-slate-500 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400"
+                                                              >
+                                                                  #{stat.awayRank}
+                                                              </button>
+                                                          )}
+                                                      </div>
+                                                      <button
+                                                          type="button"
+                                                          onClick={() => openLiveStatModal(stat, 'home', category, 'DETAILS')}
+                                                          className="text-center text-xs font-semibold text-slate-700 dark:text-slate-200 px-2 truncate hover:text-indigo-600 dark:hover:text-indigo-400"
+                                                      >
+                                                          {stat.label}
+                                                      </button>
+                                                      <div className="text-left">
+                                                          <button
+                                                              type="button"
+                                                              onClick={() => openLiveStatModal(stat, 'home', category, 'DETAILS')}
+                                                              className={`text-base font-mono leading-none hover:underline underline-offset-2 decoration-dotted ${
+                                                                  hBold ? 'font-bold text-indigo-700 dark:text-indigo-300' : 'text-slate-700 dark:text-slate-200'
+                                                              }`}
+                                                          >
+                                                              {stat.homeValue}
+                                                          </button>
+                                                          {typeof stat.homeRank === 'number' && stat.homeRank > 0 && (
+                                                              <button
+                                                                  type="button"
+                                                                  onClick={() => openLiveStatModal(stat, 'home', category, 'LEADERBOARD')}
+                                                                  className="ml-1 text-[10px] font-bold text-slate-500 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400"
+                                                              >
+                                                                  #{stat.homeRank}
+                                                              </button>
+                                                          )}
+                                                      </div>
                                                   </div>
                                               );
                                           })}
@@ -603,6 +675,24 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({ game, gameDetails, p
                 </div>
             </div>,
             document.body
+      )}
+
+      {selectedStat && (
+          <StatDetailModal
+              isOpen={true}
+              onClose={() => setSelectedStat(null)}
+              stat={{
+                  label: selectedStat.label,
+                  value: selectedStat.value,
+                  rank: selectedStat.rank,
+                  category: selectedStat.category,
+              }}
+              teamId={selectedStat.teamId}
+              teamName={selectedStat.teamName}
+              sport={game.league as Sport}
+              initialView={selectedStat.initialView}
+              onTeamClick={onTeamClick}
+          />
       )}
     </div>
   );
