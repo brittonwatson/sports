@@ -137,7 +137,9 @@ export const LeagueStatsView: React.FC<LeagueStatsViewProps> = ({ groups, sport,
     const [lastUpdated, setLastUpdated] = useState<number | null>(null);
     const [sortConfig, setSortConfig] = useState<{ key: string, direction: 'asc' | 'desc' } | null>(null);
     const [integrityReport, setIntegrityReport] = useState<SportIntegrityReport | null>(null);
+    const rootRef = useRef<HTMLDivElement>(null);
     const scrollContainerRef = useRef<HTMLDivElement>(null);
+    const hasAutoCenteredRef = useRef(false);
 
     // Filter teams based on groups (e.g. if filtered by Conference in generic view)
     const activeTeams = useMemo(() => {
@@ -231,6 +233,24 @@ export const LeagueStatsView: React.FC<LeagueStatsViewProps> = ({ groups, sport,
         dbEvents.addEventListener('stats_updated', handleUpdate);
         return () => dbEvents.removeEventListener('stats_updated', handleUpdate);
     }, [activeTeams, sport]);
+
+    useEffect(() => {
+        hasAutoCenteredRef.current = false;
+    }, [sport]);
+
+    useEffect(() => {
+        if (isLoading || statsData.length === 0 || hasAutoCenteredRef.current) return;
+        if (typeof window === 'undefined') return;
+        if (!window.matchMedia('(max-width: 767px)').matches) return;
+        if (!rootRef.current) return;
+
+        hasAutoCenteredRef.current = true;
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+                rootRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            });
+        });
+    }, [isLoading, statsData.length]);
 
     // Group stats by category and surface every tracked stat column from the internal dataset.
     const categorizedColumns = useMemo<Record<string, string[]>>(() => {
@@ -364,7 +384,7 @@ export const LeagueStatsView: React.FC<LeagueStatsViewProps> = ({ groups, sport,
     const isSyncing = !hasDetailedStats || statsData.some(r => Object.keys(r.stats).length < 5);
 
     return (
-        <div className="animate-fade-in space-y-4 pb-8">
+        <div ref={rootRef} className="animate-fade-in space-y-4 pb-8 scroll-mt-24">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 px-1">
                 <div className="flex items-center gap-3">
                     <Activity size={16} className="text-emerald-500" />
@@ -445,9 +465,11 @@ export const LeagueStatsView: React.FC<LeagueStatsViewProps> = ({ groups, sport,
                             {sortedData.map((row) => (
                                 <tr key={row.team.id} className="group hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors">
                                     <td className="sticky left-0 z-10 bg-white dark:bg-slate-950 group-hover:bg-slate-50 dark:group-hover:bg-slate-900 p-3 border-r border-slate-100 dark:border-slate-800 shadow-[2px_0_5px_rgba(0,0,0,0.05)] dark:shadow-[2px_0_5px_rgba(0,0,0,0.2)]">
-                                        <div 
-                                            className="flex items-center gap-3 cursor-pointer"
+                                        <button
+                                            type="button"
                                             onClick={() => onTeamClick(row.team.id, sport)}
+                                            aria-label={`Open ${row.team.name} team page`}
+                                            className="w-full flex items-center gap-3 text-left cursor-pointer touch-manipulation focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/50 rounded-md"
                                         >
                                             {row.team.logo ? (
                                                 <img src={row.team.logo} alt="" className="w-8 h-8 object-contain" />
@@ -457,7 +479,7 @@ export const LeagueStatsView: React.FC<LeagueStatsViewProps> = ({ groups, sport,
                                             <span className="font-bold text-sm text-slate-800 dark:text-slate-200 truncate max-w-[140px] group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors">
                                                 {row.team.name}
                                             </span>
-                                        </div>
+                                        </button>
                                     </td>
                                     {Object.entries(categorizedColumns).map(([category, keys]) => (
                                         <React.Fragment key={category}>
