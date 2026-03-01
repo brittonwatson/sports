@@ -1,9 +1,9 @@
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { SPORTS, Sport, Game, PredictionResult, GroundingChunk, StandingsGroup, GameDetails, UserProfile, TeamOption, PredictionStats, StandingsType, TeamProfile, SOCCER_LEAGUES, RACING_LEAGUES, RacingEventBundle, RacingStandingsPayload, SeasonState } from './types';
+import { SPORTS, Sport, Game, PredictionResult, GroundingChunk, StandingsGroup, GameDetails, UserProfile, TeamOption, PredictionStats, StandingsType, TeamProfile, SOCCER_LEAGUES, RACING_LEAGUES, RacingDriverSeasonResults, RacingEventBundle, RacingStandingsPayload, SeasonState } from './types';
 import { fetchUpcomingGames, fetchBracketGames, fetchGameDetails } from './services/gameService';
 import { fetchStandings, fetchRankings, fetchTeamProfile, fetchTeamSchedule, syncFullDatabase } from './services/teamService';
-import { fetchRacingEventBundle, fetchRacingStandingsPayload } from './services/racingService';
+import { fetchRacingDriverSeasonResults, fetchRacingEventBundle, fetchRacingStandingsPayload } from './services/racingService';
 import { recordCompletedGames } from './services/internalDbService';
 import { generateAIAnalysis } from './services/aiService';
 import { getSeasonKeyForGame, listSeasonOptionsFromGames } from './services/seasonScope';
@@ -19,6 +19,7 @@ import { TeamsListView } from './components/TeamsListView';
 import { LeagueStatsView } from './components/LeagueStatsView';
 import { RacingEventPanel } from './components/RacingEventPanel';
 import { RacingStandingsView } from './components/RacingStandingsView';
+import { RacingDriverSeasonPanel } from './components/RacingDriverSeasonPanel';
 import { Calendar, Trophy, CalendarOff, Loader2 } from 'lucide-react';
 import { LOCAL_TEAMS } from './data/teams';
 
@@ -265,6 +266,9 @@ export const App: React.FC = () => {
   const [gameDetails, setGameDetails] = useState<GameDetails | null>(null);
   const [racingEventBundle, setRacingEventBundle] = useState<RacingEventBundle | null>(null);
   const [racingStandings, setRacingStandings] = useState<RacingStandingsPayload | null>(null);
+  const [selectedRacingDriver, setSelectedRacingDriver] = useState<{ sport: Sport; driverId: string; driverName: string } | null>(null);
+  const [racingDriverSeason, setRacingDriverSeason] = useState<RacingDriverSeasonResults | null>(null);
+  const [isRacingDriverLoading, setIsRacingDriverLoading] = useState(false);
   
   const predictionCache = useRef<Map<string, {
     prediction: PredictionResult | null;
@@ -741,6 +745,39 @@ export const App: React.FC = () => {
       }
   }, [selectedTeam, upsertGamesInRegistry]);
 
+  useEffect(() => {
+      let cancelled = false;
+
+      if (!selectedRacingDriver) {
+          setRacingDriverSeason(null);
+          setIsRacingDriverLoading(false);
+          return () => {
+              cancelled = true;
+          };
+      }
+
+      const loadDriverSeason = async () => {
+          setIsRacingDriverLoading(true);
+          try {
+              const payload = await fetchRacingDriverSeasonResults(
+                  selectedRacingDriver.sport,
+                  selectedRacingDriver.driverId,
+              );
+              if (cancelled) return;
+              setRacingDriverSeason(payload);
+          } catch {
+              if (!cancelled) setRacingDriverSeason(null);
+          } finally {
+              if (!cancelled) setIsRacingDriverLoading(false);
+          }
+      };
+
+      loadDriverSeason();
+      return () => {
+          cancelled = true;
+      };
+  }, [selectedRacingDriver?.sport, selectedRacingDriver?.driverId]);
+
   const handleCredentialResponse = (response: GoogleCredentialResponse) => {
       if (!response?.credential) return;
       const profile = decodeJwt(response.credential);
@@ -1090,16 +1127,36 @@ export const App: React.FC = () => {
       setNavigatedGameId(null);
   }, [selectedTab, viewMode]);
 
+  useEffect(() => {
+      if (!selectedRacingDriver) return;
+      if (selectedTab === 'HOME' || selectedTab === 'METHODOLOGY') return;
+      if (selectedTab !== selectedRacingDriver.sport) {
+          setSelectedRacingDriver(null);
+          setRacingDriverSeason(null);
+      }
+  }, [selectedTab, selectedRacingDriver?.sport]);
+
   const handleTabChange = (tab: Tab) => {
       setSelectedTab(tab);
       setViewMode('LIVE');
       setIsMenuOpen(false);
       setSelectedTeam(null);
       setNavigatedGameId(null);
+      setSelectedRacingDriver(null);
+      setRacingDriverSeason(null);
       setIsFilterDropdownOpen(false);
       isTabSwitch.current = true;
       window.scrollTo({ top: 0, behavior: 'smooth' });
   };
+
+  const handleRacingDriverClick = useCallback((sport: Sport, driverId: string, driverName: string) => {
+      setSelectedRacingDriver((prev) => {
+          if (prev && prev.sport === sport && prev.driverId === driverId) {
+              return null;
+          }
+          return { sport, driverId, driverName };
+      });
+  }, []);
 
   const handleGameToggle = async (game: Game) => {
       if (selectedGame?.id === game.id) {
@@ -1757,7 +1814,24 @@ export const App: React.FC = () => {
                              <div className="absolute -left-[9px] -top-4 w-4 h-8 rounded-bl-xl border-l-2 border-b-0 border-slate-200 dark:border-slate-800 bg-transparent opacity-0"></div>
                              
                              {RACING_LEAGUES.includes(game.league as Sport) ? (
-                                 <RacingEventPanel event={racingEventBundle} isLoading={isPredicting} />
+                                 <div className="space-y-4">
+                                     <RacingEventPanel
+                                         event={racingEventBundle}
+                                         isLoading={isPredicting}
+                                         selectedDriverId={selectedRacingDriver?.driverId || null}
+                                         onDriverClick={handleRacingDriverClick}
+                                     />
+                                     {selectedRacingDriver && selectedRacingDriver.sport === (game.league as Sport) && (
+                                         <RacingDriverSeasonPanel
+                                             data={racingDriverSeason}
+                                             isLoading={isRacingDriverLoading}
+                                             onClose={() => {
+                                                 setSelectedRacingDriver(null);
+                                                 setRacingDriverSeason(null);
+                                             }}
+                                         />
+                                     )}
+                                 </div>
                              ) : isPredicting ? (
                                  <div className="bg-white dark:bg-slate-900/60 rounded-3xl p-12 border border-slate-200 dark:border-slate-800 flex flex-col items-center justify-center text-center shadow-xl">
                                      <Loader2 size={48} className="text-slate-500 animate-spin mb-6" />
@@ -1937,7 +2011,25 @@ export const App: React.FC = () => {
                  {/* CONTENT AREA */}
                  {viewMode === 'STANDINGS' ? (
                      RACING_LEAGUES.includes(selectedTab as Sport) ? (
-                         <RacingStandingsView standings={racingStandings} isLoading={isLoading} />
+                         <div className="space-y-6">
+                             <RacingStandingsView
+                                sport={selectedTab as Sport}
+                                standings={racingStandings}
+                                isLoading={isLoading}
+                                selectedDriverId={selectedRacingDriver?.driverId || null}
+                                onDriverClick={handleRacingDriverClick}
+                             />
+                             {selectedRacingDriver && selectedRacingDriver.sport === (selectedTab as Sport) && (
+                                <RacingDriverSeasonPanel
+                                    data={racingDriverSeason}
+                                    isLoading={isRacingDriverLoading}
+                                    onClose={() => {
+                                        setSelectedRacingDriver(null);
+                                        setRacingDriverSeason(null);
+                                    }}
+                                />
+                             )}
+                         </div>
                      ) : (
                          <StandingsView 
                             groups={displayStandings} 

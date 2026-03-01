@@ -1,10 +1,12 @@
 import React, { useMemo } from "react";
 import { RacingCompetitorResult, RacingEventBundle, RacingSessionResult } from "../types";
-import { Flag, Timer, Trophy } from "lucide-react";
+import { Flag, Timer, Trophy, Sparkles } from "lucide-react";
 
 interface RacingEventPanelProps {
   event: RacingEventBundle | null;
   isLoading?: boolean;
+  selectedDriverId?: string | null;
+  onDriverClick?: (sport: RacingEventBundle["sport"], driverId: string, driverName: string) => void;
 }
 
 type SessionColumn =
@@ -191,7 +193,12 @@ const resolveColumnValue = (
   return statMap.get(column.normalizedKey) || "-";
 };
 
-export const RacingEventPanel: React.FC<RacingEventPanelProps> = ({ event, isLoading = false }) => {
+export const RacingEventPanel: React.FC<RacingEventPanelProps> = ({
+  event,
+  isLoading = false,
+  selectedDriverId,
+  onDriverClick,
+}) => {
   const sessions = useMemo(
     () => (event?.sessions || []).slice().sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()),
     [event],
@@ -229,6 +236,68 @@ export const RacingEventPanel: React.FC<RacingEventPanelProps> = ({ event, isLoa
           </div>
         </div>
       </section>
+
+      {event.prediction && event.prediction.entries.length > 0 && (
+        <section className="rounded-3xl border border-cyan-300/50 dark:border-cyan-700/50 bg-cyan-50/70 dark:bg-cyan-950/20 p-5">
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+            <div className="flex items-center gap-2">
+              <Sparkles size={14} className="text-cyan-600 dark:text-cyan-300" />
+              <h4 className="text-sm font-bold text-cyan-900 dark:text-cyan-200 uppercase tracking-wider">Race Forecast</h4>
+            </div>
+            <div className="text-xs text-cyan-800 dark:text-cyan-300">
+              {(event.prediction.confidence * 100).toFixed(0)}% confidence • {event.prediction.simulations.toLocaleString()} simulations
+            </div>
+          </div>
+          <p className="text-xs text-cyan-900/80 dark:text-cyan-200/80 mb-3">
+            {event.prediction.model}. Forecast blends qualifying, practice pace, and season form.
+          </p>
+
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead className="bg-cyan-100/80 dark:bg-cyan-900/40 text-cyan-900 dark:text-cyan-200 uppercase tracking-wider text-[10px]">
+                <tr>
+                  <th className="px-3 py-2 text-left">Rank</th>
+                  <th className="px-3 py-2 text-left">Driver</th>
+                  <th className="px-3 py-2 text-left">Win</th>
+                  <th className="px-3 py-2 text-left">Podium</th>
+                  <th className="px-3 py-2 text-left">Top 5</th>
+                  <th className="px-3 py-2 text-left">Why</th>
+                </tr>
+              </thead>
+              <tbody>
+                {event.prediction.entries.slice(0, 12).map((entry) => {
+                  const selected = selectedDriverId && String(selectedDriverId) === String(entry.competitorId);
+                  return (
+                    <tr key={`${event.eventId}-${entry.competitorId}`} className={`border-t border-cyan-200/60 dark:border-cyan-800/50 ${selected ? 'bg-cyan-100/70 dark:bg-cyan-900/35' : ''}`}>
+                      <td className="px-3 py-2 font-semibold text-cyan-900 dark:text-cyan-200">{entry.rank}</td>
+                      <td className="px-3 py-2 min-w-[180px]">
+                              {onDriverClick ? (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (!entry.competitorId) return;
+                                    onDriverClick(event.sport, entry.competitorId, entry.name);
+                                  }}
+                                  className="text-left font-semibold text-cyan-800 dark:text-cyan-200 hover:underline"
+                                >
+                                  {entry.name}
+                                </button>
+                        ) : (
+                          <span className="font-semibold text-cyan-900 dark:text-cyan-200">{entry.name}</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2 text-cyan-900 dark:text-cyan-200">{entry.winProbability.toFixed(1)}%</td>
+                      <td className="px-3 py-2 text-cyan-900 dark:text-cyan-200">{entry.podiumProbability.toFixed(1)}%</td>
+                      <td className="px-3 py-2 text-cyan-900 dark:text-cyan-200">{entry.top5Probability.toFixed(1)}%</td>
+                      <td className="px-3 py-2 text-xs text-cyan-900/80 dark:text-cyan-200/80 min-w-[220px]">{entry.explanation}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
 
       {sessions.map((session) => {
         const columns = chooseVisibleColumns(session);
@@ -273,8 +342,9 @@ export const RacingEventPanel: React.FC<RacingEventPanelProps> = ({ event, isLoa
                       (placeStat !== null && placeStat > 0 ? Math.trunc(placeStat) : undefined) ||
                       competitor.startPosition ||
                       "-";
+                    const selected = selectedDriverId && String(selectedDriverId) === String(competitor.competitorId);
                     return (
-                      <tr key={`${session.id}-${competitor.competitorId}`} className="border-t border-slate-100 dark:border-slate-800/70">
+                      <tr key={`${session.id}-${competitor.competitorId}`} className={`border-t border-slate-100 dark:border-slate-800/70 ${selected ? 'bg-cyan-50/80 dark:bg-cyan-950/20' : ''}`}>
                         <td className="px-3 py-2 font-semibold text-slate-800 dark:text-slate-200">
                           {competitor.winner ? (
                             <span className="inline-flex items-center gap-1 text-amber-500">
@@ -293,7 +363,20 @@ export const RacingEventPanel: React.FC<RacingEventPanelProps> = ({ event, isLoa
                               <div className="w-6 h-6 rounded-full bg-slate-200 dark:bg-slate-700" />
                             )}
                             <div>
-                              <div className="font-semibold text-slate-900 dark:text-white leading-tight">{competitor.name}</div>
+                              {onDriverClick ? (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (!competitor.competitorId) return;
+                                    onDriverClick(event.sport, competitor.competitorId, competitor.name);
+                                  }}
+                                  className="font-semibold text-left text-cyan-700 dark:text-cyan-300 hover:underline leading-tight"
+                                >
+                                  {competitor.name}
+                                </button>
+                              ) : (
+                                <div className="font-semibold text-slate-900 dark:text-white leading-tight">{competitor.name}</div>
+                              )}
                               {competitor.flag && (
                                 <img src={competitor.flag} alt="" className="w-4 h-3 object-cover rounded-sm mt-1" />
                               )}

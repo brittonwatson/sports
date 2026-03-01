@@ -73,6 +73,16 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({ game, gameDetails, p
   const stats = prediction?.stats;
   const homeAbbr = getGameTeamAbbreviation(game, 'home');
   const awayAbbr = getGameTeamAbbreviation(game, 'away');
+  // ESPN soccer feeds (including MLS) list the home side first.
+  const shouldUseHomeFirstStatColumns = isSoccer;
+  const leftStatSide: 'home' | 'away' = shouldUseHomeFirstStatColumns ? 'home' : 'away';
+  const rightStatSide: 'home' | 'away' = leftStatSide === 'home' ? 'away' : 'home';
+  const leftStatTeam = leftStatSide === 'home'
+      ? { name: game.homeTeam, abbreviation: homeAbbr, logo: game.homeTeamLogo, roleLabel: 'Home' }
+      : { name: game.awayTeam, abbreviation: awayAbbr, logo: game.awayTeamLogo, roleLabel: 'Away' };
+  const rightStatTeam = rightStatSide === 'home'
+      ? { name: game.homeTeam, abbreviation: homeAbbr, logo: game.homeTeamLogo, roleLabel: 'Home' }
+      : { name: game.awayTeam, abbreviation: awayAbbr, logo: game.awayTeamLogo, roleLabel: 'Away' };
 
   // Categorize Stats
   const categorizedStats = useMemo(() => {
@@ -253,6 +263,11 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({ game, gameDetails, p
       });
   };
 
+  const getStatValueForSide = (stat: TeamStat, side: 'home' | 'away') =>
+      side === 'home' ? stat.homeValue : stat.awayValue;
+  const getStatRankForSide = (stat: TeamStat, side: 'home' | 'away') =>
+      side === 'home' ? stat.homeRank : stat.awayRank;
+
   if (!mounted) return null;
 
   return (
@@ -375,14 +390,38 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({ game, gameDetails, p
                       {showLiveStats && (
                           <div className="p-5 space-y-6 animate-fade-in">
                               <div className="grid grid-cols-[minmax(72px,auto)_1fr_minmax(72px,auto)] items-center gap-3 pb-2 border-b border-slate-100 dark:border-slate-800/70">
-                                  <div className="text-right text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-300">
-                                      {awayAbbr}
+                                  <div className="justify-self-end flex items-center gap-2 min-w-0">
+                                      {leftStatTeam.logo ? (
+                                          <img src={leftStatTeam.logo} alt="" className="w-4 h-4 object-contain shrink-0" />
+                                      ) : (
+                                          <div className="w-4 h-4 rounded-full bg-slate-200 dark:bg-slate-700 shrink-0" />
+                                      )}
+                                      <div className="text-right min-w-0">
+                                          <div className="text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-200 truncate">
+                                              {leftStatTeam.abbreviation}
+                                          </div>
+                                          <div className="text-[9px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-400 truncate">
+                                              {leftStatTeam.roleLabel}
+                                          </div>
+                                      </div>
                                   </div>
                                   <div className="text-center text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-400">
                                       Stat
                                   </div>
-                                  <div className="text-left text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-300">
-                                      {homeAbbr}
+                                  <div className="justify-self-start flex items-center gap-2 min-w-0">
+                                      <div className="text-left min-w-0">
+                                          <div className="text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-200 truncate">
+                                              {rightStatTeam.abbreviation}
+                                          </div>
+                                          <div className="text-[9px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-400 truncate">
+                                              {rightStatTeam.roleLabel}
+                                          </div>
+                                      </div>
+                                      {rightStatTeam.logo ? (
+                                          <img src={rightStatTeam.logo} alt="" className="w-4 h-4 object-contain shrink-0" />
+                                      ) : (
+                                          <div className="w-4 h-4 rounded-full bg-slate-200 dark:bg-slate-700 shrink-0" />
+                                      )}
                                   </div>
                               </div>
                               {Object.entries(categorizedStats).map(([category, items]) => (
@@ -390,36 +429,40 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({ game, gameDetails, p
                                       <h5 className="text-[10px] font-bold text-slate-600 dark:text-slate-300 uppercase tracking-wider mb-3 pl-2 border-l-2 border-slate-300 dark:border-slate-600">{category}</h5>
                                       <div className="space-y-3">
                                           {items.map((stat, idx) => {
-                                              const hVal = parseStatValue(stat.homeValue);
-                                              const aVal = parseStatValue(stat.awayValue);
-                                              const hBold = hVal > aVal;
-                                              const aBold = aVal > hVal;
+                                              const leftRaw = getStatValueForSide(stat, leftStatSide);
+                                              const rightRaw = getStatValueForSide(stat, rightStatSide);
+                                              const leftVal = parseStatValue(leftRaw);
+                                              const rightVal = parseStatValue(rightRaw);
+                                              const leftBold = leftVal > rightVal;
+                                              const rightBold = rightVal > leftVal;
+                                              const leftRank = getStatRankForSide(stat, leftStatSide);
+                                              const rightRank = getStatRankForSide(stat, rightStatSide);
                                               
                                               return (
                                                   <div key={idx} className="grid grid-cols-[minmax(72px,auto)_1fr_minmax(72px,auto)] items-center gap-3 rounded-lg border border-slate-200/80 dark:border-slate-800/70 bg-white/85 dark:bg-slate-900/60 px-3 py-2">
                                                       <div className="text-right">
                                                           <button
                                                               type="button"
-                                                              onClick={() => openLiveStatModal(stat, 'away', category, 'DETAILS')}
+                                                              onClick={() => openLiveStatModal(stat, leftStatSide, category, 'DETAILS')}
                                                               className={`text-base font-mono leading-none hover:underline underline-offset-2 decoration-dotted ${
-                                                                  aBold ? 'font-bold text-indigo-700 dark:text-indigo-300' : 'text-slate-700 dark:text-slate-200'
+                                                                  leftBold ? 'font-bold text-indigo-700 dark:text-indigo-300' : 'text-slate-700 dark:text-slate-200'
                                                               }`}
                                                           >
-                                                              {stat.awayValue}
+                                                              {leftRaw}
                                                           </button>
-                                                          {typeof stat.awayRank === 'number' && stat.awayRank > 0 && (
+                                                          {typeof leftRank === 'number' && leftRank > 0 && (
                                                               <button
                                                                   type="button"
-                                                                  onClick={() => openLiveStatModal(stat, 'away', category, 'LEADERBOARD')}
+                                                                  onClick={() => openLiveStatModal(stat, leftStatSide, category, 'LEADERBOARD')}
                                                                   className="ml-1 text-[10px] font-bold text-slate-500 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400"
                                                               >
-                                                                  #{stat.awayRank}
+                                                                  #{leftRank}
                                                               </button>
                                                           )}
                                                       </div>
                                                       <button
                                                           type="button"
-                                                          onClick={() => openLiveStatModal(stat, 'home', category, 'DETAILS')}
+                                                          onClick={() => openLiveStatModal(stat, rightStatSide, category, 'DETAILS')}
                                                           className="text-center text-xs font-semibold text-slate-700 dark:text-slate-200 px-2 truncate hover:text-indigo-600 dark:hover:text-indigo-400"
                                                       >
                                                           {stat.label}
@@ -427,20 +470,20 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({ game, gameDetails, p
                                                       <div className="text-left">
                                                           <button
                                                               type="button"
-                                                              onClick={() => openLiveStatModal(stat, 'home', category, 'DETAILS')}
+                                                              onClick={() => openLiveStatModal(stat, rightStatSide, category, 'DETAILS')}
                                                               className={`text-base font-mono leading-none hover:underline underline-offset-2 decoration-dotted ${
-                                                                  hBold ? 'font-bold text-indigo-700 dark:text-indigo-300' : 'text-slate-700 dark:text-slate-200'
+                                                                  rightBold ? 'font-bold text-indigo-700 dark:text-indigo-300' : 'text-slate-700 dark:text-slate-200'
                                                               }`}
                                                           >
-                                                              {stat.homeValue}
+                                                              {rightRaw}
                                                           </button>
-                                                          {typeof stat.homeRank === 'number' && stat.homeRank > 0 && (
+                                                          {typeof rightRank === 'number' && rightRank > 0 && (
                                                               <button
                                                                   type="button"
-                                                                  onClick={() => openLiveStatModal(stat, 'home', category, 'LEADERBOARD')}
+                                                                  onClick={() => openLiveStatModal(stat, rightStatSide, category, 'LEADERBOARD')}
                                                                   className="ml-1 text-[10px] font-bold text-slate-500 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400"
                                                               >
-                                                                  #{stat.homeRank}
+                                                                  #{rightRank}
                                                               </button>
                                                           )}
                                                       </div>

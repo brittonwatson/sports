@@ -285,6 +285,7 @@ export interface RacingEventBundle {
   venue?: string;
   location?: string;
   sessions: RacingSessionResult[];
+  prediction?: RacingEventPrediction;
 }
 
 export interface RacingStandingsEntry {
@@ -313,6 +314,116 @@ export interface RacingStandingsPayload {
   derived?: boolean;
   note?: string;
   tables: RacingStandingsTable[];
+}
+
+export interface RacingCalendarFinisher {
+  rank: number;
+  competitorId: string;
+  name: string;
+  shortName?: string;
+  abbreviation?: string;
+  logo?: string;
+  teamName?: string;
+  manufacturer?: string;
+  statusText?: string;
+}
+
+export interface RacingCalendarSession {
+  id: string;
+  name: string;
+  date: string;
+  status: 'scheduled' | 'in_progress' | 'finished';
+  statusText: string;
+}
+
+export interface RacingCalendarEvent {
+  eventId: string;
+  name: string;
+  shortName: string;
+  date: string;
+  endDate?: string;
+  venue?: string;
+  location?: string;
+  status: 'scheduled' | 'in_progress' | 'finished';
+  statusText: string;
+  seasonYear?: number;
+  seasonType?: number;
+  topFinishers: RacingCalendarFinisher[];
+  sessions: RacingCalendarSession[];
+}
+
+export interface RacingCalendarPayload {
+  sport: Sport;
+  seasonYear: number;
+  updatedAt: string;
+  events: RacingCalendarEvent[];
+}
+
+export interface RacingDriverEventResult {
+  eventId: string;
+  eventName: string;
+  shortName?: string;
+  date: string;
+  status: 'scheduled' | 'in_progress' | 'finished';
+  statusText: string;
+  startPosition?: number;
+  finishPosition?: number;
+  points?: number;
+  lapsLed?: number;
+  positionGain?: number;
+  teamName?: string;
+  manufacturer?: string;
+}
+
+export interface RacingDriverSeasonResults {
+  sport: Sport;
+  seasonYear: number;
+  driverId: string;
+  driverName: string;
+  shortName?: string;
+  abbreviation?: string;
+  logo?: string;
+  teamName?: string;
+  manufacturer?: string;
+  starts: number;
+  wins: number;
+  podiums: number;
+  top5: number;
+  top10: number;
+  avgFinish: number;
+  points: number;
+  pointsSource: 'official' | 'derived';
+  results: RacingDriverEventResult[];
+}
+
+export interface RacingEventPredictionEntry {
+  rank: number;
+  competitorId: string;
+  name: string;
+  shortName?: string;
+  abbreviation?: string;
+  logo?: string;
+  teamName?: string;
+  manufacturer?: string;
+  startingPosition?: number;
+  qualifyingRank?: number;
+  practiceRank?: number;
+  seasonRank?: number;
+  winProbability: number;
+  podiumProbability: number;
+  top5Probability: number;
+  compositeRating: number;
+  explanation: string;
+}
+
+export interface RacingEventPrediction {
+  sport: Sport;
+  eventId: string;
+  simulations: number;
+  confidence: number;
+  updatedAt: string;
+  model: string;
+  entries: RacingEventPredictionEntry[];
 }
 
 export type SeasonState = 'in_season' | 'preseason' | 'offseason';

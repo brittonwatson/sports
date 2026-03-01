@@ -153,6 +153,20 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
 
   const homeAbbr = getGameTeamAbbreviation(game, 'home');
   const awayAbbr = getGameTeamAbbreviation(game, 'away');
+  // ESPN soccer feeds (including MLS) list the home side first.
+  const shouldUseHomeFirstStatColumns = isSoccer;
+  const leftStatSide: 'home' | 'away' = shouldUseHomeFirstStatColumns ? 'home' : 'away';
+  const rightStatSide: 'home' | 'away' = leftStatSide === 'home' ? 'away' : 'home';
+  const leftStatTeam = leftStatSide === 'home'
+      ? { name: game.homeTeam, abbreviation: homeAbbr, logo: game.homeTeamLogo, roleLabel: 'Home' }
+      : { name: game.awayTeam, abbreviation: awayAbbr, logo: game.awayTeamLogo, roleLabel: 'Away' };
+  const rightStatTeam = rightStatSide === 'home'
+      ? { name: game.homeTeam, abbreviation: homeAbbr, logo: game.homeTeamLogo, roleLabel: 'Home' }
+      : { name: game.awayTeam, abbreviation: awayAbbr, logo: game.awayTeamLogo, roleLabel: 'Away' };
+  const getStatValueForSide = (stat: TeamStat, side: 'home' | 'away') =>
+      side === 'home' ? stat.homeValue : stat.awayValue;
+  const getStatRankForSide = (stat: TeamStat, side: 'home' | 'away') =>
+      side === 'home' ? stat.homeRank : stat.awayRank;
   const confidenceBreakdown = stats.confidenceBreakdown;
   const confidencePct = Math.round(stats.confidence);
   const confidenceTopLabel = confidenceBreakdown
@@ -622,7 +636,7 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
                         Matchup Data Snapshot
                     </h4>
                     <span className="text-[10px] font-semibold text-slate-500 dark:text-slate-300 uppercase tracking-wider">
-                        {awayAbbr} vs {homeAbbr}
+                        Left: {leftStatTeam.roleLabel} ({leftStatTeam.abbreviation}) | Right: {rightStatTeam.roleLabel} ({rightStatTeam.abbreviation})
                     </span>
                 </div>
                 <div className="space-y-4">
@@ -631,35 +645,74 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
                             <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-300 mb-3">
                                 {category}
                             </div>
+                            <div className="grid grid-cols-[minmax(84px,auto)_1fr_minmax(84px,auto)] items-center gap-3 mb-2 px-1">
+                                <div className="justify-self-end flex items-center gap-2 min-w-0">
+                                    {leftStatTeam.logo ? (
+                                        <img src={leftStatTeam.logo} alt="" className="w-4 h-4 object-contain shrink-0" />
+                                    ) : (
+                                        <div className="w-4 h-4 rounded-full bg-slate-200 dark:bg-slate-700 shrink-0" />
+                                    )}
+                                    <div className="text-right min-w-0">
+                                        <div className="text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-200 truncate">
+                                            {leftStatTeam.abbreviation}
+                                        </div>
+                                        <div className="text-[9px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-400 truncate">
+                                            {leftStatTeam.roleLabel}
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="text-center text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-400">
+                                    Stat
+                                </div>
+                                <div className="justify-self-start flex items-center gap-2 min-w-0">
+                                    <div className="text-left min-w-0">
+                                        <div className="text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-200 truncate">
+                                            {rightStatTeam.abbreviation}
+                                        </div>
+                                        <div className="text-[9px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-400 truncate">
+                                            {rightStatTeam.roleLabel}
+                                        </div>
+                                    </div>
+                                    {rightStatTeam.logo ? (
+                                        <img src={rightStatTeam.logo} alt="" className="w-4 h-4 object-contain shrink-0" />
+                                    ) : (
+                                        <div className="w-4 h-4 rounded-full bg-slate-200 dark:bg-slate-700 shrink-0" />
+                                    )}
+                                </div>
+                            </div>
                             <div className="space-y-2">
                                 {items.map((stat, idx) => {
-                                    const homeNum = parseStatValue(stat.homeValue);
-                                    const awayNum = parseStatValue(stat.awayValue);
-                                    const homeEdge = homeNum > awayNum;
-                                    const awayEdge = awayNum > homeNum;
+                                    const leftRaw = getStatValueForSide(stat, leftStatSide);
+                                    const rightRaw = getStatValueForSide(stat, rightStatSide);
+                                    const leftNum = parseStatValue(leftRaw);
+                                    const rightNum = parseStatValue(rightRaw);
+                                    const leftEdge = leftNum > rightNum;
+                                    const rightEdge = rightNum > leftNum;
+                                    const leftRank = getStatRankForSide(stat, leftStatSide);
+                                    const rightRank = getStatRankForSide(stat, rightStatSide);
                                     return (
                                         <div key={`${category}-${stat.label}-${idx}`} className="grid grid-cols-[minmax(84px,auto)_1fr_minmax(84px,auto)] items-center gap-3 rounded-lg border border-slate-200/80 dark:border-slate-800/70 bg-white/85 dark:bg-slate-900/65 px-3 py-2">
                                             <div className="text-right">
                                                 <button
                                                     type="button"
-                                                    onClick={() => openPredictionStatModal(stat, 'away', category, 'DETAILS')}
-                                                    className={`text-base font-mono font-bold leading-none hover:underline underline-offset-2 decoration-dotted ${awayEdge ? 'text-indigo-700 dark:text-indigo-300' : 'text-slate-700 dark:text-slate-200'}`}
+                                                    onClick={() => openPredictionStatModal(stat, leftStatSide, category, 'DETAILS')}
+                                                    className={`text-base font-mono font-bold leading-none hover:underline underline-offset-2 decoration-dotted ${leftEdge ? 'text-indigo-700 dark:text-indigo-300' : 'text-slate-700 dark:text-slate-200'}`}
                                                 >
-                                                    {stat.awayValue}
+                                                    {leftRaw}
                                                 </button>
-                                                {typeof stat.awayRank === 'number' && stat.awayRank > 0 && (
+                                                {typeof leftRank === 'number' && leftRank > 0 && (
                                                     <button
                                                         type="button"
-                                                        onClick={() => openPredictionStatModal(stat, 'away', category, 'LEADERBOARD')}
+                                                        onClick={() => openPredictionStatModal(stat, leftStatSide, category, 'LEADERBOARD')}
                                                         className="text-[9px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mt-1 hover:text-indigo-600 dark:hover:text-indigo-400"
                                                     >
-                                                        Lg #{stat.awayRank}
+                                                        Lg #{leftRank}
                                                     </button>
                                                 )}
                                             </div>
                                             <button
                                                 type="button"
-                                                onClick={() => openPredictionStatModal(stat, 'home', category, 'DETAILS')}
+                                                onClick={() => openPredictionStatModal(stat, rightStatSide, category, 'DETAILS')}
                                                 className="text-center text-xs font-semibold text-slate-700 dark:text-slate-200 truncate hover:text-indigo-600 dark:hover:text-indigo-400"
                                             >
                                                 {stat.label}
@@ -667,18 +720,18 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
                                             <div className="text-left">
                                                 <button
                                                     type="button"
-                                                    onClick={() => openPredictionStatModal(stat, 'home', category, 'DETAILS')}
-                                                    className={`text-base font-mono font-bold leading-none hover:underline underline-offset-2 decoration-dotted ${homeEdge ? 'text-indigo-700 dark:text-indigo-300' : 'text-slate-700 dark:text-slate-200'}`}
+                                                    onClick={() => openPredictionStatModal(stat, rightStatSide, category, 'DETAILS')}
+                                                    className={`text-base font-mono font-bold leading-none hover:underline underline-offset-2 decoration-dotted ${rightEdge ? 'text-indigo-700 dark:text-indigo-300' : 'text-slate-700 dark:text-slate-200'}`}
                                                 >
-                                                    {stat.homeValue}
+                                                    {rightRaw}
                                                 </button>
-                                                {typeof stat.homeRank === 'number' && stat.homeRank > 0 && (
+                                                {typeof rightRank === 'number' && rightRank > 0 && (
                                                     <button
                                                         type="button"
-                                                        onClick={() => openPredictionStatModal(stat, 'home', category, 'LEADERBOARD')}
+                                                        onClick={() => openPredictionStatModal(stat, rightStatSide, category, 'LEADERBOARD')}
                                                         className="text-[9px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mt-1 hover:text-indigo-600 dark:hover:text-indigo-400"
                                                     >
-                                                        Lg #{stat.homeRank}
+                                                        Lg #{rightRank}
                                                     </button>
                                                 )}
                                             </div>

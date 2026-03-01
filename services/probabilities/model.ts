@@ -118,6 +118,12 @@ interface TeamHistoryPrior {
     margin: number;
     homeGames: number;
     awayGames: number;
+    homeCurrentSeasonGames: number;
+    awayCurrentSeasonGames: number;
+    homePriorSeasonGames: number;
+    awayPriorSeasonGames: number;
+    stabilizationCutoff: number;
+    carryoverBlend: number;
     headToHeadGames: number;
     homeOffense: number;
     awayOffense: number;
@@ -183,6 +189,23 @@ interface SoccerDrawPrior {
     sampleWeight: number;
     sampleGames: number;
 }
+
+interface SeasonCarryoverContext {
+    targetSeasonYear?: number;
+    currentSeasonGames: number;
+    stabilizationCutoff: number;
+}
+
+const STABILIZATION_GAMES_BY_FAMILY: Record<SportFamily, number> = {
+    // Empirical schedule-density heuristics:
+    // short seasons stabilize earlier; long seasons need more games before dropping priors.
+    football: 4,
+    basketball: 12,
+    baseball: 15,
+    soccer: 8,
+    hockey: 10,
+    other: 8,
+};
 
 const FOOTBALL_PROFILE: SportProfile = {
     family: "football",
@@ -644,6 +667,39 @@ const getSportProfile = (league: Sport | string): SportProfile => {
     return OTHER_PROFILE;
 };
 
+const getSeasonStabilizationCutoff = (profile: SportProfile): number => {
+    return STABILIZATION_GAMES_BY_FAMILY[profile.family] || STABILIZATION_GAMES_BY_FAMILY.other;
+};
+
+const getSeasonCarryoverWeight = (
+    entrySeasonYear: number | undefined,
+    context?: SeasonCarryoverContext,
+): number => {
+    if (!context?.targetSeasonYear || !entrySeasonYear) return 1;
+    const target = Number(context.targetSeasonYear);
+    const entryYear = Number(entrySeasonYear);
+    if (!Number.isFinite(target) || !Number.isFinite(entryYear)) return 1;
+    if (entryYear === target) return 1;
+
+    const seasonDelta = target - entryYear;
+    if (seasonDelta <= 0) return 1;
+
+    const maturity = clamp(
+        context.currentSeasonGames / Math.max(1, context.stabilizationCutoff),
+        0,
+        1,
+    );
+
+    if (seasonDelta === 1) {
+        // Previous season is a strong anchor early; taper aggressively once current season matures.
+        return clamp(1 - (0.92 * maturity), 0.08, 1);
+    }
+    if (seasonDelta === 2) {
+        return clamp(0.45 * (1 - maturity), 0.03, 0.45);
+    }
+    return clamp(0.22 * (1 - maturity), 0.02, 0.22);
+};
+
 const toTeamLogFromGame = (game: Game, teamId: string): TeamGameLog | null => {
     if (!game.homeTeamId || !game.awayTeamId) return null;
     const homeScore = parseScore(game.homeScore);
@@ -685,7 +741,8 @@ const buildTeamLogs = (
     teamId: string,
     cutoffMs: number,
     allGames: Game[],
-): TeamGameLog[] => {
+    stabilizationCutoff: number,
+): { logs: TeamGameLog[]; currentSeasonGames: number; priorSeasonGames: number } => {
     const seasonYear = game.seasonYear;
     const finished = allGames
         .filter((g) => g.status === "finished" && g.id !== game.id)
@@ -698,19 +755,49 @@ const buildTeamLogs = (
     const sameSeason = seasonYear
         ? finished.filter((g) => Number(g.seasonYear) === Number(seasonYear))
         : finished;
-    const pool = sameSeason.length >= 6 ? sameSeason : finished;
+    const priorSeasonGames = seasonYear
+        ? finished.filter((g) => Number(g.seasonYear) === (Number(seasonYear) - 1)).length
+        : 0;
 
-    return pool
+    let pool = sameSeason;
+    if (sameSeason.length < stabilizationCutoff) {
+        // Early season: prefer immediate prior season as the stabilization anchor.
+        const immediatePriorPool = seasonYear
+            ? finished
+                .filter((g) => Number(g.seasonYear) === (Number(seasonYear) - 1))
+                .sort((a, b) => new Date(b.dateTime).getTime() - new Date(a.dateTime).getTime())
+            : [...finished].sort((a, b) => new Date(b.dateTime).getTime() - new Date(a.dateTime).getTime());
+        const fallbackOlderPool = seasonYear && immediatePriorPool.length === 0
+            ? finished
+                .filter((g) => Number(g.seasonYear) < Number(seasonYear))
+                .sort((a, b) => new Date(b.dateTime).getTime() - new Date(a.dateTime).getTime())
+            : [];
+        const maxPriorRows = Math.max(24, stabilizationCutoff * 10);
+        const priorPool = immediatePriorPool.length > 0 ? immediatePriorPool : fallbackOlderPool;
+        pool = [...sameSeason, ...priorPool.slice(0, maxPriorRows)];
+    }
+
+    const logs = pool
         .map((g) => toTeamLogFromGame(g, teamId))
         .filter((g): g is TeamGameLog => Boolean(g))
         .sort((a, b) => b.dateMs - a.dateMs)
         .slice(0, 80);
+
+    return {
+        logs,
+        currentSeasonGames: sameSeason.length,
+        priorSeasonGames,
+    };
 };
 
-const logWeight = (cutoffMs: number, entry: TeamGameLog, targetSeasonYear?: number): number => {
+const logWeight = (
+    cutoffMs: number,
+    entry: TeamGameLog,
+    context?: SeasonCarryoverContext,
+): number => {
     const ageDays = Math.max(0, (cutoffMs - entry.dateMs) / 86400000);
     const decay = Math.exp(-ageDays / 55);
-    const seasonWeight = targetSeasonYear && entry.seasonYear && Number(entry.seasonYear) !== Number(targetSeasonYear) ? 0.6 : 1;
+    const seasonWeight = getSeasonCarryoverWeight(entry.seasonYear, context);
     const playoffWeight = entry.seasonType === 3 ? 1.1 : 1.0;
     return decay * seasonWeight * playoffWeight;
 };
@@ -719,7 +806,7 @@ const toSideObservations = (
     games: Game[],
     gameIdToSkip: string,
     cutoffMs: number,
-    targetSeasonYear?: number,
+    context?: SeasonCarryoverContext,
 ): SideObservation[] => {
     const observations: SideObservation[] = [];
     games.forEach((entry) => {
@@ -752,8 +839,8 @@ const toSideObservations = (
             pointsAgainst: homeScore,
             isHome: false,
         };
-        const homeWeight = logWeight(cutoffMs, homeLog, targetSeasonYear);
-        const awayWeight = logWeight(cutoffMs, awayLog, targetSeasonYear);
+        const homeWeight = logWeight(cutoffMs, homeLog, context);
+        const awayWeight = logWeight(cutoffMs, awayLog, context);
 
         if (homeWeight > 0) {
             observations.push({
@@ -972,24 +1059,36 @@ const buildHistoryPrior = (game: Game, profile: SportProfile): TeamHistoryPrior 
     });
 
     const cutoffMs = Number.isFinite(new Date(game.dateTime).getTime()) ? new Date(game.dateTime).getTime() : Date.now();
-    const homeLogs = buildTeamLogs(game, homeId, cutoffMs, historyGames);
-    const awayLogs = buildTeamLogs(game, awayId, cutoffMs, historyGames);
+    const stabilizationCutoff = getSeasonStabilizationCutoff(profile);
+    const homePack = buildTeamLogs(game, homeId, cutoffMs, historyGames, stabilizationCutoff);
+    const awayPack = buildTeamLogs(game, awayId, cutoffMs, historyGames, stabilizationCutoff);
+    const homeLogs = homePack.logs;
+    const awayLogs = awayPack.logs;
     if (homeLogs.length < 3 || awayLogs.length < 3) return null;
+    const effectiveCurrentGames = Math.max(
+        0,
+        Math.min(homePack.currentSeasonGames, awayPack.currentSeasonGames),
+    );
+    const carryoverContext: SeasonCarryoverContext = {
+        targetSeasonYear: game.seasonYear ? Number(game.seasonYear) : undefined,
+        currentSeasonGames: effectiveCurrentGames,
+        stabilizationCutoff,
+    };
 
     const homeOverallOff = weightedMean(
-        homeLogs.map((log) => ({ value: log.pointsFor, weight: logWeight(cutoffMs, log, game.seasonYear) })),
+        homeLogs.map((log) => ({ value: log.pointsFor, weight: logWeight(cutoffMs, log, carryoverContext) })),
         mean(homeLogs.map((log) => log.pointsFor)),
     );
     const homeOverallDef = weightedMean(
-        homeLogs.map((log) => ({ value: log.pointsAgainst, weight: logWeight(cutoffMs, log, game.seasonYear) })),
+        homeLogs.map((log) => ({ value: log.pointsAgainst, weight: logWeight(cutoffMs, log, carryoverContext) })),
         mean(homeLogs.map((log) => log.pointsAgainst)),
     );
     const awayOverallOff = weightedMean(
-        awayLogs.map((log) => ({ value: log.pointsFor, weight: logWeight(cutoffMs, log, game.seasonYear) })),
+        awayLogs.map((log) => ({ value: log.pointsFor, weight: logWeight(cutoffMs, log, carryoverContext) })),
         mean(awayLogs.map((log) => log.pointsFor)),
     );
     const awayOverallDef = weightedMean(
-        awayLogs.map((log) => ({ value: log.pointsAgainst, weight: logWeight(cutoffMs, log, game.seasonYear) })),
+        awayLogs.map((log) => ({ value: log.pointsAgainst, weight: logWeight(cutoffMs, log, carryoverContext) })),
         mean(awayLogs.map((log) => log.pointsAgainst)),
     );
 
@@ -997,25 +1096,25 @@ const buildHistoryPrior = (game: Game, profile: SportProfile): TeamHistoryPrior 
     const awayAwayLogs = awayLogs.filter((log) => !log.isHome);
     const homeCtxOff = homeHomeLogs.length >= 3
         ? weightedMean(
-            homeHomeLogs.map((log) => ({ value: log.pointsFor, weight: logWeight(cutoffMs, log, game.seasonYear) * 1.15 })),
+            homeHomeLogs.map((log) => ({ value: log.pointsFor, weight: logWeight(cutoffMs, log, carryoverContext) * 1.15 })),
             homeOverallOff,
         )
         : homeOverallOff;
     const homeCtxDef = homeHomeLogs.length >= 3
         ? weightedMean(
-            homeHomeLogs.map((log) => ({ value: log.pointsAgainst, weight: logWeight(cutoffMs, log, game.seasonYear) * 1.15 })),
+            homeHomeLogs.map((log) => ({ value: log.pointsAgainst, weight: logWeight(cutoffMs, log, carryoverContext) * 1.15 })),
             homeOverallDef,
         )
         : homeOverallDef;
     const awayCtxOff = awayAwayLogs.length >= 3
         ? weightedMean(
-            awayAwayLogs.map((log) => ({ value: log.pointsFor, weight: logWeight(cutoffMs, log, game.seasonYear) * 1.15 })),
+            awayAwayLogs.map((log) => ({ value: log.pointsFor, weight: logWeight(cutoffMs, log, carryoverContext) * 1.15 })),
             awayOverallOff,
         )
         : awayOverallOff;
     const awayCtxDef = awayAwayLogs.length >= 3
         ? weightedMean(
-            awayAwayLogs.map((log) => ({ value: log.pointsAgainst, weight: logWeight(cutoffMs, log, game.seasonYear) * 1.15 })),
+            awayAwayLogs.map((log) => ({ value: log.pointsAgainst, weight: logWeight(cutoffMs, log, carryoverContext) * 1.15 })),
             awayOverallDef,
         )
         : awayOverallDef;
@@ -1023,7 +1122,7 @@ const buildHistoryPrior = (game: Game, profile: SportProfile): TeamHistoryPrior 
     let homeExpected = (homeCtxOff + awayCtxDef) / 2;
     let awayExpected = (awayCtxOff + homeCtxDef) / 2;
 
-    const allObservations = toSideObservations(historyGames, game.id, cutoffMs, game.seasonYear);
+    const allObservations = toSideObservations(historyGames, game.id, cutoffMs, carryoverContext);
     const relevantObservations = buildRelevantObservationSlice(allObservations, String(homeId), String(awayId));
     const opponentAdjusted = buildOpponentAdjustedContext(
         profile,
@@ -1053,6 +1152,7 @@ const buildHistoryPrior = (game: Game, profile: SportProfile): TeamHistoryPrior 
             const isCurrentHomeAtHome = String(g.homeTeamId) === String(homeId);
             return {
                 dateMs: t,
+                seasonYear: g.seasonYear,
                 homePoints: isCurrentHomeAtHome ? homeScore : awayScore,
                 awayPoints: isCurrentHomeAtHome ? awayScore : homeScore,
             };
@@ -1075,21 +1175,27 @@ const buildHistoryPrior = (game: Game, profile: SportProfile): TeamHistoryPrior 
         h2hWeightedHome = weightedMean(
             h2hLogs.map((log) => ({
                 value: log.homePoints,
-                weight: Math.exp(-Math.max(0, (cutoffMs - log.dateMs) / 86400000) / 70) * 1.2,
+                weight:
+                    (Math.exp(-Math.max(0, (cutoffMs - log.dateMs) / 86400000) / 70) * 1.2) *
+                    getSeasonCarryoverWeight(log.seasonYear, carryoverContext),
             })),
             mean(h2hLogs.map((log) => log.homePoints)),
         );
         h2hWeightedAway = weightedMean(
             h2hLogs.map((log) => ({
                 value: log.awayPoints,
-                weight: Math.exp(-Math.max(0, (cutoffMs - log.dateMs) / 86400000) / 70) * 1.2,
+                weight:
+                    (Math.exp(-Math.max(0, (cutoffMs - log.dateMs) / 86400000) / 70) * 1.2) *
+                    getSeasonCarryoverWeight(log.seasonYear, carryoverContext),
             })),
             mean(h2hLogs.map((log) => log.awayPoints)),
         );
         h2hWeightedMargin = weightedMean(
             h2hLogs.map((log) => ({
                 value: log.homePoints - log.awayPoints,
-                weight: Math.exp(-Math.max(0, (cutoffMs - log.dateMs) / 86400000) / 70) * 1.2,
+                weight:
+                    (Math.exp(-Math.max(0, (cutoffMs - log.dateMs) / 86400000) / 70) * 1.2) *
+                    getSeasonCarryoverWeight(log.seasonYear, carryoverContext),
             })),
             mean(h2hLogs.map((log) => log.homePoints - log.awayPoints)),
         );
@@ -1128,16 +1234,18 @@ const buildHistoryPrior = (game: Game, profile: SportProfile): TeamHistoryPrior 
         : awayCtxDef;
 
     const marginSamples: Array<{ value: number; weight: number }> = [
-        ...homeLogs.map((log) => ({ value: log.pointsFor - log.pointsAgainst, weight: logWeight(cutoffMs, log, game.seasonYear) })),
-        ...awayLogs.map((log) => ({ value: log.pointsFor - log.pointsAgainst, weight: logWeight(cutoffMs, log, game.seasonYear) })),
+        ...homeLogs.map((log) => ({ value: log.pointsFor - log.pointsAgainst, weight: logWeight(cutoffMs, log, carryoverContext) })),
+        ...awayLogs.map((log) => ({ value: log.pointsFor - log.pointsAgainst, weight: logWeight(cutoffMs, log, carryoverContext) })),
     ];
     const scoringSamples: Array<{ value: number; weight: number }> = [
-        ...homeLogs.map((log) => ({ value: log.pointsFor, weight: logWeight(cutoffMs, log, game.seasonYear) })),
-        ...awayLogs.map((log) => ({ value: log.pointsFor, weight: logWeight(cutoffMs, log, game.seasonYear) })),
+        ...homeLogs.map((log) => ({ value: log.pointsFor, weight: logWeight(cutoffMs, log, carryoverContext) })),
+        ...awayLogs.map((log) => ({ value: log.pointsFor, weight: logWeight(cutoffMs, log, carryoverContext) })),
     ];
     if (h2hLogs.length > 0) {
         h2hLogs.forEach((log) => {
-            const ageWeight = Math.exp(-Math.max(0, (cutoffMs - log.dateMs) / 86400000) / 70) * 1.35;
+            const ageWeight =
+                (Math.exp(-Math.max(0, (cutoffMs - log.dateMs) / 86400000) / 70) * 1.35) *
+                getSeasonCarryoverWeight(log.seasonYear, carryoverContext);
             marginSamples.push({ value: log.homePoints - log.awayPoints, weight: ageWeight });
             scoringSamples.push({ value: log.homePoints, weight: ageWeight });
             scoringSamples.push({ value: log.awayPoints, weight: ageWeight });
@@ -1166,6 +1274,12 @@ const buildHistoryPrior = (game: Game, profile: SportProfile): TeamHistoryPrior 
         margin: homeExpected - awayExpected,
         homeGames: homeLogs.length,
         awayGames: awayLogs.length,
+        homeCurrentSeasonGames: homePack.currentSeasonGames,
+        awayCurrentSeasonGames: awayPack.currentSeasonGames,
+        homePriorSeasonGames: homePack.priorSeasonGames,
+        awayPriorSeasonGames: awayPack.priorSeasonGames,
+        stabilizationCutoff,
+        carryoverBlend: clamp(1 - (effectiveCurrentGames / Math.max(1, stabilizationCutoff)), 0, 1),
         headToHeadGames: h2hLogs.length,
         homeOffense: homeCtxOff,
         awayOffense: awayCtxOff,
@@ -1886,8 +2000,11 @@ const computePregameModel = (
     let possibleSignals = profile.matchupPairs.length + profile.directAxes.length + 2; // history prior (total + margin)
     let foundSignals = 0;
     const historyPrior = buildHistoryPrior(game, profile);
-    const historyCoverage = historyPrior ? Math.min(historyPrior.homeGames, historyPrior.awayGames) : 0;
-    const shouldUseFallbackContext = !STRICT_TEAM_HISTORY_MODE || historyCoverage < 6;
+    const stabilizationCutoff = getSeasonStabilizationCutoff(profile);
+    const historyCoverage = historyPrior
+        ? Math.min(historyPrior.homeCurrentSeasonGames, historyPrior.awayCurrentSeasonGames)
+        : 0;
+    const shouldUseFallbackContext = !STRICT_TEAM_HISTORY_MODE || historyCoverage < stabilizationCutoff;
     if (shouldUseFallbackContext) possibleSignals += 2; // rank + market fallback only
     if (historyPrior?.headToHeadGames) possibleSignals += 1;
 
@@ -1905,6 +2022,15 @@ const computePregameModel = (
             description: `From ${historyPrior.homeGames} ${game.homeTeam} games vs ${historyPrior.awayGames} ${game.awayTeam} games`,
             magnitude: Math.max(0.35, Math.abs(historyPrior.margin) / Math.max(1, profile.marginStdDev)),
         });
+        if (historyPrior.carryoverBlend > 0.02) {
+            findings.push({
+                label: "Prior-Season Carryover",
+                value: `${Math.round(historyPrior.carryoverBlend * 100)}%`,
+                impact: "neutral",
+                description: `${historyPrior.homeCurrentSeasonGames}/${historyPrior.awayCurrentSeasonGames} current-season games (cutoff ${historyPrior.stabilizationCutoff}); blending prior season finals while samples stabilize`,
+                magnitude: Math.max(0.2, historyPrior.carryoverBlend * 0.9),
+            });
+        }
         const opponentAdjustedHomeNet = historyPrior.homeAdjustedOffense - historyPrior.awayAdjustedDefense;
         const opponentAdjustedAwayNet = historyPrior.awayAdjustedOffense - historyPrior.homeAdjustedDefense;
         const opponentAdjustedEdge = opponentAdjustedHomeNet - opponentAdjustedAwayNet;
