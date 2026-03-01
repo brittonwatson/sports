@@ -1456,21 +1456,20 @@ export const App: React.FC = () => {
         onTabChange={handleTabChange}
         onSearchClick={() => setIsSearchOpen(true)}
         onMenuClick={() => setIsMenuOpen(true)}
+        followingContent={
+          <FollowingBar
+            games={followedGamesForBar}
+            isOpen={isFollowingBarOpen}
+            selectedGameId={selectedGame?.id || null}
+            onOpen={() => setIsFollowingBarOpen(true)}
+            onClose={() => setIsFollowingBarOpen(false)}
+            onGameClick={openFollowedGame}
+            onCloseActiveGame={closeActiveGameButKeepFollowing}
+          />
+        }
       />
 
-      <FollowingBar
-        games={followedGamesForBar}
-        isOpen={isFollowingBarOpen}
-        selectedGameId={selectedGame?.id || null}
-        onOpen={() => setIsFollowingBarOpen(true)}
-        onClose={() => setIsFollowingBarOpen(false)}
-        onGameClick={openFollowedGame}
-        onCloseActiveGame={closeActiveGameButKeepFollowing}
-      />
-
-      <main className={`max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-6 transition-[padding] duration-300 ${
-        followedGamesForBar.length > 0 && isFollowingBarOpen ? 'pt-28' : 'pt-6'
-      }`}>
+      <main className="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-6">
          {selectedTeam ? (
              <div>
 	                <button 

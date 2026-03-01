@@ -9,6 +9,7 @@ interface NavbarProps {
   onTabChange: (tab: Sport | 'HOME' | 'METHODOLOGY') => void;
   onSearchClick: () => void;
   onMenuClick: () => void;
+  followingContent?: React.ReactNode;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({ 
@@ -16,7 +17,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   favoriteLeagues, 
   onTabChange, 
   onSearchClick, 
-  onMenuClick 
+  onMenuClick,
+  followingContent,
 }) => {
   const handleScrollTop = (e: React.MouseEvent) => {
       // Allow button clicks to propagate normally, but catch background clicks
@@ -27,7 +29,7 @@ export const Navbar: React.FC<NavbarProps> = ({
 
   return (
     <nav 
-        className="sticky top-0 z-50 bg-white/80 dark:bg-slate-950/80 backdrop-blur-xl border-b border-slate-200 dark:border-slate-800/60 transition-colors duration-300 cursor-pointer"
+        className="safe-area-header sticky top-0 z-50 bg-white/80 dark:bg-slate-950/80 backdrop-blur-xl border-b border-slate-200 dark:border-slate-800/60 transition-colors duration-300 cursor-pointer"
         onClick={handleScrollTop}
     >
       <div className="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8">
@@ -90,6 +92,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             </button>
           </div>
         </div>
+        {followingContent}
       </div>
     </nav>
   );
