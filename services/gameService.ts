@@ -56,8 +56,11 @@ const ODDS_BACKFILL_TTL_MS = 10 * 60 * 1000;
 const ODDS_BACKFILL_LOOKAHEAD_MS = 12 * 24 * 60 * 60 * 1000;
 const ODDS_BACKFILL_MAX_REQUESTS = 64;
 const RACING_SEASON_CONTEXT_TTL_MS = 10 * 60 * 1000;
+const RACING_LAP_TOTAL_TTL_MS = 8 * 60 * 60 * 1000;
+const RACING_LAP_SEARCH_WINDOW_DAYS = 21;
 const RACING_SPORTS = new Set<Sport>(["NASCAR", "INDYCAR", "F1"]);
 const racingSeasonContextCache = new Map<Sport, { fetchedAt: number; context: SeasonContext }>();
+const racingLapTotalCache = new Map<string, { fetchedAt: number; totalLaps?: number }>();
 
 const sortGamesByDateTime = (games: Game[]): Game[] =>
     [...games].sort((a, b) => {
@@ -68,6 +71,165 @@ const sortGamesByDateTime = (games: Game[]): Game[] =>
         if (!Number.isFinite(bTime)) return -1;
         return aTime - bTime;
     });
+
+const normalizeRaceLookupKey = (value: string): string =>
+    String(value || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, ' ')
+        .trim();
+
+const isEligibleForRacingLapInference = (game: Game): boolean => {
+    if (game.status !== "in_progress") return false;
+    if (game.racingTotalLaps && game.racingTotalLaps > 0) return false;
+    const currentLap = game.racingCurrentLap || (Number.isFinite(game.period) ? game.period : 0);
+    return currentLap > 0;
+};
+
+const inferRacingTotalLapsFromHistory = async (sport: Sport, game: Game): Promise<number | undefined> => {
+    if (!RACING_SPORTS.has(sport)) return undefined;
+
+    const currentLap = game.racingCurrentLap || (Number.isFinite(game.period) ? Number(game.period) : 0);
+    if (!Number.isFinite(currentLap) || currentLap <= 0) return undefined;
+
+    const targetDate = new Date(game.dateTime);
+    if (Number.isNaN(targetDate.getTime())) return undefined;
+
+    const venueKey = normalizeRaceLookupKey(game.venue || "");
+    const contextKey = normalizeRaceLookupKey(game.context || "");
+    const cacheKey = `${sport}|${venueKey}|${contextKey}|${targetDate.getUTCMonth() + 1}|${targetDate.getUTCDate()}`;
+    const cached = racingLapTotalCache.get(cacheKey);
+    if (cached && (Date.now() - cached.fetchedAt) < RACING_LAP_TOTAL_TTL_MS) {
+        return cached.totalLaps;
+    }
+
+    const endpoint = ESPN_ENDPOINTS[sport];
+    const baseUrl = `https://site.api.espn.com/apis/site/v2/sports/${endpoint}/scoreboard`;
+    const searchYears = [0, -1, -2];
+
+    let bestCandidate: { score: number; totalLaps: number; eventTime: number } | null = null;
+
+    for (const offset of searchYears) {
+        const start = new Date(targetDate);
+        const end = new Date(targetDate);
+        start.setUTCFullYear(start.getUTCFullYear() + offset);
+        end.setUTCFullYear(end.getUTCFullYear() + offset);
+        start.setUTCDate(start.getUTCDate() - RACING_LAP_SEARCH_WINDOW_DAYS);
+        end.setUTCDate(end.getUTCDate() + RACING_LAP_SEARCH_WINDOW_DAYS);
+
+        const params = new URLSearchParams(SPORT_PARAMS[sport] || "");
+        params.set("dates", `${formatEspnDate(start)}-${formatEspnDate(end)}`);
+        params.set("limit", "1000");
+
+        let data: any = null;
+        try {
+            const response = await fetchWithRetry(`${baseUrl}?${params.toString()}`, 1);
+            if (!response.ok) continue;
+            data = await response.json();
+        } catch {
+            continue;
+        }
+
+        const events = Array.isArray(data?.events) ? data.events : [];
+        for (const event of events) {
+            const state = String(event?.competitions?.[0]?.status?.type?.state || event?.status?.type?.state || "").toLowerCase();
+            if (state !== "post") continue;
+
+            const totalLaps = Number(event?.competitions?.[0]?.status?.period ?? event?.status?.period);
+            if (!Number.isFinite(totalLaps) || totalLaps <= 0) continue;
+            if (totalLaps < currentLap) continue;
+
+            const eventName = String(event?.name || event?.shortName || "").trim();
+            const eventNameKey = normalizeRaceLookupKey(eventName);
+            const eventVenue = String(
+                event?.competitions?.[0]?.venue?.fullName ||
+                event?.venues?.[0]?.fullName ||
+                "",
+            ).trim();
+            const eventVenueKey = normalizeRaceLookupKey(eventVenue);
+
+            let score = 0;
+            if (venueKey) {
+                if (eventNameKey.includes(venueKey)) score += 8;
+                if (eventVenueKey && eventVenueKey.includes(venueKey)) score += 8;
+            }
+            if (contextKey) {
+                if (eventNameKey === contextKey) score += 6;
+                else if (eventNameKey.includes(contextKey) || contextKey.includes(eventNameKey)) score += 4;
+            }
+
+            const eventTime = new Date(String(event?.date || "")).getTime();
+            if (Number.isFinite(eventTime)) {
+                const daysDiff = Math.abs((eventTime - targetDate.getTime()) / (24 * 60 * 60 * 1000));
+                if (daysDiff <= 1) score += 4;
+                else if (daysDiff <= 7) score += 2;
+                else if (daysDiff <= 14) score += 1;
+            }
+
+            if (score <= 0) continue;
+            if (!bestCandidate || score > bestCandidate.score || (score === bestCandidate.score && eventTime > bestCandidate.eventTime)) {
+                bestCandidate = {
+                    score,
+                    totalLaps,
+                    eventTime: Number.isFinite(eventTime) ? eventTime : 0,
+                };
+            }
+        }
+    }
+
+    const inferred = bestCandidate?.totalLaps;
+    racingLapTotalCache.set(cacheKey, { fetchedAt: Date.now(), totalLaps: inferred });
+    return inferred;
+};
+
+const enrichRacingLapTotals = async (sport: Sport, games: Game[]): Promise<Game[]> => {
+    if (!RACING_SPORTS.has(sport) || games.length === 0) return games;
+
+    const candidates = games
+        .map((game, index) => ({ game, index }))
+        .filter(({ game }) => isEligibleForRacingLapInference(game));
+
+    if (candidates.length === 0) {
+        return games.map((game) => {
+            if (game.status !== "finished") return game;
+            if (game.racingTotalLaps && game.racingTotalLaps > 0) return game;
+            const finalLap = Number(game.period);
+            if (!Number.isFinite(finalLap) || finalLap <= 0) return game;
+            return {
+                ...game,
+                racingCurrentLap: game.racingCurrentLap || finalLap,
+                racingTotalLaps: finalLap,
+            };
+        });
+    }
+
+    const inferred = await Promise.all(
+        candidates.map(async ({ game }) => inferRacingTotalLapsFromHistory(sport, game)),
+    );
+
+    const next = [...games];
+    candidates.forEach(({ game, index }, i) => {
+        const totalLaps = inferred[i];
+        if (!totalLaps || totalLaps <= 0) return;
+        const currentLap = game.racingCurrentLap || (Number.isFinite(game.period) ? Number(game.period) : undefined);
+        next[index] = {
+            ...game,
+            racingCurrentLap: currentLap,
+            racingTotalLaps: totalLaps,
+        };
+    });
+
+    return next.map((game) => {
+        if (game.status !== "finished") return game;
+        if (game.racingTotalLaps && game.racingTotalLaps > 0) return game;
+        const finalLap = Number(game.period);
+        if (!Number.isFinite(finalLap) || finalLap <= 0) return game;
+        return {
+            ...game,
+            racingCurrentLap: game.racingCurrentLap || finalLap,
+            racingTotalLaps: finalLap,
+        };
+    });
+};
 
 const hasNearSeasonActivity = (games: Game[], now: Date = new Date()): boolean => {
     if (!Array.isArray(games) || games.length === 0) return false;
@@ -419,6 +581,9 @@ export const fetchUpcomingGames = async (
         }
         games = coerceStaleLiveGames(games);
         games = removeUndeterminedPlayoffGames(games);
+        if (RACING_SPORTS.has(sport)) {
+            games = await enrichRacingLapTotals(sport, games);
+        }
         if (!fullHistory) {
             games = await backfillMissingOdds(sport, games);
         }
@@ -474,6 +639,9 @@ export const fetchUpcomingGames = async (
         let games = removeUndeterminedPlayoffGames(
             coerceStaleLiveGames(events.map((event: any) => mapEventToGame(event, sport, leagueLogo))),
         );
+        if (RACING_SPORTS.has(sport)) {
+            games = await enrichRacingLapTotals(sport, games);
+        }
         if (!fullHistory) {
             games = await backfillMissingOdds(sport, games);
         }
@@ -566,7 +734,8 @@ export const fetchGamesForDate = async (sport: Sport, date: Date): Promise<Game[
             }
         }
         const cleaned = removeUndeterminedPlayoffGames(coerceStaleLiveGames(games));
-        return backfillMissingOdds(sport, cleaned);
+        const lapEnriched = RACING_SPORTS.has(sport) ? await enrichRacingLapTotals(sport, cleaned) : cleaned;
+        return backfillMissingOdds(sport, lapEnriched);
     }
 
     const endpoint = ESPN_ENDPOINTS[sport];
@@ -591,7 +760,8 @@ export const fetchGamesForDate = async (sport: Sport, date: Date): Promise<Game[
             const gd = new Date(g.dateTime);
             return gd.getFullYear() === date.getFullYear() && gd.getMonth() === date.getMonth() && gd.getDate() === date.getDate();
         });
-        const sorted = sortGamesByDateTime(games);
+        const lapEnriched = RACING_SPORTS.has(sport) ? await enrichRacingLapTotals(sport, games) : games;
+        const sorted = sortGamesByDateTime(lapEnriched);
         return backfillMissingOdds(sport, sorted);
     } catch { return []; }
 };

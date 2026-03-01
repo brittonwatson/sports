@@ -21,6 +21,33 @@ export const GameCard: React.FC<GameCardProps> = ({ game, onSelect, isSelected, 
   const isPreseason = game.seasonType === 1;
   const contextText = (game.context || '').trim();
   const contextLower = contextText.toLowerCase();
+  const normalizeDisplayKey = (value: string): string =>
+    String(value || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, ' ')
+      .trim();
+  const venueKey = normalizeDisplayKey(game.venue || '');
+  const contextKey = normalizeDisplayKey(contextText);
+  const contextMentionsVenue = Boolean(
+    isRacing &&
+    game.venue &&
+    contextKey &&
+    venueKey &&
+    (contextKey.includes(venueKey) || venueKey.includes(contextKey)),
+  );
+  const racingTitleText = (() => {
+    if (!isRacing) return contextText || game.gameStatus || game.leagueName || 'Session';
+    if (game.venue && contextMentionsVenue) return game.venue;
+    const base = contextText || game.gameStatus || game.leagueName || 'Session';
+    if (!game.venue) return base;
+    const atMatch = base.match(/\bat\s+(.+)$/i);
+    if (atMatch?.[1]) {
+      const extractedVenue = atMatch[1].trim();
+      if (normalizeDisplayKey(extractedVenue) === venueKey) return game.venue;
+    }
+    return base;
+  })();
+  const showVenueChip = Boolean(game.venue) && !(isRacing && contextMentionsVenue);
   const showContext = !!contextText &&
     contextText !== game.gameStatus &&
     !(isPreseason && contextLower.includes('preseason'));
@@ -235,7 +262,7 @@ export const GameCard: React.FC<GameCardProps> = ({ game, onSelect, isSelected, 
                                 : 'Racing Session'}
                         </p>
                         <p className="text-sm sm:text-base font-semibold text-slate-900 dark:text-white mt-1">
-                            {contextText || game.gameStatus || game.leagueName || 'Session'}
+                            {racingTitleText}
                         </p>
                     </div>
 
@@ -331,9 +358,9 @@ export const GameCard: React.FC<GameCardProps> = ({ game, onSelect, isSelected, 
             </div>
 
             {/* Expanded Info: Venue & Weather */}
-            {isSelected && (game.venue || game.weather) && (
+            {isSelected && (showVenueChip || game.weather) && (
                 <div className="mt-4 pt-3 border-t border-slate-100 dark:border-slate-800/50 flex flex-wrap gap-2 animate-fade-in">
-                    {game.venue && (
+                    {showVenueChip && (
                         <div className="flex items-center gap-1.5 bg-slate-50 dark:bg-slate-800/50 px-2 py-1 rounded text-xs text-slate-600 dark:text-slate-400">
                             <MapPin size={12} />
                             <span className="font-medium">{game.venue}{game.location ? ` in ${game.location}` : ''}</span>

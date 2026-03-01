@@ -1090,7 +1090,14 @@ export const App: React.FC = () => {
               const active: Sport[] = [];
               const inactive: Sport[] = [];
               const allGames: Game[] = [];
-              const leaguesToFetch = SPORTS.filter(s => favoriteLeagues.has(s));
+              const favoriteTeamLeagues = new Set<Sport>();
+              (Array.from(favoriteTeams) as string[]).forEach((entry) => {
+                  const parsed = parseTeamOptionFromFavoriteEntry(entry);
+                  if (parsed?.league) favoriteTeamLeagues.add(parsed.league);
+              });
+              const leaguesToFetch = SPORTS.filter(
+                  (sport) => favoriteLeagues.has(sport) || favoriteTeamLeagues.has(sport),
+              );
               const chunkSize = 4;
               const chunks: Sport[][] = [];
               for (let i = 0; i < leaguesToFetch.length; i += chunkSize) {
@@ -1167,9 +1174,8 @@ export const App: React.FC = () => {
               setAllTeams(prev => {
                   const next = new Map(prev);
                   fetchedGames.forEach(g => {
-                      const homeKey = `${g.homeTeam}-${g.league}`;
-                      if (!next.has(homeKey) && g.homeTeamId) {
-                          next.set(homeKey, {
+                      if (g.homeTeamId && SPORTS.includes(g.league as Sport)) {
+                          upsertTeamOption(next, {
                               id: g.homeTeamId,
                               name: g.homeTeam,
                               abbreviation: g.homeTeamAbbreviation,
@@ -1177,9 +1183,8 @@ export const App: React.FC = () => {
                               league: g.league as Sport,
                           });
                       }
-                      const awayKey = `${g.awayTeam}-${g.league}`;
-                      if (!next.has(awayKey) && g.awayTeamId) {
-                          next.set(awayKey, {
+                      if (g.awayTeamId && SPORTS.includes(g.league as Sport)) {
+                          upsertTeamOption(next, {
                               id: g.awayTeamId,
                               name: g.awayTeam,
                               abbreviation: g.awayTeamAbbreviation,
@@ -1321,7 +1326,7 @@ export const App: React.FC = () => {
     }, refreshIntervalMs);
 
     return () => clearInterval(intervalId);
-  }, [selectedTab, viewMode, favoriteLeagues, standingsType, selectedTeam]); 
+  }, [selectedTab, viewMode, favoriteLeagues, favoriteTeams, standingsType, selectedTeam]); 
 
   useEffect(() => {
       if (selectedTab === 'HOME' || selectedTab === 'METHODOLOGY') return;
