@@ -7,6 +7,7 @@ import { Brain, TrendingUp, ShieldCheck, List, Sparkles, Activity, Scale, Dollar
 import { GroundingSources } from './GroundingSources';
 import { fetchPlayerProfile } from '../services/playerService';
 import { getTeamColor } from '../services/uiUtils';
+import { getGameTeamAbbreviation } from '../services/teamAbbreviation';
 
 interface PredictionViewProps {
   game: Game;
@@ -77,30 +78,31 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
   const [playerStatsMode, setPlayerStatsMode] = useState<'GAME' | 'SEASON'>('SEASON');
 
   const displayOdds = stats.marketOdds || game.odds;
-  
-  const topTeam = isSoccer ? 'home' : 'away';
-  const bottomTeam = isSoccer ? 'away' : 'home';
+  const drawProbability = Math.max(0, Math.min(100, stats.drawProbability ?? 0));
+  const hasDrawOutcome = isSoccer || drawProbability > 0.01;
 
   const homeColor = getTeamColor(game.homeTeamColor, game.homeTeamAlternateColor, isDarkMode);
   const awayColor = getTeamColor(game.awayTeamColor, game.awayTeamAlternateColor, isDarkMode);
-
-  const getTeamData = (type: 'home' | 'away') => ({
-      name: type === 'home' ? game.homeTeam : game.awayTeam,
-      value: type === 'home' ? stats.winProbabilityHome : stats.winProbabilityAway,
-      color: type === 'home' ? homeColor : awayColor,
-      score: type === 'home' ? stats.predictedScoreHome : stats.predictedScoreAway,
-      logo: type === 'home' ? game.homeTeamLogo : game.awayTeamLogo
-  });
-
-  const topData = getTeamData(topTeam);
-  const bottomData = getTeamData(bottomTeam);
-
-  const winData = [
-    { name: topData.name, value: topData.value },
-    { name: bottomData.name, value: bottomData.value },
-  ];
-
-  const COLORS = [topData.color, bottomData.color];
+  const probabilityRows: Array<{ id: 'home' | 'away' | 'draw'; name: string; value: number; color: string }> = (
+      isSoccer
+          ? [
+                { id: 'home', name: game.homeTeam, value: stats.winProbabilityHome, color: homeColor },
+                { id: 'away', name: game.awayTeam, value: stats.winProbabilityAway, color: awayColor },
+            ]
+          : [
+                { id: 'away', name: game.awayTeam, value: stats.winProbabilityAway, color: awayColor },
+                { id: 'home', name: game.homeTeam, value: stats.winProbabilityHome, color: homeColor },
+            ]
+  );
+  if (hasDrawOutcome) {
+      probabilityRows.splice(1, 0, {
+          id: 'draw',
+          name: 'Draw',
+          value: drawProbability,
+          color: isDarkMode ? '#94a3b8' : '#64748b',
+      });
+  }
+  const winData = probabilityRows.map((row) => ({ name: row.name, value: row.value, color: row.color }));
 
   const handleAnalysisClick = () => {
       if (onGenerateAnalysis) {
@@ -110,8 +112,57 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
       }
   };
 
-  const homeAbbr = game.homeTeam.substring(0, 3).toUpperCase();
-  const awayAbbr = game.awayTeam.substring(0, 3).toUpperCase();
+  const homeAbbr = getGameTeamAbbreviation(game, 'home');
+  const awayAbbr = getGameTeamAbbreviation(game, 'away');
+
+  const getImpactMeta = (impact: CalculationDetailItem['impact']) => {
+      if (impact === 'positive') {
+          return {
+              favoredTeam: game.homeTeam,
+              favoredAbbr: homeAbbr,
+              disadvantagedTeam: game.awayTeam,
+              disadvantagedAbbr: awayAbbr,
+              favoredColor: homeColor,
+          };
+      }
+      if (impact === 'negative') {
+          return {
+              favoredTeam: game.awayTeam,
+              favoredAbbr: awayAbbr,
+              disadvantagedTeam: game.homeTeam,
+              disadvantagedAbbr: homeAbbr,
+              favoredColor: awayColor,
+          };
+      }
+      return {
+          favoredTeam: '',
+          favoredAbbr: '',
+          disadvantagedTeam: '',
+          disadvantagedAbbr: '',
+          favoredColor: '',
+      };
+  };
+
+  const getMatchupExplainerText = (item: CalculationDetailItem): string => {
+      const meta = getImpactMeta(item.impact);
+      if (item.impact === 'neutral') {
+          return `${item.label} is balanced for ${game.homeTeam} and ${game.awayTeam} (${item.value}). ${item.description}`;
+      }
+      return `${item.label} favors ${meta.favoredTeam} over ${meta.disadvantagedTeam} (${item.value}). ${item.description}`;
+  };
+
+  const matchupEdgeReport = useMemo(() => {
+      const homeEdges = (stats.calculationBreakdown || [])
+          .filter((item) => item.impact === 'positive')
+          .slice(0, 5);
+      const awayEdges = (stats.calculationBreakdown || [])
+          .filter((item) => item.impact === 'negative')
+          .slice(0, 5);
+      const neutralEdges = (stats.calculationBreakdown || [])
+          .filter((item) => item.impact === 'neutral')
+          .slice(0, 3);
+      return { homeEdges, awayEdges, neutralEdges };
+  }, [stats.calculationBreakdown]);
 
   const displayStats = useMemo(() => {
       if (gameDetails?.seasonStats && gameDetails.seasonStats.length > 0) {
@@ -279,9 +330,16 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
   };
 
   const getDetailedOutlook = () => {
-    const isHomeFav = stats.winProbabilityHome >= 50;
-    const fav = isHomeFav ? game.homeTeam : game.awayTeam;
-    const prob = Math.max(stats.winProbabilityHome, stats.winProbabilityAway).toFixed(1);
+    const outcomeRows: Array<{ id: 'home' | 'away' | 'draw'; label: string; probability: number }> = [
+        { id: 'home', label: game.homeTeam, probability: stats.winProbabilityHome },
+        { id: 'away', label: game.awayTeam, probability: stats.winProbabilityAway },
+    ];
+    if (hasDrawOutcome) {
+        outcomeRows.push({ id: 'draw', label: 'draw', probability: drawProbability });
+    }
+    const topOutcome = [...outcomeRows].sort((a, b) => b.probability - a.probability)[0];
+    const prob = topOutcome.probability.toFixed(1);
+    const isHomeFav = topOutcome.id === 'home';
     
     const meaningfulFactors = stats.calculationBreakdown
         .filter(f => f.impact !== 'neutral' && !f.label.includes('Power Rating') && !f.label.includes('Home Court'))
@@ -305,18 +363,40 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
     }
 
     const factorText = meaningfulFactors.length > 0 
-        ? `Key variables driving this forecast include significant weight on ${meaningfulFactors.map(f => f.label).join(' and ')}.` 
-        : `This prediction relies heavily on ${isHomeFav ? 'historical home field advantage' : 'roster power ratings'} and recent form.`;
+        ? `Key variables driving this forecast include ${meaningfulFactors.map(f => {
+            const meta = getImpactMeta(f.impact);
+            if (f.impact === 'neutral') return `${f.label} (balanced)`;
+            return `${f.label} favoring ${meta.favoredTeam}`;
+        }).join(', ')}.` 
+        : topOutcome.id === 'draw'
+            ? 'The current matchup profile is balanced enough that the draw channel remains highly competitive.'
+            : `This prediction relies heavily on ${isHomeFav ? 'historical home field advantage' : 'roster power ratings'} and recent form.`;
 
     const liveContext = game.status === 'in_progress' 
-        ? `As this match is live, our model is actively blending the pre-game prior with real-time efficiency data. The current pace is ${stats.calculationBreakdown.some(f=>f.label.includes('Tempo')) ? 'accelerating' : 'stabilizing'}, shifting the projected total.` 
-        : `The projected score of ${stats.predictedScoreAway}-${stats.predictedScoreHome} represents the median outcome of our 10,000 stochastic simulations.`;
+        ? `As this match is live, our model is actively blending the pre-game prior with real-time efficiency data. The current pace is ${stats.calculationBreakdown.some(f=>f.label.toLowerCase().includes('tempo') || f.label.toLowerCase().includes('pace')) ? 'accelerating' : 'stabilizing'}, shifting the projected total.${hasDrawOutcome ? ' Draw probability is calculated from the current scoreline plus remaining-goal distributions for each side.' : ''}` 
+        : `The projected score of ${stats.predictedScoreAway}-${stats.predictedScoreHome} is produced from weighted offense-vs-defense matchup modeling, team context, and opponent-adjusted team history.`;
+
+    const matchupExplainers = meaningfulFactors.map(getMatchupExplainerText);
 
     return (
         <div className="space-y-4">
             <p className="text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
-                Our predictive engine calculates a <strong>{prob}% probability</strong> of victory for the <strong>{fav}</strong>. {factorText}
+                {topOutcome.id === 'draw' ? (
+                    <>Our predictive engine calculates a <strong>{prob}% probability</strong> of a <strong>draw</strong>. {factorText}</>
+                ) : (
+                    <>Our predictive engine calculates a <strong>{prob}% probability</strong> of victory for the <strong>{topOutcome.label}</strong>. {factorText}</>
+                )}
             </p>
+            {matchupExplainers.length > 0 && (
+                <div className="space-y-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-900/30 p-3">
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">Matchup Explainers</p>
+                    {matchupExplainers.map((text, idx) => (
+                        <p key={idx} className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                            {text}
+                        </p>
+                    ))}
+                </div>
+            )}
             {efficiencyText && (
                 <p className="text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
                     {efficiencyText}
@@ -355,18 +435,18 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
             <div 
                 onClick={() => setShowOutlookHelp(true)}
-                className="flex flex-col p-5 rounded-2xl bg-slate-50/50 dark:bg-slate-900/30 border border-slate-200 dark:border-slate-800 cursor-pointer hover:border-indigo-300 dark:hover:border-indigo-700 hover:shadow-md transition-all duration-300 group/card relative overflow-hidden"
+                className="flex flex-col p-5 rounded-2xl bg-slate-50/50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-700 cursor-pointer hover:border-indigo-300 dark:hover:border-indigo-500 hover:shadow-md transition-all duration-300 group/card relative overflow-hidden"
             >
                 <div className="absolute inset-0 bg-indigo-50/0 group-hover/card:bg-indigo-50/30 dark:group-hover/card:bg-indigo-900/10 transition-colors" />
                 
                 <div className="relative z-10 flex flex-col h-full">
                     <div className="flex justify-between items-start mb-4">
-                        <h4 className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider flex items-center gap-2">
+                        <h4 className="text-[10px] font-bold text-slate-500 dark:text-slate-200 uppercase tracking-wider flex items-center gap-2">
                             <Brain size={14} /> Win Probability
                         </h4>
-                        <div className="flex items-center gap-1.5 px-2 py-0.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-md text-[10px] font-semibold transition-colors">
+                        <div className="flex items-center gap-1.5 px-2 py-0.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-600 rounded-md text-[10px] font-semibold transition-colors">
                             <ShieldCheck size={12} className={stats.confidence > 70 ? "text-emerald-500" : stats.confidence < 55 ? "text-amber-500" : "text-slate-500"} />
-                            <span className="text-slate-600 dark:text-slate-400">{stats.confidence.toFixed(0)}% Conf</span>
+                            <span className="text-slate-700 dark:text-slate-100">{stats.confidence.toFixed(0)}% Conf</span>
                         </div>
                     </div>
 
@@ -387,35 +467,28 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
                                 endAngle={-270}
                                 >
                                 {winData.map((entry, index) => (
-                                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                                    <Cell key={`cell-${index}`} fill={entry.color} />
                                 ))}
                                 </Pie>
                             </PieChart>
                             </ResponsiveContainer>
                             <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                                <span className="text-[9px] font-bold text-slate-400 dark:text-slate-500">WIN%</span>
+                                <span className="text-[9px] font-bold text-slate-500 dark:text-slate-200">WIN%</span>
                             </div>
                         </div>
                         
                         <div className="flex-1 space-y-3">
-                            <div>
-                                <div className="flex justify-between text-xs mb-1">
-                                    <span className="font-semibold truncate max-w-[120px] text-slate-700 dark:text-slate-300">{topData.name}</span>
-                                    <span className="font-bold font-mono" style={{ color: topData.color }}>{topData.value.toFixed(1)}%</span>
+                            {probabilityRows.map((row) => (
+                                <div key={row.id}>
+                                    <div className="flex justify-between text-xs mb-1">
+                                        <span className="font-semibold truncate max-w-[120px] text-slate-700 dark:text-slate-100">{row.name}</span>
+                                        <span className="font-bold font-mono" style={{ color: row.color }}>{row.value.toFixed(1)}%</span>
+                                    </div>
+                                    <div className="w-full bg-slate-200 dark:bg-slate-700 h-1.5 rounded-full overflow-hidden">
+                                        <div className="h-full transition-all duration-1000" style={{ width: `${Math.max(0, Math.min(100, row.value))}%`, backgroundColor: row.color }}></div>
+                                    </div>
                                 </div>
-                                <div className="w-full bg-slate-200 dark:bg-slate-800 h-1.5 rounded-full overflow-hidden">
-                                    <div className="h-full transition-all duration-1000" style={{ width: `${topData.value}%`, backgroundColor: topData.color }}></div>
-                                </div>
-                            </div>
-                            <div>
-                                <div className="flex justify-between text-xs mb-1">
-                                    <span className="font-semibold truncate max-w-[120px] text-slate-700 dark:text-slate-300">{bottomData.name}</span>
-                                    <span className="font-bold font-mono" style={{ color: bottomData.color }}>{bottomData.value.toFixed(1)}%</span>
-                                </div>
-                                <div className="w-full bg-slate-200 dark:bg-slate-800 h-1.5 rounded-full overflow-hidden">
-                                    <div className="h-full transition-all duration-1000" style={{ width: `${bottomData.value}%`, backgroundColor: bottomData.color }}></div>
-                                </div>
-                            </div>
+                            ))}
                         </div>
                     </div>
                 </div>
@@ -478,8 +551,8 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
                      <div className="flex flex-col items-center justify-center border-x border-slate-200 dark:border-slate-700/50">
                          <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1">Moneyline</span>
                          <div className="flex flex-col items-center text-xs font-mono font-medium text-slate-600 dark:text-slate-400 leading-tight">
-                             <span>{game.awayTeam.substring(0,3).toUpperCase()} {displayOdds.moneyLineAway || '-'}</span>
-                             <span>{game.homeTeam.substring(0,3).toUpperCase()} {displayOdds.moneyLineHome || '-'}</span>
+                             <span>{awayAbbr} {displayOdds.moneyLineAway || '-'}</span>
+                             <span>{homeAbbr} {displayOdds.moneyLineHome || '-'}</span>
                          </div>
                      </div>
                      <div className="flex flex-col items-center justify-center">
@@ -497,45 +570,104 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
                     <Activity size={14} /> Statistical Drivers (Top 5)
                  </h4>
                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    {stats.calculationBreakdown.slice(0, 5).map((item, idx) => (
-                        <div key={idx} className="flex items-center justify-between p-3.5 rounded-xl bg-slate-50 dark:bg-slate-900/30 border border-slate-100 dark:border-slate-800/50 hover:bg-slate-100 dark:hover:bg-slate-800/30 transition-colors">
-                            <div className="flex-1 pr-3">
-                                <div className="flex items-center gap-2 mb-1.5">
-                                    {getFactorIcon(item.label)}
-                                    <span className="text-xs font-bold text-slate-800 dark:text-slate-200">{item.label}</span>
-                                    <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wider ${
-                                        item.impact === 'positive' 
-                                            ? 'bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400' 
-                                            : item.impact === 'negative' 
-                                                ? 'bg-rose-100 dark:bg-rose-500/20 text-rose-700 dark:text-rose-400'
-                                                : 'bg-slate-100 dark:bg-slate-800 text-slate-500'
-                                    }`}>
-                                        {item.impact === 'positive' ? `${homeAbbr} Adv` : item.impact === 'negative' ? `${awayAbbr} Adv` : 'Neutral'}
-                                    </span>
-                                </div>
-                                <div className="text-[10px] text-slate-500 dark:text-slate-400 leading-relaxed font-medium">
-                                    {item.description}
-                                </div>
-                            </div>
-                            <div className="text-right pl-3 border-l border-slate-200 dark:border-slate-800 w-24">
-                                <div className={`text-sm font-mono font-bold mb-1 ${
-                                    item.impact === 'positive' ? 'text-emerald-600 dark:text-emerald-400' : 
-                                    item.impact === 'negative' ? 'text-rose-600 dark:text-rose-400' : 'text-slate-500'
-                                }`}>
-                                    {item.value}
-                                </div>
-                                <div className="h-1.5 w-full bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden flex">
-                                    {item.impact === 'positive' ? (
-                                        <div className="h-full bg-emerald-500 w-full animate-[pulse_3s_ease-in-out_infinite]"></div>
-                                    ) : (
-                                        <div className="h-full bg-rose-500 w-full animate-[pulse_3s_ease-in-out_infinite]"></div>
+                    {stats.calculationBreakdown.slice(0, 5).map((item, idx) => {
+                        const meta = getImpactMeta(item.impact);
+                        return (
+                            <div key={idx} className="flex items-center justify-between p-3.5 rounded-xl bg-slate-50 dark:bg-slate-900/30 border border-slate-100 dark:border-slate-800/50 hover:bg-slate-100 dark:hover:bg-slate-800/30 transition-colors">
+                                <div className="flex-1 pr-3">
+                                    <div className="flex items-center gap-2 mb-1.5">
+                                        {getFactorIcon(item.label)}
+                                        <span className="text-xs font-bold text-slate-800 dark:text-slate-200">{item.label}</span>
+                                        <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wider ${
+                                            item.impact === 'neutral'
+                                                ? 'bg-slate-100 dark:bg-slate-800 text-slate-500'
+                                                : 'bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300'
+                                        }`}>
+                                            {item.impact === 'neutral' ? 'Balanced' : `Favors ${meta.favoredAbbr}`}
+                                        </span>
+                                    </div>
+                                    <div className="text-[10px] text-slate-500 dark:text-slate-400 leading-relaxed font-medium">
+                                        {item.description}
+                                    </div>
+                                    {item.impact !== 'neutral' && (
+                                        <div className="mt-1 text-[10px] font-semibold text-slate-600 dark:text-slate-300">
+                                            Matchup edge: {meta.favoredTeam} over {meta.disadvantagedTeam}
+                                        </div>
                                     )}
                                 </div>
+                                <div className="text-right pl-3 border-l border-slate-200 dark:border-slate-800 w-24">
+                                    <div
+                                        className="text-sm font-mono font-bold mb-1 text-slate-600 dark:text-slate-300"
+                                        style={item.impact === 'neutral' ? undefined : { color: meta.favoredColor }}
+                                    >
+                                        {item.value}
+                                    </div>
+                                    <div className="h-1.5 w-full bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden flex">
+                                        <div
+                                            className="h-full w-full animate-[pulse_3s_ease-in-out_infinite]"
+                                            style={{ backgroundColor: item.impact === 'neutral' ? '#94a3b8' : meta.favoredColor }}
+                                        />
+                                    </div>
+                                </div>
                             </div>
-                        </div>
-                    ))}
+                        );
+                    })}
                  </div>
              </div>
+        )}
+
+        {stats.calculationBreakdown && stats.calculationBreakdown.length > 0 && (
+            <div className="mb-8 border-t border-slate-100 dark:border-slate-800 pt-6">
+                <h4 className="text-xs font-bold text-slate-400 dark:text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2 font-display">
+                    <Scale size={14} /> Matchup Edge Report
+                </h4>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="rounded-xl border border-emerald-200 dark:border-emerald-900/40 bg-emerald-50/50 dark:bg-emerald-950/20 p-4">
+                        <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-300 mb-3">
+                            {game.homeTeam} Positive Factors
+                        </div>
+                        {matchupEdgeReport.homeEdges.length > 0 ? (
+                            <div className="space-y-2">
+                                {matchupEdgeReport.homeEdges.map((item, idx) => (
+                                    <div key={idx} className="text-xs text-emerald-800 dark:text-emerald-200 leading-relaxed">
+                                        <span className="font-bold">{item.label}</span>: {item.description}
+                                    </div>
+                                ))}
+                            </div>
+                        ) : (
+                            <div className="text-xs text-emerald-700/80 dark:text-emerald-300/80">No strong positive edge currently identified.</div>
+                        )}
+                    </div>
+                    <div className="rounded-xl border border-blue-200 dark:border-blue-900/40 bg-blue-50/50 dark:bg-blue-950/20 p-4">
+                        <div className="text-[10px] font-bold uppercase tracking-wider text-blue-700 dark:text-blue-300 mb-3">
+                            {game.awayTeam} Positive Factors
+                        </div>
+                        {matchupEdgeReport.awayEdges.length > 0 ? (
+                            <div className="space-y-2">
+                                {matchupEdgeReport.awayEdges.map((item, idx) => (
+                                    <div key={idx} className="text-xs text-blue-800 dark:text-blue-200 leading-relaxed">
+                                        <span className="font-bold">{item.label}</span>: {item.description}
+                                    </div>
+                                ))}
+                            </div>
+                        ) : (
+                            <div className="text-xs text-blue-700/80 dark:text-blue-300/80">No strong positive edge currently identified.</div>
+                        )}
+                    </div>
+                </div>
+                {matchupEdgeReport.neutralEdges.length > 0 && (
+                    <div className="mt-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/40 p-3">
+                        <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2">Balanced Factors</div>
+                        <div className="space-y-1">
+                            {matchupEdgeReport.neutralEdges.map((item, idx) => (
+                                <div key={idx} className="text-xs text-slate-600 dark:text-slate-300">
+                                    <span className="font-semibold">{item.label}</span>: {item.description}
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                )}
+            </div>
         )}
 
         {/* Season Leaders */}
@@ -705,35 +837,41 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
                                 <div className="px-5 py-3 bg-slate-50/50 dark:bg-slate-900/30 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
                                     Active Weighting Factors
                                 </div>
-                                {stats.calculationBreakdown.map((item, idx) => (
-                                    <div key={idx} className="p-4 hover:bg-slate-50 dark:hover:bg-slate-900/30 transition-colors">
-                                        <div className="flex justify-between items-start gap-4">
-                                            <div className="flex-1">
-                                                <div className="flex items-center gap-2 mb-1">
-                                                    <span className="text-sm font-bold text-slate-800 dark:text-slate-200">{item.label}</span>
-                                                    {item.impact !== 'neutral' && (
+                                {stats.calculationBreakdown.map((item, idx) => {
+                                    const meta = getImpactMeta(item.impact);
+                                    return (
+                                        <div key={idx} className="p-4 hover:bg-slate-50 dark:hover:bg-slate-900/30 transition-colors">
+                                            <div className="flex justify-between items-start gap-4">
+                                                <div className="flex-1">
+                                                    <div className="flex items-center gap-2 mb-1">
+                                                        <span className="text-sm font-bold text-slate-800 dark:text-slate-200">{item.label}</span>
                                                         <span className={`text-[9px] px-1.5 py-0.5 rounded uppercase font-bold tracking-wider ${
-                                                            item.impact === 'positive' 
-                                                                ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400' 
-                                                                : 'bg-rose-100 text-rose-700 dark:bg-rose-500/10 dark:text-rose-400'
+                                                            item.impact === 'neutral'
+                                                                ? 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400'
+                                                                : 'bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300'
                                                         }`}>
-                                                            {item.impact === 'positive' ? 'Advantage' : 'Disadvantage'}
+                                                            {item.impact === 'neutral' ? 'Balanced' : `Favors ${meta.favoredAbbr}`}
                                                         </span>
+                                                    </div>
+                                                    <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                                                        {item.description}
+                                                    </p>
+                                                    {item.impact !== 'neutral' && (
+                                                        <p className="text-[11px] mt-1 font-semibold text-slate-600 dark:text-slate-300">
+                                                            Matchup read: {meta.favoredTeam} has the edge against {meta.disadvantagedTeam}.
+                                                        </p>
                                                     )}
                                                 </div>
-                                                <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-                                                    {item.description}
-                                                </p>
-                                            </div>
-                                            <div className={`font-mono font-bold text-sm whitespace-nowrap ${
-                                                item.impact === 'positive' ? 'text-emerald-600 dark:text-emerald-400' : 
-                                                item.impact === 'negative' ? 'text-rose-600 dark:text-rose-400' : 'text-slate-400'
-                                            }`}>
-                                                {item.value}
+                                                <div
+                                                    className="font-mono font-bold text-sm whitespace-nowrap text-slate-500 dark:text-slate-400"
+                                                    style={item.impact === 'neutral' ? undefined : { color: meta.favoredColor }}
+                                                >
+                                                    {item.value}
+                                                </div>
                                             </div>
                                         </div>
-                                    </div>
-                                ))}
+                                    );
+                                })}
                             </div>
                         ) : (
                             <div className="p-8 text-center">

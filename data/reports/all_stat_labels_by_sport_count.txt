@@ -1,0 +1,15 @@
+ 170 MLB
+  37 NFL
+  36 NCAAM
+  36 NBA
+  35 UCL
+  35 Serie A
+  35 NCAAW
+  35 MLS
+  35 Ligue 1
+  35 La Liga
+  35 EPL
+  35 Bundesliga
+  32 WNBA
+  25 NCAAF
+  21 NHL

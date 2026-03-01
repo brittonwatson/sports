@@ -55,7 +55,7 @@ export const ScoreboardTable: React.FC<ScoreboardTableProps> = ({ game, gameDeta
         <div className="overflow-x-auto pb-2">
             <table className="w-full text-center text-xs border-collapse">
                 <thead>
-                    <tr className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase border-b border-slate-200 dark:border-slate-800">
+                    <tr className="text-[10px] font-bold text-slate-600 dark:text-slate-300 uppercase border-b border-slate-200 dark:border-slate-700">
                         <th className="px-2 py-2 text-left w-24 sticky left-0 bg-white dark:bg-slate-900 z-10 shadow-[2px_0_5px_rgba(0,0,0,0.05)] dark:shadow-[2px_0_5px_rgba(0,0,0,0.2)]">Team</th>
                         {Array.from({ length: totalPeriods }).map((_, i) => (
                             <th key={i} className="px-1.5 py-2 min-w-[28px] font-mono">
@@ -70,7 +70,7 @@ export const ScoreboardTable: React.FC<ScoreboardTableProps> = ({ game, gameDeta
                         { name: game.awayTeam, logo: game.awayTeamLogo, score: game.awayScore, isHome: false }, 
                         { name: game.homeTeam, logo: game.homeTeamLogo, score: game.homeScore, isHome: true }
                     ].map((teamObj) => (
-                        <tr key={teamObj.name} className="border-b border-slate-100 dark:border-slate-800/50 last:border-none group">
+                        <tr key={teamObj.name} className="border-b border-slate-200/80 dark:border-slate-700/60 last:border-none group">
                             <td className="px-2 py-2.5 text-left font-display font-bold text-slate-700 dark:text-slate-200 flex items-center gap-2 sticky left-0 bg-white dark:bg-slate-900 z-10 shadow-[2px_0_5px_rgba(0,0,0,0.05)] dark:shadow-[2px_0_5px_rgba(0,0,0,0.2)]">
                                 {teamObj.logo ? (
                                     <img src={teamObj.logo} alt="" className="w-4 h-4 object-contain" />
@@ -86,7 +86,7 @@ export const ScoreboardTable: React.FC<ScoreboardTableProps> = ({ game, gameDeta
                                 // Explicitly check for null/undefined/empty string, allowing '0' to pass through as valid
                                 const displayScore = (score !== undefined && score !== null && score !== '') ? score : '-';
                                 return (
-                                    <td key={p} className="px-1.5 py-2.5 font-mono font-medium text-slate-500 dark:text-slate-400">
+                                    <td key={p} className="px-1.5 py-2.5 font-mono font-semibold text-slate-700 dark:text-slate-200">
                                         {displayScore}
                                     </td>
                                 );

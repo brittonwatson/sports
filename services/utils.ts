@@ -1,5 +1,5 @@
 
-import { Sport } from "../types";
+import { Game, Sport } from "../types";
 import { CITY_OVERRIDES } from "../data/teams";
 import { ESPN_ENDPOINTS } from "./constants";
 
@@ -94,4 +94,28 @@ export const normalizeLocation = (team: any, sport: Sport): string => {
     const address = team.venue?.address || team.franchise?.venue?.address;
     if (address?.city) return address.city;
     return team.location || '';
+};
+
+const normalizeTeamToken = (name: string): string =>
+    name
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+
+const isUndeterminedTeamName = (name: string | undefined): boolean => {
+    const normalized = normalizeTeamToken(name || "");
+    if (!normalized) return true;
+    if (normalized === "tbd" || normalized === "tba") return true;
+    if (normalized.includes("to be determined")) return true;
+    if (normalized.includes("winner of") || normalized.includes("loser of")) return true;
+    if (normalized.includes("play in winner") || normalized.includes("if necessary")) return true;
+    if (normalized.includes("unknown team")) return true;
+    return false;
+};
+
+export const shouldHideUndeterminedPlayoffGame = (game: Game): boolean => {
+    if (!game.isPlayoff) return false;
+    if (game.status !== "scheduled") return false;
+    return isUndeterminedTeamName(game.homeTeam) || isUndeterminedTeamName(game.awayTeam);
 };

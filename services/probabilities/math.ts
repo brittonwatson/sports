@@ -31,23 +31,43 @@ export const parseClockToMinutes = (clockStr: string): number => {
     if (!clockStr) return 0;
     
     const str = clockStr.trim();
+    const normalized = str.replace(/[’]/g, "'");
+
+    // Handle soccer stoppage-time formats like "45+2" or "90+4"
+    if (normalized.includes('+')) {
+        const parts = normalized.split('+');
+        if (parts.length === 2) {
+            const base = parseFloat(parts[0].replace(/[^0-9.-]/g, ""));
+            const extra = parseFloat(parts[1].replace(/[^0-9.-]/g, ""));
+            if (!isNaN(base) && !isNaN(extra)) return base + extra;
+        }
+    }
+
+    // Handle soccer minute markers like "72'" or "45'"
+    if (normalized.includes("'")) {
+        const val = parseFloat(normalized.replace(/[^0-9.-]/g, ""));
+        return isNaN(val) ? 0 : val;
+    }
 
     // Handle MM:SS format (e.g. "12:00", "0:45")
-    if (str.includes(':')) {
-        const parts = str.split(':');
+    if (normalized.includes(':')) {
+        const parts = normalized.split(':');
         if (parts.length === 2) {
             return parseInt(parts[0]) + (parseFloat(parts[1]) / 60);
         }
     }
     
     // Handle floating point seconds (e.g. "45.2", "0.5")
-    if (str.includes('.')) {
-        const val = parseFloat(str);
-        return isNaN(val) ? 0 : val / 60;
+    if (normalized.includes('.')) {
+        const val = parseFloat(normalized.replace(/[^0-9.-]/g, ""));
+        if (isNaN(val)) return 0;
+        // If the value is within typical period-minute bounds, treat it as minutes.
+        if (val <= 20) return val;
+        return val / 60;
     }
 
     // Handle plain integers
-    const val = parseFloat(str);
+    const val = parseFloat(normalized.replace(/[^0-9.-]/g, ""));
     if (isNaN(val)) return 0;
 
     // Heuristic for integers without colons:

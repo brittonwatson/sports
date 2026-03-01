@@ -29,9 +29,115 @@ import { SettingsModal } from './components/App/SettingsModal';
 type Tab = Sport | 'HOME' | 'METHODOLOGY';
 type ViewMode = 'LIVE' | 'UPCOMING' | 'SCORES' | 'STANDINGS' | 'BRACKET' | 'RANKINGS' | 'CALENDAR' | 'TEAMS' | 'LEAGUE_STATS';
 type ThemeMode = 'light' | 'dark' | 'system';
+type TeamSelection = { id: string, league: Sport };
+
+interface NavState {
+  tab: Tab;
+  view: ViewMode;
+  team: TeamSelection | null;
+  gameId: string | null;
+}
 
 const RANKED_LEAGUES: Sport[] = ['NCAAF', 'NCAAM', 'NCAAW'];
-const PLAYOFF_LEAGUES: string[] = ['NFL', 'NBA', 'NHL', 'MLB', 'NCAAF', 'NCAAM', 'NCAAW', 'MLS', 'WNBA', 'UCL'];
+const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID?.trim() || '';
+const ENABLE_RUNTIME_SYNC = import.meta.env.VITE_ENABLE_RUNTIME_SYNC === 'true';
+const ALL_VIEW_MODES: ViewMode[] = ['LIVE', 'UPCOMING', 'SCORES', 'STANDINGS', 'BRACKET', 'RANKINGS', 'CALENDAR', 'TEAMS', 'LEAGUE_STATS'];
+const PREDICTION_MODEL_VERSION = '2026-03-01-r3';
+
+const isThemeMode = (value: string | null): value is ThemeMode =>
+  value === 'light' || value === 'dark' || value === 'system';
+
+const isTab = (value: string | null): value is Tab =>
+  value === 'HOME' ||
+  value === 'METHODOLOGY' ||
+  (typeof value === 'string' && SPORTS.includes(value as Sport));
+
+const isViewMode = (value: string | null): value is ViewMode =>
+  typeof value === 'string' && ALL_VIEW_MODES.includes(value as ViewMode);
+
+const readNavStateFromLocation = (): NavState => {
+  if (typeof window === 'undefined') return { tab: 'HOME', view: 'LIVE', team: null, gameId: null };
+
+  const params = new URLSearchParams(window.location.search);
+  const tabParam = params.get('tab');
+  const viewParam = params.get('view');
+  const leagueParam = params.get('league');
+  const teamIdParam = params.get('team');
+  const gameParam = params.get('game');
+  const gameId = gameParam?.trim() ? gameParam.trim() : null;
+
+  const team = leagueParam && teamIdParam && SPORTS.includes(leagueParam as Sport)
+    ? { id: teamIdParam, league: leagueParam as Sport }
+    : null;
+
+  let tab: Tab = isTab(tabParam) ? tabParam : (team ? team.league : 'HOME');
+  let view: ViewMode = isViewMode(viewParam) ? viewParam : 'LIVE';
+
+  if (tab === 'METHODOLOGY') {
+    view = 'LIVE';
+    return { tab, view, team: null, gameId: null };
+  }
+
+  return { tab, view, team, gameId };
+};
+
+const buildNavSearch = (state: NavState): string => {
+  const params = new URLSearchParams();
+  const { tab, view, team, gameId } = state;
+
+  if (tab !== 'HOME' || team) params.set('tab', tab);
+  if (view !== 'LIVE') params.set('view', view);
+  if (team) {
+    params.set('league', team.league);
+    params.set('team', team.id);
+  }
+  if (gameId) params.set('game', gameId);
+
+  const query = params.toString();
+  return query ? `?${query}` : '';
+};
+
+const isUserProfile = (value: unknown): value is UserProfile => {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<UserProfile>;
+  return (
+    typeof candidate.sub === 'string' &&
+    typeof candidate.name === 'string' &&
+    typeof candidate.email === 'string' &&
+    typeof candidate.picture === 'string'
+  );
+};
+
+const parseJson = <T,>(raw: string | null, fallback: T): T => {
+  if (!raw) return fallback;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+};
+
+const parseFavoriteLeagues = (raw: string | null): Set<Sport> => {
+  const parsed = parseJson<unknown>(raw, []);
+  if (!Array.isArray(parsed)) return new Set(SPORTS);
+
+  const leagues = parsed.filter(
+    (league): league is Sport =>
+      typeof league === 'string' && SPORTS.includes(league as Sport),
+  );
+  return new Set(leagues);
+};
+
+const parseFavoriteTeams = (raw: string | null): Set<string> => {
+  const parsed = parseJson<unknown>(raw, []);
+  if (!Array.isArray(parsed)) return new Set();
+  return new Set(parsed.filter((entry): entry is string => typeof entry === 'string'));
+};
+
+const parseUserSession = (raw: string | null): UserProfile | null => {
+  const parsed = parseJson<unknown>(raw, null);
+  return isUserProfile(parsed) ? parsed : null;
+};
 
 // Helper to decode JWT from Google
 const decodeJwt = (token: string): UserProfile | null => {
@@ -41,7 +147,8 @@ const decodeJwt = (token: string): UserProfile | null => {
     const jsonPayload = decodeURIComponent(atob(base64).split('').map((c) => {
       return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
     }).join(''));
-    return JSON.parse(jsonPayload) as UserProfile;
+    const parsed = JSON.parse(jsonPayload);
+    return isUserProfile(parsed) ? parsed : null;
   } catch (e) {
     console.error("Failed to decode JWT", e);
     return null;
@@ -49,15 +156,17 @@ const decodeJwt = (token: string): UserProfile | null => {
 };
 
 export const App: React.FC = () => {
-  const [selectedTab, setSelectedTab] = useState<Tab>('HOME');
-  const [viewMode, setViewMode] = useState<ViewMode>('LIVE');
+  const initialNavRef = useRef<NavState>(readNavStateFromLocation());
+
+  const [selectedTab, setSelectedTab] = useState<Tab>(initialNavRef.current.tab);
+  const [viewMode, setViewMode] = useState<ViewMode>(initialNavRef.current.view);
   const [standingsType, setStandingsType] = useState<StandingsType>('PLAYOFF');
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   
   // Team Page State
-  const [selectedTeam, setSelectedTeam] = useState<{ id: string, league: Sport } | null>(null);
+  const [selectedTeam, setSelectedTeam] = useState<TeamSelection | null>(initialNavRef.current.team);
   const [teamProfile, setTeamProfile] = useState<TeamProfile | null>(null);
   const [teamSchedule, setTeamSchedule] = useState<Game[]>([]);
   const [isTeamLoading, setIsTeamLoading] = useState(false);
@@ -84,17 +193,25 @@ export const App: React.FC = () => {
   const [bracketGames, setBracketGames] = useState<Game[]>([]);
   const [standings, setStandings] = useState<StandingsGroup[]>([]);
   const [selectedGame, setSelectedGame] = useState<Game | null>(null);
+  const [navigatedGameId, setNavigatedGameId] = useState<string | null>(initialNavRef.current.gameId);
   const [prediction, setPrediction] = useState<PredictionResult | null>(null);
   const [gameDetails, setGameDetails] = useState<GameDetails | null>(null);
   
-  const predictionCache = useRef<Map<string, { prediction: PredictionResult | null; details: GameDetails | null }>>(new Map());
+  const predictionCache = useRef<Map<string, {
+    prediction: PredictionResult | null;
+    details: GameDetails | null;
+    modelVersion?: string;
+  }>>(new Map());
   const activeRequestId = useRef<string | null>(null);
   const isTabSwitch = useRef(true);
   const lastScrolledGameId = useRef<string | null>(null);
+  const isApplyingPopState = useRef(false);
+  const lastKnownUrl = useRef<string>('');
 
   // Filter State
   const [activeFilter, setActiveFilter] = useState<string>('ALL');
   const [conferenceMap, setConferenceMap] = useState<Map<string, string>>(new Map());
+  const [top25RankedTeamIds, setTop25RankedTeamIds] = useState<Set<string>>(new Set());
   const [isFilterDropdownOpen, setIsFilterDropdownOpen] = useState(false);
   
   // Menu Organization State
@@ -108,14 +225,16 @@ export const App: React.FC = () => {
 
   // Initialize Theme
   useEffect(() => {
-    const savedTheme = localStorage.getItem('theme') as ThemeMode;
-    if (savedTheme) {
+    const savedTheme = localStorage.getItem('theme');
+    if (isThemeMode(savedTheme)) {
       setTheme(savedTheme);
     }
   }, []);
 
   // Nightly Database Sync Logic
   useEffect(() => {
+    if (!ENABLE_RUNTIME_SYNC) return;
+
     const checkAndSync = async () => {
         const lastFullSync = localStorage.getItem('last_full_sync');
         const now = new Date();
@@ -168,40 +287,27 @@ export const App: React.FC = () => {
 
   // Initialize Auth & Favorites
   useEffect(() => {
-    const savedUser = localStorage.getItem('user_session');
-    let currentUser: UserProfile | null = null;
-    if (savedUser) {
-        currentUser = JSON.parse(savedUser) as UserProfile;
-        setUser(currentUser);
-    }
+    const currentUser = parseUserSession(localStorage.getItem('user_session'));
+    if (currentUser) setUser(currentUser);
 
     const loadFavorites = () => {
         const key = currentUser ? `favorites_${currentUser.sub}` : 'favorites';
         const saved = localStorage.getItem(key);
-        if (saved) {
-            setFavoriteLeagues(new Set(JSON.parse(saved) as Sport[]));
-        } else {
-            setFavoriteLeagues(new Set(SPORTS));
-        }
+        if (saved) setFavoriteLeagues(parseFavoriteLeagues(saved));
+        else setFavoriteLeagues(new Set(SPORTS));
 
         const teamKey = currentUser ? `favorite_teams_${currentUser.sub}` : 'favorite_teams';
-        const savedTeams = localStorage.getItem(teamKey);
-        if (savedTeams) {
-            setFavoriteTeams(new Set(JSON.parse(savedTeams as string) as string[]));
-        }
+        setFavoriteTeams(parseFavoriteTeams(localStorage.getItem(teamKey)));
     };
     loadFavorites();
 
     const initGoogle = () => {
-        // @ts-ignore
-        if (window.google) {
-            // @ts-ignore
-            window.google.accounts.id.initialize({
-                client_id: process.env.GOOGLE_CLIENT_ID || "YOUR_GOOGLE_CLIENT_ID_PLACEHOLDER",
-                callback: handleCredentialResponse,
-                auto_select: false
-            });
-        }
+        if (!window.google || !GOOGLE_CLIENT_ID) return;
+        window.google.accounts.id.initialize({
+            client_id: GOOGLE_CLIENT_ID,
+            callback: handleCredentialResponse,
+            auto_select: false
+        });
     };
     
     const timer = setTimeout(initGoogle, 1000);
@@ -274,6 +380,62 @@ export const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const targetUrl = `${window.location.pathname}${buildNavSearch({
+      tab: selectedTab,
+      view: viewMode,
+      team: selectedTeam,
+      gameId: selectedGame?.id ?? navigatedGameId,
+    })}`;
+    const currentUrl = `${window.location.pathname}${window.location.search}`;
+
+    if (!lastKnownUrl.current) {
+      if (targetUrl !== currentUrl) {
+        window.history.replaceState(null, '', targetUrl);
+        lastKnownUrl.current = targetUrl;
+      } else {
+        lastKnownUrl.current = currentUrl;
+      }
+      return;
+    }
+
+    if (isApplyingPopState.current) {
+      isApplyingPopState.current = false;
+      lastKnownUrl.current = targetUrl;
+      return;
+    }
+
+    if (targetUrl !== lastKnownUrl.current) {
+      window.history.pushState(null, '', targetUrl);
+      lastKnownUrl.current = targetUrl;
+    }
+  }, [selectedTab, viewMode, selectedTeam?.id, selectedTeam?.league, selectedGame?.id, navigatedGameId]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const handlePopState = () => {
+      const next = readNavStateFromLocation();
+      isApplyingPopState.current = true;
+      setSelectedTab(next.tab);
+      setViewMode(next.view);
+      setSelectedTeam(next.team);
+      setNavigatedGameId(next.gameId);
+      setSelectedGame(null);
+      setPrediction(null);
+      setGameDetails(null);
+      activeRequestId.current = null;
+      setIsMenuOpen(false);
+      setIsFilterDropdownOpen(false);
+      isTabSwitch.current = true;
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  useEffect(() => {
     if (selectedGame && selectedGame.id !== lastScrolledGameId.current) {
         lastScrolledGameId.current = selectedGame.id;
         setTimeout(() => {
@@ -318,6 +480,7 @@ export const App: React.FC = () => {
                                            next.set(key, { 
                                                id: s.team.id, 
                                                name: s.team.name, 
+                                               abbreviation: s.team.abbreviation,
                                                logo: s.team.logo, 
                                                league: sport 
                                            });
@@ -360,6 +523,47 @@ export const App: React.FC = () => {
   }, [selectedTab]);
 
   useEffect(() => {
+      let cancelled = false;
+      const shouldLoadTop25 =
+          RANKED_LEAGUES.includes(selectedTab as Sport) &&
+          activeFilter === 'TOP25';
+
+      if (!shouldLoadTop25) {
+          setTop25RankedTeamIds(new Set());
+          return () => {
+              cancelled = true;
+          };
+      }
+
+      const loadTop25 = async () => {
+          try {
+              const rankingGroups = await fetchRankings(selectedTab as Sport);
+              const preferredGroup =
+                  rankingGroups.find(g => /ap top 25/i.test(g.name)) ||
+                  rankingGroups.find(g => /top 25/i.test(g.name)) ||
+                  rankingGroups[0];
+
+              const ids = new Set<string>();
+              (preferredGroup?.standings || []).forEach((entry) => {
+                  const rankNum = Number(entry.rank);
+                  if (!entry.team?.id) return;
+                  if (!Number.isFinite(rankNum) || rankNum <= 0 || rankNum > 25) return;
+                  ids.add(String(entry.team.id));
+              });
+
+              if (!cancelled) setTop25RankedTeamIds(ids);
+          } catch {
+              if (!cancelled) setTop25RankedTeamIds(new Set());
+          }
+      };
+
+      loadTop25();
+      return () => {
+          cancelled = true;
+      };
+  }, [selectedTab, activeFilter]);
+
+  useEffect(() => {
       let intervalId: ReturnType<typeof setInterval>;
 
       if (selectedTeam) {
@@ -395,7 +599,8 @@ export const App: React.FC = () => {
       }
   }, [selectedTeam]);
 
-  const handleCredentialResponse = (response: any) => {
+  const handleCredentialResponse = (response: GoogleCredentialResponse) => {
+      if (!response?.credential) return;
       const profile = decodeJwt(response.credential);
       if (profile) {
           setUser(profile);
@@ -404,20 +609,20 @@ export const App: React.FC = () => {
           const cloudKey = `favorites_${profile.sub}`;
           const cloudFavs = localStorage.getItem(cloudKey);
           if (cloudFavs) {
-              setFavoriteLeagues(new Set(JSON.parse(cloudFavs) as Sport[]));
+              setFavoriteLeagues(parseFavoriteLeagues(cloudFavs));
           } else {
               const localFavs = localStorage.getItem('favorites');
-              if (localFavs) setFavoriteLeagues(new Set(JSON.parse(localFavs) as Sport[]));
+              if (localFavs) setFavoriteLeagues(parseFavoriteLeagues(localFavs));
               else setFavoriteLeagues(new Set(SPORTS));
           }
 
           const teamKey = `favorite_teams_${profile.sub}`;
           const cloudTeams = localStorage.getItem(teamKey);
           if (cloudTeams) {
-              setFavoriteTeams(new Set(JSON.parse(cloudTeams) as string[]));
+              setFavoriteTeams(parseFavoriteTeams(cloudTeams));
           } else {
               const localTeams = localStorage.getItem('favorite_teams');
-              if (localTeams) setFavoriteTeams(new Set(JSON.parse(localTeams) as string[]));
+              setFavoriteTeams(parseFavoriteTeams(localTeams));
           }
 
           setIsSettingsOpen(false);
@@ -425,17 +630,15 @@ export const App: React.FC = () => {
   };
 
   const handleLogout = () => {
-      // @ts-ignore
       if (window.google) window.google.accounts.id.disableAutoSelect();
       setUser(null);
       localStorage.removeItem('user_session');
       const localFavs = localStorage.getItem('favorites');
-      if (localFavs) setFavoriteLeagues(new Set(JSON.parse(localFavs) as Sport[]));
+      if (localFavs) setFavoriteLeagues(parseFavoriteLeagues(localFavs));
       else setFavoriteLeagues(new Set(SPORTS));
 
       const localTeams = localStorage.getItem('favorite_teams');
-      if (localTeams) setFavoriteTeams(new Set(JSON.parse(localTeams) as string[]));
-      else setFavoriteTeams(new Set());
+      setFavoriteTeams(parseFavoriteTeams(localTeams));
 
       setIsSettingsOpen(false);
   };
@@ -552,11 +755,23 @@ export const App: React.FC = () => {
                   fetchedGames.forEach(g => {
                       const homeKey = `${g.homeTeam}-${g.league}`;
                       if (!next.has(homeKey) && g.homeTeamId) {
-                          next.set(homeKey, { id: g.homeTeamId, name: g.homeTeam, logo: g.homeTeamLogo, league: g.league as Sport });
+                          next.set(homeKey, {
+                              id: g.homeTeamId,
+                              name: g.homeTeam,
+                              abbreviation: g.homeTeamAbbreviation,
+                              logo: g.homeTeamLogo,
+                              league: g.league as Sport,
+                          });
                       }
                       const awayKey = `${g.awayTeam}-${g.league}`;
                       if (!next.has(awayKey) && g.awayTeamId) {
-                          next.set(awayKey, { id: g.awayTeamId, name: g.awayTeam, logo: g.awayTeamLogo, league: g.league as Sport });
+                          next.set(awayKey, {
+                              id: g.awayTeamId,
+                              name: g.awayTeam,
+                              abbreviation: g.awayTeamAbbreviation,
+                              logo: g.awayTeamLogo,
+                              league: g.league as Sport,
+                          });
                       }
                   });
                   return next;
@@ -569,15 +784,16 @@ export const App: React.FC = () => {
       
             setGames(fetchedGames);
 
-            if (isTabSwitch.current && !isBackground) {
-                const hasLive = fetchedGames.some(g => g.status === 'in_progress');
-                if (mode === 'LIVE' && !hasLive) {
-                    setViewMode('UPCOMING');
-                    isTabSwitch.current = false;
-                } else {
-                    isTabSwitch.current = false;
-                }
-            }
+	            if (isTabSwitch.current && !isBackground) {
+	                const hasLive = fetchedGames.some(g => g.status === 'in_progress');
+	                if (mode === 'LIVE' && !hasLive) {
+	                    setViewMode('UPCOMING');
+                      setNavigatedGameId(null);
+	                    isTabSwitch.current = false;
+	                } else {
+	                    isTabSwitch.current = false;
+	                }
+	            }
 
             if (isBackground && activeRequestId.current) {
                 const liveGame = fetchedGames.find(g => g.id === activeRequestId.current);
@@ -661,17 +877,20 @@ export const App: React.FC = () => {
       setViewMode('LIVE');
       setIsMenuOpen(false);
       setSelectedTeam(null);
+      setNavigatedGameId(null);
       setIsFilterDropdownOpen(false);
       isTabSwitch.current = true;
   };
 
   const handleGameToggle = async (game: Game) => {
       if (selectedGame?.id === game.id) {
+          setNavigatedGameId(null);
           setSelectedGame(null);
           setPrediction(null);
           setGameDetails(null);
           activeRequestId.current = null;
       } else {
+          setNavigatedGameId(game.id);
           setSelectedGame(game);
           setPrediction(null);
           setGameDetails(null);
@@ -686,7 +905,10 @@ export const App: React.FC = () => {
                   setSelectedGame(prev => prev ? { ...prev, odds: cached.details!.odds } : null);
               }
               
-              if (game.status !== 'in_progress') return;
+              // Force recomputation for scheduled/finished games when model version changed
+              // so stale predictions cannot persist across probability-engine updates.
+              const cacheIsCurrent = cached?.modelVersion === PREDICTION_MODEL_VERSION;
+              if (game.status !== 'in_progress' && cacheIsCurrent) return;
           }
 
           setIsPredicting(true);
@@ -730,12 +952,20 @@ export const App: React.FC = () => {
                   
                   if (activeRequestId.current === game.id) {
                       setPrediction(result);
-                      predictionCache.current.set(game.id, { prediction: result, details });
+                      predictionCache.current.set(game.id, {
+                        prediction: result,
+                        details,
+                        modelVersion: PREDICTION_MODEL_VERSION,
+                      });
                   }
               } else {
                   if (activeRequestId.current === game.id) {
                       setPrediction(null);
-                      predictionCache.current.set(game.id, { prediction: null, details });
+                      predictionCache.current.set(game.id, {
+                        prediction: null,
+                        details,
+                        modelVersion: PREDICTION_MODEL_VERSION,
+                      });
                   }
               }
           } catch (e) {
@@ -748,7 +978,35 @@ export const App: React.FC = () => {
       }
   };
 
+  useEffect(() => {
+      if (!navigatedGameId || selectedTab === 'METHODOLOGY') return;
+
+      const sourceGames = selectedTeam
+        ? teamSchedule
+        : viewMode === 'BRACKET'
+          ? bracketGames
+          : games;
+
+      if (sourceGames.length === 0) return;
+
+      const targetGame = sourceGames.find(game => game.id === navigatedGameId);
+      if (!targetGame) return;
+      if (selectedGame?.id === targetGame.id) return;
+
+      handleGameToggle(targetGame);
+  }, [
+      navigatedGameId,
+      selectedTab,
+      selectedTeam?.id,
+      viewMode,
+      games,
+      bracketGames,
+      teamSchedule,
+      selectedGame?.id,
+  ]);
+
   const handleTeamClick = (teamId: string, league: Sport) => {
+      setNavigatedGameId(null);
       setSelectedTeam({ id: teamId, league });
       setIsMenuOpen(false);
   };
@@ -882,7 +1140,15 @@ export const App: React.FC = () => {
   if (selectedTab !== 'HOME' && viewMode !== 'STANDINGS' && viewMode !== 'TEAMS' && viewMode !== 'LEAGUE_STATS') {
       if (RANKED_LEAGUES.includes(selectedTab as Sport)) {
           if (activeFilter === 'TOP25') {
-              finalDisplayGames = finalDisplayGames.filter(g => (g.homeTeamRank && g.homeTeamRank <= 25) || (g.awayTeamRank && g.awayTeamRank <= 25));
+              if (top25RankedTeamIds.size > 0) {
+                  finalDisplayGames = finalDisplayGames.filter(g => {
+                      const homeId = g.homeTeamId ? String(g.homeTeamId) : '';
+                      const awayId = g.awayTeamId ? String(g.awayTeamId) : '';
+                      return top25RankedTeamIds.has(homeId) || top25RankedTeamIds.has(awayId);
+                  });
+              } else {
+                  finalDisplayGames = finalDisplayGames.filter(g => (g.homeTeamRank && g.homeTeamRank <= 25) || (g.awayTeamRank && g.awayTeamRank <= 25));
+              }
           } else if (activeFilter !== 'ALL') {
               finalDisplayGames = finalDisplayGames.filter(g => {
                   const homeConf = g.homeTeamId ? conferenceMap.get(g.homeTeamId) : undefined;
@@ -898,7 +1164,9 @@ export const App: React.FC = () => {
       if (activeFilter === 'TOP25') {
           displayStandings = standings.map(group => ({
               ...group,
-              standings: group.standings.filter(s => s.rank <= 25)
+              standings: group.standings.filter(s => {
+                  return top25RankedTeamIds.has(String(s.team.id));
+              })
           })).filter(group => group.standings.length > 0);
       } else {
           displayStandings = standings.filter(group => group.name === activeFilter);
@@ -1021,10 +1289,10 @@ export const App: React.FC = () => {
       <main className="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-6">
          {selectedTeam ? (
              <div>
-                <button 
-                    onClick={() => setSelectedTeam(null)}
-                    className="mb-4 flex items-center gap-2 text-sm font-medium text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 transition-colors"
-                >
+	                <button 
+	                    onClick={() => { setSelectedTeam(null); setNavigatedGameId(null); }}
+	                    className="mb-4 flex items-center gap-2 text-sm font-medium text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 transition-colors"
+	                >
                     Back to Dashboard
                 </button>
                 {isTeamLoading ? (
@@ -1071,11 +1339,11 @@ export const App: React.FC = () => {
                          </div>
                      </div>
 
-                     <ViewSelector 
-                        viewMode={viewMode}
-                        selectedTab={selectedTab}
-                        setViewMode={(mode) => { setViewMode(mode); setSelectedGame(null); }}
-                     />
+	                     <ViewSelector 
+	                        viewMode={viewMode}
+	                        selectedTab={selectedTab}
+	                        setViewMode={(mode) => { setViewMode(mode); setSelectedGame(null); setNavigatedGameId(null); }}
+	                     />
                  </div>
 
                  {error && (
@@ -1102,6 +1370,7 @@ export const App: React.FC = () => {
                         activeType={standingsType} 
                         onTypeChange={setStandingsType} 
                         onTeamClick={handleTeamClick}
+                        useApiRankForNCAA={activeFilter === 'TOP25'}
                         isLoading={isLoading}
                      />
                  ) : viewMode === 'RANKINGS' ? (

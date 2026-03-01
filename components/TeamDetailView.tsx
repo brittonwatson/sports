@@ -6,9 +6,9 @@ import { GameCard } from './GameCard';
 import { PredictionView } from './PredictionView';
 import { LiveGameView } from './LiveGameView';
 import { StatDetailModal } from './modals/StatDetailModal';
-import { User, Calendar, List, MapPin, Hash, BarChart2, X, Loader2, Trophy, Activity, TrendingUp, Target, Zap, ShieldCheck, Gauge, ExternalLink } from 'lucide-react';
+import { User, Calendar, List, MapPin, Hash, BarChart2, X, Loader2, Trophy, Activity, TrendingUp, Target, Zap, ShieldCheck, Gauge, ExternalLink, Database, AlertTriangle } from 'lucide-react';
 import { fetchPlayerProfile } from '../services/playerService';
-import { fetchTeamStatistics, fetchTeamSeasonStats } from '../services/teamService';
+import { fetchTeamStatistics, fetchTeamCurrentSeasonStatsDetailed, getStoredTeamSeasonStats } from '../services/teamService';
 import { STAT_CORRELATIONS } from '../services/probabilities/correlations';
 import { findCorrelationConfig } from '../services/probabilities/utils';
 import { dbEvents } from '../services/statsDb';
@@ -71,6 +71,7 @@ const getSoccerLeagueName = (sport: string, summary?: string) => {
 const cleanStatValue = (label: string, value: string | number | undefined | null): string => {
     if (value === null || value === undefined) return '-';
     const strValue = String(value);
+    const hadPlusPrefix = strValue.trim().startsWith('+');
     if (/[a-zA-Z]/.test(strValue) && !strValue.toLowerCase().includes('e')) return strValue;
     const rawNum = parseFloat(strValue.replace(/,/g, '').replace('%', ''));
     if (isNaN(rawNum)) return strValue;
@@ -81,7 +82,33 @@ const cleanStatValue = (label: string, value: string | number | undefined | null
         if (!strValue.includes('%') && Math.abs(rawNum) <= 1.0 && rawNum !== 0) finalNum = rawNum * 100;
         return `${finalNum.toFixed(1)}%`;
     }
-    return Math.round(rawNum).toLocaleString();
+    if (strValue.includes('.')) {
+        const formatted = rawNum.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+        return hadPlusPrefix && rawNum > 0 ? `+${formatted}` : formatted;
+    }
+    const rounded = Math.round(rawNum);
+    const formatted = rounded.toLocaleString();
+    return hadPlusPrefix && rounded > 0 ? `+${formatted}` : formatted;
+};
+
+const formatPlayerStatCell = (label: string, value: string | number | undefined | null): string => {
+    if (value === null || value === undefined) return '-';
+    const strValue = String(value).trim();
+    if (!strValue) return '-';
+    if (/^\s*-?\d+(?:\.\d+)?\s*[\/-]\s*-?\d+(?:\.\d+)?\s*$/.test(strValue)) return strValue;
+    if (/^\s*\d+:\d{2}(?::\d{2})?\s*$/.test(strValue)) return strValue;
+    if (label.toLowerCase() === 'gp') {
+        const gp = parseFloat(strValue);
+        return Number.isFinite(gp) ? String(Math.round(gp)) : strValue;
+    }
+    if (strValue.includes('.') || strValue.includes('%')) return strValue;
+    return cleanStatValue(label, strValue);
+};
+
+const parseStatFloat = (value: string | number | undefined | null): number | null => {
+    if (value === null || value === undefined) return null;
+    const parsed = parseFloat(String(value).replace(/,/g, '').replace('%', '').replace('+', '').trim());
+    return Number.isFinite(parsed) ? parsed : null;
 };
 
 export const TeamDetailView: React.FC<TeamDetailViewProps> = ({ 
@@ -104,22 +131,50 @@ export const TeamDetailView: React.FC<TeamDetailViewProps> = ({
 
     // Live Season Stats override (for real-time updates)
     const [liveSeasonStats, setLiveSeasonStats] = useState<TeamStatItem[] | undefined>(team.seasonStats);
+    const [isSeasonStatsLoading, setIsSeasonStatsLoading] = useState(false);
 
     useEffect(() => {
         setLiveSeasonStats(team.seasonStats);
     }, [team.seasonStats]);
 
     useEffect(() => {
+        let cancelled = false;
+
+        const loadSeasonStats = async () => {
+            setIsSeasonStatsLoading(true);
+            try {
+                let freshStats = await getStoredTeamSeasonStats(league, { id: team.id, name: team.name, logo: team.logo });
+                if (freshStats.length === 0) {
+                    freshStats = await fetchTeamCurrentSeasonStatsDetailed(league, team.id);
+                }
+                if (!cancelled && freshStats.length > 0) {
+                    setLiveSeasonStats(freshStats);
+                }
+            } catch (e) {
+                console.error(e);
+            } finally {
+                if (!cancelled) setIsSeasonStatsLoading(false);
+            }
+        };
+
+        loadSeasonStats();
+        return () => { cancelled = true; };
+    }, [league, team.id, team.name, team.logo]);
+
+    useEffect(() => {
         const handleUpdate = async (e: Event) => {
             const ce = e as CustomEvent;
             if (ce.detail?.sport === league) {
-                 const freshStats = await fetchTeamSeasonStats(league, team.id);
+                 let freshStats = await getStoredTeamSeasonStats(league, { id: team.id, name: team.name, logo: team.logo });
+                 if (freshStats.length === 0) {
+                     freshStats = await fetchTeamCurrentSeasonStatsDetailed(league, team.id);
+                 }
                  setLiveSeasonStats(freshStats);
             }
         };
         dbEvents.addEventListener('stats_updated', handleUpdate);
         return () => dbEvents.removeEventListener('stats_updated', handleUpdate);
-    }, [league, team.id]);
+    }, [league, team.id, team.name, team.logo]);
 
     useEffect(() => {
         if (activeTab === 'STATS' && !teamStats && !isStatsLoading) {
@@ -135,36 +190,284 @@ export const TeamDetailView: React.FC<TeamDetailViewProps> = ({
         }
     }, [activeTab, league, team.id]);
 
-    const statsLayout = useMemo(() => {
-        const isBasketball = ['NBA', 'WNBA', 'NCAAM', 'NCAAW'].includes(league);
-        const isFootball = ['NFL', 'NCAAF'].includes(league);
+    const seasonStatsGamesPlayed = useMemo(() => {
+        if (!liveSeasonStats || liveSeasonStats.length === 0) return 0;
+        const gpStat = liveSeasonStats.find(stat => {
+            const label = stat.label.toLowerCase();
+            return label === 'games played' || label === 'games' || label === 'gp';
+        });
+        if (!gpStat) return 0;
+        const gp = parseFloat(String(gpStat.value).replace(/,/g, ''));
+        return Number.isFinite(gp) ? gp : 0;
+    }, [liveSeasonStats]);
 
-        if (isBasketball) {
-            return {
-                'Team': ['Points', 'Rebounds', 'Field Goal %'],
-                'Opponent': ['Opponent Points', 'Opponent Rebounds', 'Opponent Field Goal %'],
-                'Differential': ['Points Differential', 'Rebounds Differential', 'Field Goal % Differential']
-            };
+    const completedSeasonGames = useMemo(() => {
+        const completed = schedule.filter(g => {
+            if (g.status !== 'finished') return false;
+            if (typeof g.seasonType === 'number' && g.seasonType === 1) return false;
+            const homeScore = parseInt(String(g.homeScore ?? ''), 10);
+            const awayScore = parseInt(String(g.awayScore ?? ''), 10);
+            return Number.isFinite(homeScore) && Number.isFinite(awayScore);
+        });
+        if (completed.length === 0) return [] as Game[];
+
+        const seasonYearCounts = new Map<number, number>();
+        completed.forEach(g => {
+            if (typeof g.seasonYear !== 'number' || !Number.isFinite(g.seasonYear)) return;
+            seasonYearCounts.set(g.seasonYear, (seasonYearCounts.get(g.seasonYear) || 0) + 1);
+        });
+
+        if (seasonYearCounts.size === 0) return completed;
+
+        let selectedSeasonYear: number | null = null;
+        let selectedCount = -1;
+        seasonYearCounts.forEach((count, seasonYear) => {
+            if (count > selectedCount || (count === selectedCount && (selectedSeasonYear === null || seasonYear > selectedSeasonYear))) {
+                selectedSeasonYear = seasonYear;
+                selectedCount = count;
+            }
+        });
+
+        if (selectedSeasonYear === null) return completed;
+        return completed.filter(g => typeof g.seasonYear !== 'number' || g.seasonYear === selectedSeasonYear);
+    }, [schedule]);
+
+    const seasonStatsForDisplay = useMemo(() => {
+        if (!liveSeasonStats || liveSeasonStats.length === 0) return [] as TeamStatItem[];
+        if (league === 'UFC') return liveSeasonStats;
+
+        const completed = completedSeasonGames;
+        if (completed.length === 0) return liveSeasonStats;
+
+        // Some leagues (notably NCAAF off-season) can return partial schedules.
+        // If schedule coverage is materially below known season GP, trust season stats feed.
+        const hasReliableSeasonGp = seasonStatsGamesPlayed > 0;
+        const scheduleCoverageRatio = hasReliableSeasonGp ? (completed.length / seasonStatsGamesPlayed) : 1;
+        if (hasReliableSeasonGp && scheduleCoverageRatio < 0.8) {
+            return liveSeasonStats;
         }
-        if (isFootball) {
-            return {
-                'Offense': ['Points', 'Total Yards', 'Passing Yards', 'Rushing Yards', 'First Downs'],
-                'Defense': ['Opponent Points', 'Total Yards Allowed', 'Passing Yards Allowed', 'Rushing Yards Allowed', 'Sacks', 'Interceptions'],
-                'Special Teams & Diff': ['Field Goal %', 'Punting Average', 'Kick Return Average', 'Points Differential', 'Turnover Differential']
-            };
-        }
-        // Default / Soccer / Hockey / Baseball
-        return {
-            'Offense': ['Goals', 'Runs', 'Points', 'Shots', 'Assists', 'Hits', 'Home Runs'],
-            'Defense': ['Goals Against', 'Runs Allowed', 'Opponent Points', 'ERA', 'WHIP', 'Saves', 'Clean Sheets'],
-            'Efficiency': ['Possession', 'Pass %', 'Save %', 'Power Play %', 'Penalty Kill %', 'Goal Differential', 'Points Differential']
+
+        let wins = 0;
+        let losses = 0;
+        let ties = 0;
+        let pf = 0;
+        let pa = 0;
+        completed.forEach(g => {
+            const isHome = g.homeTeam === team.name || g.homeTeam === team.displayName || (team.id && g.homeTeamId === team.id);
+            const scoreFor = parseInt(String((isHome ? g.homeScore : g.awayScore) ?? '0'), 10);
+            const scoreAgainst = parseInt(String((isHome ? g.awayScore : g.homeScore) ?? '0'), 10);
+            pf += scoreFor;
+            pa += scoreAgainst;
+            if (scoreFor > scoreAgainst) wins += 1;
+            else if (scoreFor < scoreAgainst) losses += 1;
+            else ties += 1;
+        });
+
+        const gp = completed.length;
+        const seasonYear = typeof completed[0]?.seasonYear === 'number' ? completed[0].seasonYear : undefined;
+        const coverage = hasReliableSeasonGp ? Math.max(0, Math.min(1, gp / seasonStatsGamesPlayed)) : undefined;
+        const ppg = gp > 0 ? pf / gp : 0;
+        const oppg = gp > 0 ? pa / gp : 0;
+        const avgDiff = ppg - oppg;
+
+        const next = [...liveSeasonStats];
+        const upsert = (label: string, value: string, category: string) => {
+            const idx = next.findIndex(s => s.label.toLowerCase() === label.toLowerCase());
+            if (idx >= 0) {
+                next[idx] = { ...next[idx], value, category, source: 'derived_schedule', sampleSize: gp, coverage, seasonYear };
+            } else {
+                next.push({ label, value, category, source: 'derived_schedule', sampleSize: gp, coverage, seasonYear });
+            }
         };
-    }, [league]);
+
+        upsert('Wins', String(wins), 'General');
+        upsert('Losses', String(losses), 'General');
+        upsert('Games Played', String(gp), 'General');
+        if (ties > 0) upsert('Ties', String(ties), 'General');
+        upsert('Points', ppg.toFixed(1), 'Team');
+        upsert('Opponent Points', oppg.toFixed(1), 'Opponent');
+        upsert('Points Differential', avgDiff > 0 ? `+${avgDiff.toFixed(1)}` : avgDiff.toFixed(1), 'Differential');
+
+        return next;
+    }, [liveSeasonStats, seasonStatsGamesPlayed, completedSeasonGames, league, team.id, team.name, team.displayName]);
+
+    const statsSourceSummary = useMemo(() => {
+        const sourcePriority: TeamStatItem['source'][] = ['derived_schedule', 'internal_db', 'espn_api', 'cached', 'fallback_standings'];
+        const labels: Record<NonNullable<TeamStatItem['source']>, string> = {
+            derived_schedule: 'Derived Season Aggregate',
+            internal_db: 'Internal Database',
+            espn_api: 'ESPN API',
+            cached: 'Cached Snapshot',
+            fallback_standings: 'Standings Fallback',
+        };
+        const sources = Array.from(
+            new Set(
+                (seasonStatsForDisplay || [])
+                    .map((s) => s.source)
+                    .filter((s): s is NonNullable<TeamStatItem['source']> => Boolean(s)),
+            ),
+        );
+        const selected = sourcePriority.find((source) => sources.includes(source)) || sources[0];
+        const sampleSize = (seasonStatsForDisplay || []).reduce((max, stat) => {
+            const sample = typeof stat.sampleSize === 'number' ? stat.sampleSize : 0;
+            return Math.max(max, sample);
+        }, 0);
+        const coverageValues = (seasonStatsForDisplay || [])
+            .map((stat) => (typeof stat.coverage === 'number' ? stat.coverage : null))
+            .filter((value): value is number => value !== null);
+        const coverage = coverageValues.length > 0
+            ? coverageValues.reduce((sum, value) => sum + value, 0) / coverageValues.length
+            : null;
+
+        return {
+            source: selected,
+            label: selected ? labels[selected] : 'Unknown Source',
+            sourceCount: sources.length,
+            sampleSize: sampleSize > 0 ? sampleSize : null,
+            coverage,
+        };
+    }, [seasonStatsForDisplay]);
+
+    const scheduleCoverageRatio = useMemo(() => {
+        if (seasonStatsGamesPlayed <= 0) return null;
+        return Math.max(0, Math.min(1.25, completedSeasonGames.length / seasonStatsGamesPlayed));
+    }, [completedSeasonGames.length, seasonStatsGamesPlayed]);
+
+    const integrityWarnings = useMemo(() => {
+        const warnings: string[] = [];
+
+        if (scheduleCoverageRatio !== null && scheduleCoverageRatio < 0.75) {
+            warnings.push(`Finished-game coverage is ${Math.round(scheduleCoverageRatio * 100)}% of reported games played.`);
+        }
+
+        if (completedSeasonGames.length > 0 && (scheduleCoverageRatio === null || scheduleCoverageRatio >= 0.85)) {
+            let pf = 0;
+            let pa = 0;
+            completedSeasonGames.forEach((g) => {
+                const isHome = g.homeTeam === team.name || g.homeTeam === team.displayName || (team.id && g.homeTeamId === team.id);
+                pf += parseInt(String((isHome ? g.homeScore : g.awayScore) ?? '0'), 10);
+                pa += parseInt(String((isHome ? g.awayScore : g.homeScore) ?? '0'), 10);
+            });
+            const gp = completedSeasonGames.length;
+            const calcPpg = gp > 0 ? pf / gp : 0;
+            const calcOppg = gp > 0 ? pa / gp : 0;
+            const statsPpg = parseStatFloat(seasonStatsForDisplay.find((s) => s.label.toLowerCase() === 'points')?.value);
+            const statsOppg = parseStatFloat(seasonStatsForDisplay.find((s) => s.label.toLowerCase() === 'opponent points')?.value);
+
+            if (statsPpg !== null && Math.abs(statsPpg - calcPpg) > 6) {
+                warnings.push(`Points average mismatch detected (${statsPpg.toFixed(1)} shown vs ${calcPpg.toFixed(1)} from finished games).`);
+            }
+            if (statsOppg !== null && Math.abs(statsOppg - calcOppg) > 6) {
+                warnings.push(`Opponent points average mismatch detected (${statsOppg.toFixed(1)} shown vs ${calcOppg.toFixed(1)} from finished games).`);
+            }
+        }
+
+        return warnings;
+    }, [scheduleCoverageRatio, completedSeasonGames, seasonStatsForDisplay, team.id, team.name, team.displayName]);
+
+    const statsSections = useMemo(() => {
+        if (!seasonStatsForDisplay || seasonStatsForDisplay.length === 0) return [] as { category: string; stats: TeamStatItem[] }[];
+
+        const inferDisplayCategory = (stat: TeamStatItem): string => {
+            const label = stat.label.toLowerCase();
+            const sourceCategory = String(stat.category || '').trim();
+            const sourceCategoryLower = sourceCategory.toLowerCase();
+
+            const OFFENSE_SOURCE_CATEGORIES = new Set([
+                'team',
+                'offense',
+                'passing',
+                'rushing',
+                'receiving',
+                'shooting',
+                'rebounding',
+                'batting',
+            ]);
+            const DEFENSE_SOURCE_CATEGORIES = new Set([
+                'defense',
+                'opponent',
+                'fielding',
+                'pitching',
+            ]);
+            const OTHER_SOURCE_CATEGORIES = new Set([
+                'general',
+                'differential',
+                'special teams',
+                'ball control',
+                'efficiency',
+            ]);
+
+            if (label === 'wins' || label === 'losses' || label === 'ties' || label === 'games played' || label === 'games' || label === 'gp') {
+                return 'General';
+            }
+            if (label.includes('differential') || label.includes('margin')) return 'Differential';
+            if (label.includes('opponent') || label.includes('allowed') || label.includes('against')) return 'Defense';
+            if (label.includes('kick') || label.includes('punt') || label.includes('return')) return 'Special Teams';
+
+            if (sourceCategoryLower && !OTHER_SOURCE_CATEGORIES.has(sourceCategoryLower)) {
+                if (OFFENSE_SOURCE_CATEGORIES.has(sourceCategoryLower)) return 'Offense';
+                if (DEFENSE_SOURCE_CATEGORIES.has(sourceCategoryLower)) return 'Defense';
+            }
+
+            if (league === 'NFL' || league === 'NCAAF') {
+                if (label.includes('pass') || label.includes('rush') || label.includes('touchdown') || label.includes('yard') || label.includes('first down') || label.includes('play') || label.includes('drive')) return 'Offense';
+                if (label.includes('interception') || label.includes('sack') || label.includes('fumble')) return 'Defense';
+            }
+
+            if (sourceCategoryLower === 'special teams') return 'Special Teams';
+            if (sourceCategoryLower === 'ball control' || sourceCategoryLower === 'efficiency') return 'Efficiency';
+            if (sourceCategoryLower === 'general') return 'General';
+            if (sourceCategoryLower === 'differential') return 'Differential';
+
+            if (label.includes('field goal') || label.includes('three point') || label.includes('free throw') || label.includes('rebound') || label.includes('assist') || label.includes('points in paint') || label.includes('fast break')) return 'Offense';
+            if (label.includes('steal') || label.includes('block') || label.includes('foul') || label.includes('save') || label.includes('clearance') || label.includes('tackle') || label.includes('interception')) return 'Defense';
+            if (label.includes('ratio') || label.includes('rate') || label.includes('per ') || label.includes('efficiency')) return 'Efficiency';
+            if (label.includes('%')) return 'Efficiency';
+
+            return 'Other';
+        };
+
+        const groups = new Map<string, TeamStatItem[]>();
+        seasonStatsForDisplay.forEach(stat => {
+            const category = inferDisplayCategory(stat);
+            if (!groups.has(category)) groups.set(category, []);
+            groups.get(category)!.push(stat);
+        });
+
+        const categoryPriority = [
+            'Offense',
+            'Defense',
+            'Differential',
+            'Efficiency',
+            'Special Teams',
+            'General',
+            'Other',
+        ];
+
+        return Array.from(groups.entries())
+            .map(([category, stats]) => ({
+                category,
+                stats: [...stats].sort((a, b) => {
+                    const rankA = a.rank ?? 9999;
+                    const rankB = b.rank ?? 9999;
+                    if (rankA !== rankB) return rankA - rankB;
+                    return a.label.localeCompare(b.label);
+                })
+            }))
+            .sort((a, b) => {
+                const aIdx = categoryPriority.indexOf(a.category);
+                const bIdx = categoryPriority.indexOf(b.category);
+                if (aIdx === -1 && bIdx === -1) return a.category.localeCompare(b.category);
+                if (aIdx === -1) return 1;
+                if (bIdx === -1) return -1;
+                return aIdx - bIdx;
+            });
+    }, [seasonStatsForDisplay]);
 
     const identity: IdentityItem[] = useMemo(() => {
-        if (!liveSeasonStats) return [];
+        if (!seasonStatsForDisplay) return [];
         const sportCorrelations = STAT_CORRELATIONS[league] || [];
-        return liveSeasonStats.reduce((acc: IdentityItem[], stat) => {
+        return seasonStatsForDisplay.reduce((acc: IdentityItem[], stat) => {
             const config = findCorrelationConfig(stat.label, sportCorrelations);
             if (config && stat.rank) {
                 let rating = 'Neutral';
@@ -180,7 +483,7 @@ export const TeamDetailView: React.FC<TeamDetailViewProps> = ({
             }
             return acc;
         }, [] as IdentityItem[]).sort((a, b) => a.rank - b.rank).slice(0, 4); 
-    }, [liveSeasonStats, league]);
+    }, [seasonStatsForDisplay, league]);
 
     const { upcomingGames, pastGames } = useMemo(() => {
         const now = new Date();
@@ -190,16 +493,23 @@ export const TeamDetailView: React.FC<TeamDetailViewProps> = ({
     }, [schedule]);
 
     const computedStats = useMemo(() => {
-        const completed = schedule.filter(g => g.status === 'finished');
+        const completed = completedSeasonGames;
         if (completed.length === 0) return null;
+
+        const hasReliableSeasonGp = seasonStatsGamesPlayed > 0;
+        const scheduleCoverageRatio = hasReliableSeasonGp ? (completed.length / seasonStatsGamesPlayed) : 1;
+        if (hasReliableSeasonGp && scheduleCoverageRatio < 0.8) {
+            return null;
+        }
+
         let wins = 0, losses = 0, ties = 0, pf = 0, pa = 0;
         let homeWins = 0, homeLosses = 0, homeTies = 0, awayWins = 0, awayLosses = 0, awayTies = 0;
         const streaks: ('W' | 'L' | 'T')[] = [];
         const chronological = [...completed].sort((a, b) => new Date(a.dateTime).getTime() - new Date(b.dateTime).getTime());
         chronological.forEach(g => {
             const isHome = g.homeTeam === team.name || g.homeTeam === team.displayName || (team.id && g.homeTeamId === team.id);
-            const scoreFor = parseInt((isHome ? g.homeScore : g.awayScore) || '0');
-            const scoreAgainst = parseInt((isHome ? g.awayScore : g.homeScore) || '0');
+            const scoreFor = parseInt(String((isHome ? g.homeScore : g.awayScore) ?? '0'), 10);
+            const scoreAgainst = parseInt(String((isHome ? g.awayScore : g.homeScore) ?? '0'), 10);
             pf += scoreFor; pa += scoreAgainst;
             let result: 'W' | 'L' | 'T' = 'T';
             if (scoreFor > scoreAgainst) result = 'W'; else if (scoreFor < scoreAgainst) result = 'L';
@@ -226,9 +536,19 @@ export const TeamDetailView: React.FC<TeamDetailViewProps> = ({
             homeRecord: `${homeWins}-${homeLosses}${homeTies > 0 ? `-${homeTies}` : ''}`, awayRecord: `${awayWins}-${awayLosses}${awayTies > 0 ? `-${awayTies}` : ''}`,
             last5: `${l5Wins}-${l5Losses}${l5Ties > 0 ? `-${l5Ties}` : ''}`, streak: currentStreak
         };
-    }, [schedule, team.name, team.displayName, team.id]);
+    }, [completedSeasonGames, seasonStatsGamesPlayed, team.name, team.displayName, team.id]);
+
+    const displayRecord = useMemo(() => {
+        if (!computedStats) return team.record;
+        return `${computedStats.wins}-${computedStats.losses}${computedStats.ties > 0 ? `-${computedStats.ties}` : ''}`;
+    }, [computedStats, team.record]);
 
     const isSoccer = ['EPL', 'Bundesliga', 'La Liga', 'Ligue 1', 'Serie A', 'MLS', 'UCL'].includes(league);
+    const isNCAA = ['NCAAF', 'NCAAM', 'NCAAW'].includes(league);
+    const hasEmbeddedRank = /^\s*(#|No\.)\s*\d+/i.test(team.name);
+    const displayTeamName = (isNCAA && typeof team.rank === 'number' && team.rank > 0 && !hasEmbeddedRank)
+        ? `#${team.rank} ${team.name}`
+        : team.name;
     const hasUCL = useMemo(() => isSoccer && schedule.some(g => (g.context?.toLowerCase() || '').includes('champions league') || (g.leagueName?.toLowerCase() || '').includes('champions league') || g.league === 'UCL'), [schedule, isSoccer]);
     const rosterGroups = useMemo(() => {
         const groups: Record<string, Player[]> = {};
@@ -255,14 +575,6 @@ export const TeamDetailView: React.FC<TeamDetailViewProps> = ({
         });
     };
 
-    const getStat = (label: string) => {
-        if (!liveSeasonStats) return null;
-        return liveSeasonStats.find(s => 
-            s.label.toLowerCase() === label.toLowerCase() || 
-            s.label.toLowerCase().includes(label.toLowerCase())
-        );
-    };
-
     const rosterPlayer = team.roster.find(p => p.id === selectedPlayerId);
     const displayPlayerInfo = playerProfile ? { displayName: playerProfile.name, headshot: playerProfile.headshot, position: playerProfile.position, jersey: playerProfile.jersey } : rosterPlayer ? { displayName: rosterPlayer.displayName, headshot: rosterPlayer.headshot, position: rosterPlayer.position, jersey: rosterPlayer.jersey } : { displayName: 'Loading...', headshot: undefined, position: '', jersey: '' };
 
@@ -275,11 +587,11 @@ export const TeamDetailView: React.FC<TeamDetailViewProps> = ({
                         {team.logo ? <img src={team.logo} alt={team.name} className="w-full h-full object-contain" /> : <div className="w-full h-full bg-slate-200 dark:bg-slate-800 rounded-full" />}
                     </div>
                     <div className="flex-1 text-center md:text-left space-y-2">
-                        <h1 className="text-3xl md:text-4xl font-display font-bold text-slate-900 dark:text-white">{team.name}</h1>
+                        <h1 className="text-3xl md:text-4xl font-display font-bold text-slate-900 dark:text-white">{displayTeamName}</h1>
                         <div className="flex flex-wrap items-center justify-center md:justify-start gap-4 text-slate-600 dark:text-slate-400 font-medium">
                             <div className="flex items-center gap-1.5"><MapPin size={16} /><span>{team.location}</span></div>
                             {isSoccer && <div className="flex items-center gap-2"><div className="flex items-center gap-1.5 bg-slate-100 dark:bg-slate-800 px-3 py-1 rounded-full text-sm font-bold text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-700"><span>{getSoccerLeagueName(league, team.standingSummary)}</span></div>{hasUCL && <div className="flex items-center gap-1.5 bg-indigo-50 dark:bg-indigo-900/30 px-3 py-1 rounded-full text-sm font-bold text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800"><Trophy size={12} /><span>UCL</span></div>}</div>}
-                            {team.record && <div className="flex items-center gap-1.5 bg-slate-100 dark:bg-slate-800 px-3 py-1 rounded-full text-sm font-bold text-slate-800 dark:text-slate-200"><Hash size={14} /><span>{team.record}</span></div>}
+                            {displayRecord && <div className="flex items-center gap-1.5 bg-slate-100 dark:bg-slate-800 px-3 py-1 rounded-full text-sm font-bold text-slate-800 dark:text-slate-200"><Hash size={14} /><span>{displayRecord}</span></div>}
                         </div>
                         {team.conferenceRank && team.conferenceName && !isSoccer && <div className="pt-2"><span className="text-xs font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-200 dark:border-indigo-800 px-2 py-1 rounded">{team.conferenceRank} in {team.conferenceName.replace('Conference', 'Conf').replace('League', 'Lg')}</span></div>}
                     </div>
@@ -301,76 +613,110 @@ export const TeamDetailView: React.FC<TeamDetailViewProps> = ({
                 <div className="space-y-8 animate-fade-in">
                     {/* Consistent Layout for Team Stats matching League View */}
                     <div className="bg-white dark:bg-slate-900/40 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
-                        <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50 flex justify-between items-center">
+                        <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50 flex flex-col md:flex-row md:justify-between md:items-center gap-3">
                             <h3 className="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-wider flex items-center gap-2">
                                 <Activity size={18} className="text-indigo-500" /> Season Statistics
                             </h3>
+                            <div className="flex flex-wrap items-center gap-2">
+                                <span className="inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-md border bg-slate-100 dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300">
+                                    <Database size={11} />
+                                    {statsSourceSummary.label}
+                                </span>
+                                {statsSourceSummary.sampleSize && (
+                                    <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-md border bg-slate-100 dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300">
+                                        {statsSourceSummary.sampleSize} GP
+                                    </span>
+                                )}
+                                {scheduleCoverageRatio !== null && (
+                                    <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-md border ${scheduleCoverageRatio >= 0.85 ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-400' : 'bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-400'}`}>
+                                        Coverage {Math.round(scheduleCoverageRatio * 100)}%
+                                    </span>
+                                )}
+                            </div>
                         </div>
-                        <div className="p-6">
-                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-x-8 gap-y-10">
-                                {Object.entries(statsLayout).map(([category, labels]) => (
-                                    <div key={category} className="space-y-3">
-                                        <h5 className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2 pl-2 border-l-2 border-slate-200 dark:border-slate-700">
-                                            {category}
-                                        </h5>
-                                        <div className="space-y-1">
-                                            {labels.map((label: string, idx: number) => {
-                                                const stat = getStat(label);
-                                                if (!stat) return null;
-                                                return (
-                                                    <div 
-                                                        key={idx} 
-                                                        className="flex items-center justify-between p-2 hover:bg-slate-50 dark:hover:bg-slate-800/50 rounded-lg transition-colors cursor-pointer group"
-                                                        onClick={() => handleStatClick(stat, 'DETAILS')}
-                                                    >
-                                                        <span className="text-xs font-medium text-slate-600 dark:text-slate-300 truncate pr-2 group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors">
-                                                            {stat.label}
-                                                        </span>
-                                                        <div className="flex items-center gap-2">
-                                                            <span className="text-sm font-mono font-bold text-slate-900 dark:text-white">
-                                                                {cleanStatValue(stat.label, stat.value)}
-                                                            </span>
-                                                            {stat.rank && (
-                                                                <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${getRankColor(stat.rank)}`}>
-                                                                    #{stat.rank}
-                                                                </span>
-                                                            )}
-                                                        </div>
-                                                    </div>
-                                                );
-                                            })}
-                                        </div>
+                        {integrityWarnings.length > 0 && (
+                            <div className="px-6 py-3 border-b border-amber-100 dark:border-amber-900/50 bg-amber-50/70 dark:bg-amber-950/20">
+                                {integrityWarnings.map((warning, idx) => (
+                                    <div key={idx} className="text-[11px] text-amber-800 dark:text-amber-300 flex items-center gap-2 leading-relaxed">
+                                        <AlertTriangle size={12} className="shrink-0" />
+                                        <span>{warning}</span>
                                     </div>
                                 ))}
                             </div>
+                        )}
+                        <div className="p-6">
+                            {isSeasonStatsLoading && statsSections.length === 0 ? (
+                                <div className="flex flex-col items-center justify-center py-12">
+                                    <Loader2 size={32} className="text-slate-500 animate-spin mb-3" />
+                                    <p className="text-xs text-slate-500 font-medium">Loading season stat averages...</p>
+                                </div>
+                            ) : statsSections.length === 0 ? (
+                                <div className="text-center text-sm text-slate-400 italic py-8 border border-dashed border-slate-200 dark:border-slate-800 rounded-xl">
+                                    No season statistics available.
+                                </div>
+                            ) : (
+                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-x-8 gap-y-10">
+                                    {statsSections.map(({ category, stats }) => (
+                                        <div key={category} className="space-y-3">
+                                            <h5 className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2 pl-2 border-l-2 border-slate-200 dark:border-slate-700">
+                                                {category}
+                                            </h5>
+                                            <div className="space-y-1">
+                                                {stats.map((stat, idx: number) => {
+                                                    const leagueRank = (typeof stat.rank === 'number' && stat.rank > 0) ? stat.rank : undefined;
+                                                    return (
+                                                        <div 
+                                                            key={idx} 
+                                                            className="flex items-center justify-between p-2 hover:bg-slate-50 dark:hover:bg-slate-800/50 rounded-lg transition-colors cursor-pointer group"
+                                                            onClick={() => handleStatClick(stat, 'DETAILS')}
+                                                        >
+                                                            <span className="text-xs font-medium text-slate-600 dark:text-slate-300 truncate pr-2 group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors">
+                                                                {stat.label}
+                                                            </span>
+                                                            <div className="flex items-center gap-2">
+                                                                <span className="text-sm font-mono font-bold text-slate-900 dark:text-white">
+                                                                    {cleanStatValue(stat.label, stat.value)}
+                                                                </span>
+                                                                {leagueRank && (
+                                                                    <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${getRankColor(leagueRank)}`}>
+                                                                        Lg #{leagueRank}
+                                                                    </span>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
                         </div>
                     </div>
 
-                    {/* Record Split Card */}
-                    {computedStats && (
-                        <div className="bg-white dark:bg-slate-900/40 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
-                            <h3 className="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-wider mb-6 flex items-center gap-2"><TrendingUp size={18} className="text-emerald-500" /> Record Split</h3>
-                            <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
-                                <div className="space-y-1"><div className="text-xs text-slate-500 uppercase font-bold tracking-wide">Points / Game</div><div className="text-3xl font-mono font-bold text-slate-900 dark:text-white">{computedStats.ppg}</div></div>
-                                <div className="space-y-1"><div className="text-xs text-slate-500 uppercase font-bold tracking-wide">Points Allowed</div><div className="text-3xl font-mono font-bold text-slate-900 dark:text-white">{computedStats.oppg}</div></div>
-                                <div className="space-y-1"><div className="text-xs text-slate-500 uppercase font-bold tracking-wide">Differential</div><div className={`text-3xl font-mono font-bold ${parseFloat(computedStats.avgDiff) > 0 ? 'text-emerald-500' : parseFloat(computedStats.avgDiff) < 0 ? 'text-rose-500' : 'text-slate-500'}`}>{parseFloat(computedStats.avgDiff) > 0 ? '+' : ''}{computedStats.avgDiff}</div></div>
-                                <div className="space-y-1"><div className="text-xs text-slate-500 uppercase font-bold tracking-wide">Current Streak</div><div className="text-3xl font-mono font-bold text-slate-900 dark:text-white">{computedStats.streak || '-'}</div></div>
-                            </div>
-                            <div className="mt-8 pt-6 border-t border-slate-100 dark:border-slate-800 grid grid-cols-1 md:grid-cols-3 gap-6">
-                                <div className="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-900/50 rounded-lg"><span className="text-xs font-bold text-slate-500 uppercase">Home Record</span><span className="font-mono font-bold text-slate-800 dark:text-slate-200">{computedStats.homeRecord}</span></div>
-                                <div className="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-900/50 rounded-lg"><span className="text-xs font-bold text-slate-500 uppercase">Away Record</span><span className="font-mono font-bold text-slate-800 dark:text-slate-200">{computedStats.awayRecord}</span></div>
-                                <div className="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-900/50 rounded-lg"><span className="text-xs font-bold text-slate-500 uppercase">Last 5 Games</span><span className="font-mono font-bold text-slate-800 dark:text-slate-200">{computedStats.last5}</span></div>
-                            </div>
+                    {/* Player Box Score Season Averages */}
+                    {isStatsLoading ? (
+                        <div className="flex flex-col items-center justify-center py-12">
+                            <Loader2 size={32} className="text-slate-500 animate-spin mb-3" />
+                            <p className="text-xs text-slate-500 font-medium">Loading player box score averages...</p>
                         </div>
-                    )}
-
-                    {/* Individual Leaders */}
-                    {isStatsLoading ? <div className="flex flex-col items-center justify-center py-12"><Loader2 size={32} className="text-slate-500 animate-spin mb-3" /><p className="text-xs text-slate-500 font-medium">Loading Roster Stats...</p></div> : teamStats?.categories && teamStats.categories.length > 0 && (
-                        <div className="space-y-8">
-                            <div className="flex items-center gap-3"><div className="h-px bg-slate-200 dark:bg-slate-800 flex-1"></div><span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Individual Leaders</span><div className="h-px bg-slate-200 dark:bg-slate-800 flex-1"></div></div>
+                    ) : teamStats?.categories && teamStats.categories.length > 0 ? (
+                        <div className="space-y-6">
+                            <div className="bg-white dark:bg-slate-900/40 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
+                                <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50 flex flex-col gap-2">
+                                    <h3 className="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-wider flex items-center gap-2">
+                                        <Target size={18} className="text-cyan-500" /> Player Box Score Season Averages
+                                    </h3>
+                                    <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                                        Player stats are cumulative season totals divided by games played (`GP`).
+                                    </p>
+                                </div>
+                            </div>
                             {teamStats.categories.map((category: StatCategory, idx: number) => (
                                 <div key={idx} className="bg-white dark:bg-slate-900/40 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
-                                    <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50 flex justify-between items-center"><h3 className="text-sm font-bold text-slate-800 dark:text-slate-200 uppercase tracking-wider">{category.displayName}</h3></div>
+                                    <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50 flex justify-between items-center">
+                                        <h3 className="text-sm font-bold text-slate-800 dark:text-slate-200 uppercase tracking-wider">{category.displayName}</h3>
+                                    </div>
                                     <div className="overflow-x-auto">
                                         <table className="w-full text-right text-xs">
                                             <thead>
@@ -388,7 +734,7 @@ export const TeamDetailView: React.FC<TeamDetailViewProps> = ({
                                                             {ath.player.position && <span className="text-[10px] text-slate-400 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded">{ath.player.position}</span>}
                                                         </td>
                                                         {(ath.stats || []).map((statVal: string, sIdx: number) => (
-                                                            <td key={sIdx} className="px-4 py-3 font-mono text-slate-600 dark:text-slate-400">{statVal}</td>
+                                                            <td key={sIdx} className="px-4 py-3 font-mono text-slate-600 dark:text-slate-400">{formatPlayerStatCell(category.labels?.[sIdx] || '', statVal)}</td>
                                                         ))}
                                                     </tr>
                                                 ))}
@@ -397,6 +743,28 @@ export const TeamDetailView: React.FC<TeamDetailViewProps> = ({
                                     </div>
                                 </div>
                             ))}
+                        </div>
+                    ) : (
+                        <div className="text-center text-sm text-slate-400 italic py-8 border border-dashed border-slate-200 dark:border-slate-800 rounded-xl">
+                            No player box score season averages available yet.
+                        </div>
+                    )}
+
+                    {/* Record Split Card */}
+                    {computedStats && (
+                        <div className="bg-white dark:bg-slate-900/40 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
+                            <h3 className="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-wider mb-6 flex items-center gap-2"><TrendingUp size={18} className="text-emerald-500" /> Record Split</h3>
+                            <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+                                <div className="space-y-1"><div className="text-xs text-slate-500 uppercase font-bold tracking-wide">Points / Game</div><div className="text-3xl font-mono font-bold text-slate-900 dark:text-white">{computedStats.ppg}</div></div>
+                                <div className="space-y-1"><div className="text-xs text-slate-500 uppercase font-bold tracking-wide">Points Allowed</div><div className="text-3xl font-mono font-bold text-slate-900 dark:text-white">{computedStats.oppg}</div></div>
+                                <div className="space-y-1"><div className="text-xs text-slate-500 uppercase font-bold tracking-wide">Differential</div><div className={`text-3xl font-mono font-bold ${parseFloat(computedStats.avgDiff) > 0 ? 'text-emerald-500' : parseFloat(computedStats.avgDiff) < 0 ? 'text-rose-500' : 'text-slate-500'}`}>{parseFloat(computedStats.avgDiff) > 0 ? '+' : ''}{computedStats.avgDiff}</div></div>
+                                <div className="space-y-1"><div className="text-xs text-slate-500 uppercase font-bold tracking-wide">Current Streak</div><div className="text-3xl font-mono font-bold text-slate-900 dark:text-white">{computedStats.streak || '-'}</div></div>
+                            </div>
+                            <div className="mt-8 pt-6 border-t border-slate-100 dark:border-slate-800 grid grid-cols-1 md:grid-cols-3 gap-6">
+                                <div className="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-900/50 rounded-lg"><span className="text-xs font-bold text-slate-500 uppercase">Home Record</span><span className="font-mono font-bold text-slate-800 dark:text-slate-200">{computedStats.homeRecord}</span></div>
+                                <div className="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-900/50 rounded-lg"><span className="text-xs font-bold text-slate-500 uppercase">Away Record</span><span className="font-mono font-bold text-slate-800 dark:text-slate-200">{computedStats.awayRecord}</span></div>
+                                <div className="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-900/50 rounded-lg"><span className="text-xs font-bold text-slate-500 uppercase">Last 5 Games</span><span className="font-mono font-bold text-slate-800 dark:text-slate-200">{computedStats.last5}</span></div>
+                            </div>
                         </div>
                     )}
                 </div>

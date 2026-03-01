@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Legacy generated internal DB module (replaced by public/internal-db/*.json)
+data/internalDatabase.ts

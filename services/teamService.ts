@@ -1,43 +1,99 @@
 
 import { Sport, StandingsGroup, StandingsType, SOCCER_LEAGUES, TeamProfile, Game, TeamStatistics, TeamStatItem, LeagueStatRow, SPORTS } from "../types";
 import { ESPN_ENDPOINTS } from "./constants";
-import { fetchWithRetry, formatTeamName, extractNumber, normalizeStat, normalizeLocation } from "./utils";
+import {
+    fetchWithRetry,
+    formatTeamName,
+    extractNumber,
+    normalizeStat,
+    normalizeLocation,
+    shouldHideUndeterminedPlayoffGame,
+} from "./utils";
 import { mapEventToGame } from "./mappers";
 import { calculateDerivedRank } from "./probabilities/rankings";
 import { saveStatsBatch, getStatsBySport, getTeamStats } from "./statsDb";
+import {
+    canonicalizeStatLabel,
+    inferCanonicalCategory,
+    isRateLikeStatLabel,
+    normalizeStatToken,
+} from "./statDictionary";
 import { SEEDED_STATS } from "../data/seededStats";
 import { LOCAL_TEAMS } from "../data/leagues/index";
+import {
+    ensureInternalSportLoaded,
+    getInternalDatabaseGeneratedAt,
+    getInternalStandings,
+    getInternalTeamPlayerStats,
+    getInternalTeamSchedule,
+    getInternalTeamStatsBySport,
+    getInternalTeamStats,
+} from "./internalDbService";
 
 // Concurrency lock to prevent multiple syncs for the same sport at once
 const ACTIVE_SYNCS = new Set<string>();
 const SYNC_COOLDOWN = 60 * 60 * 1000; // 1 Hour
+const NCAA_RANKED_SPORTS = new Set<Sport>(['NCAAF', 'NCAAM', 'NCAAW']);
+const NCAA_RANK_CACHE_TTL = 15 * 60 * 1000; // 15 minutes
+const NCAA_RANK_CACHE = new Map<Sport, { fetchedAt: number; rankByTeamId: Map<string, number> }>();
 
 const convertStandingsToStats = (data: any, sport: Sport): TeamStatItem[] => {
     const items: TeamStatItem[] = [];
     const str = (v: any) => (v === undefined || v === null) ? '0' : String(v);
+    const num = (v: any): number => {
+        const parsed = parseFloat(String(v ?? '0').replace(/,/g, ''));
+        return Number.isFinite(parsed) ? parsed : 0;
+    };
+
+    const wins = num(data.wins);
+    const losses = num(data.losses);
+    const ties = num(data.ties ?? data.otLosses);
+    const gp = wins + losses + ties;
+
+    const toPerGame = (value: any, signed = false): string => {
+        const raw = num(value);
+        if (gp <= 0) {
+            if (signed && raw > 0) return `+${raw.toFixed(1)}`;
+            return raw.toFixed(1);
+        }
+        const avg = raw / gp;
+        if (signed && avg > 0) return `+${avg.toFixed(1)}`;
+        return avg.toFixed(1);
+    };
 
     if (data.wins !== undefined) items.push({ label: 'Wins', value: str(data.wins), category: 'General' });
     if (data.losses !== undefined) items.push({ label: 'Losses', value: str(data.losses), category: 'General' });
     
     if (data.pointsFor !== undefined) {
-        items.push({ label: 'Points', value: str(data.pointsFor), category: 'Team' });
+        items.push({ label: 'Points', value: toPerGame(data.pointsFor), category: 'Team' });
     } else if (data.points !== undefined && !['EPL','MLS','NHL','Bundesliga','La Liga','Serie A','Ligue 1','UCL'].includes(sport)) {
-        items.push({ label: 'Points', value: str(data.points), category: 'Team' });
+        items.push({ label: 'Points', value: toPerGame(data.points), category: 'Team' });
     }
 
-    if (data.pointsAgainst !== undefined) items.push({ label: 'Opponent Points', value: str(data.pointsAgainst), category: 'Opponent' });
+    if (data.pointsAgainst !== undefined) items.push({ label: 'Opponent Points', value: toPerGame(data.pointsAgainst), category: 'Opponent' });
     
     if (data.pointDifferential !== undefined) {
-        items.push({ label: 'Points Differential', value: str(data.pointDifferential), category: 'Differential' });
+        items.push({ label: 'Points Differential', value: toPerGame(data.pointDifferential, true), category: 'Differential' });
     } else if (data.pointsFor !== undefined && data.pointsAgainst !== undefined) {
-        const diff = parseFloat(data.pointsFor) - parseFloat(data.pointsAgainst);
-        items.push({ label: 'Points Differential', value: diff > 0 ? `+${diff}` : String(diff), category: 'Differential' });
+        const diff = num(data.pointsFor) - num(data.pointsAgainst);
+        items.push({
+            label: 'Points Differential',
+            value: toPerGame(diff, true),
+            category: 'Differential'
+        });
     }
 
     return items;
 };
 
 export const fetchStandings = async (sport: Sport, type: StandingsType): Promise<StandingsGroup[]> => {
+    await ensureInternalSportLoaded(sport);
+
+    if (type === 'DIVISION') {
+        const internal = getInternalStandings(sport);
+        if (internal.length > 0) return internal;
+    }
+
     const endpoint = ESPN_ENDPOINTS[sport];
     const baseUrl = `https://site.api.espn.com/apis/v2/sports/${endpoint}/standings`;
     const params = new URLSearchParams();
@@ -134,149 +190,159 @@ export const fetchRankings = async (sport: Sport): Promise<StandingsGroup[]> => 
     } catch { return []; }
 };
 
+const fetchNCAATeamRank = async (sport: Sport, teamId: string): Promise<number | undefined> => {
+    if (!NCAA_RANKED_SPORTS.has(sport)) return undefined;
+
+    const now = Date.now();
+    const cached = NCAA_RANK_CACHE.get(sport);
+    if (cached && (now - cached.fetchedAt) < NCAA_RANK_CACHE_TTL) {
+        return cached.rankByTeamId.get(String(teamId));
+    }
+
+    try {
+        const rankingGroups = await fetchRankings(sport);
+        const preferredGroup =
+            rankingGroups.find(g => /ap top 25/i.test(g.name)) ||
+            rankingGroups.find(g => /top 25/i.test(g.name)) ||
+            rankingGroups[0];
+
+        const rankByTeamId = new Map<string, number>();
+        (preferredGroup?.standings || []).forEach((entry) => {
+            const id = String(entry.team?.id || '').trim();
+            const rank = Number(entry.rank);
+            if (!id || !Number.isFinite(rank) || rank <= 0) return;
+            rankByTeamId.set(id, rank);
+        });
+
+        NCAA_RANK_CACHE.set(sport, { fetchedAt: now, rankByTeamId });
+        return rankByTeamId.get(String(teamId));
+    } catch {
+        NCAA_RANK_CACHE.set(sport, { fetchedAt: now, rankByTeamId: new Map() });
+        return undefined;
+    }
+};
+
 const normalizeLabel = (label: string, catName: string, sport: Sport): string | null => {
-    const l = label.toLowerCase();
-    const cat = catName.toLowerCase();
+    const l = normalizeStatToken(label);
+    const cat = normalizeStatToken(catName);
 
     const BLOCKLIST = [
         'rank', 'conf', 'division', 'streak', 'home', 'away', 'neutral',
-        'ot win', 'ot loss', 'shootout', 's/o', 'postponed', 'clinched',
-        'games started', 'minutes', 'avg rating', 'rating', 'prate', 'games played'
+        'ot win', 'ot loss', 'shootout', 's/o', 'postponed', 'clinched'
     ];
     
     if (l === 'wins' || l === 'losses' || l === 'ties' || l === 'w' || l === 'l' || l === 't') return null;
     if (BLOCKLIST.some(term => l.includes(term))) return null;
-    if (l === 'gp' || l === 'gs' || l === 'min') return null; 
 
-    const isDefensiveCategory = cat.includes('defens') || cat.includes('opponent') || cat.includes('allowed');
+    const isDefensiveCategory = cat.includes('defens') || cat.includes('opponent') || cat.includes('allowed') || cat.includes('against');
+    const hasDefensiveHintInLabel =
+        l.includes('opponent') ||
+        l.includes('opp ') ||
+        l.includes('allowed') ||
+        l.includes('against') ||
+        l.includes('defensive');
+    const hasOffensiveHintInLabel = l.includes('offense') || l.includes('offensive');
+    const shouldTreatAsDefensiveMetric =
+        hasDefensiveHintInLabel ||
+        (isDefensiveCategory && !hasOffensiveHintInLabel && !cat.includes('efficiency'));
 
-    if (['NFL', 'NCAAF'].includes(sport)) {
-        if (l === '1st downs' || l === 'first downs') return 'First Downs';
-        if (l === 'turnover margin' || l === 'turnover diff') return 'Turnover Differential';
-        if (cat.includes('kick') || cat.includes('general') || cat.includes('special')) {
-             if (l === 'fg%' || (l.includes('field goal') && l.includes('%'))) return 'Field Goal %'; 
-             if (l.includes('avg') && l.includes('return') && l.includes('kick')) return 'Kick Return Average';
-        }
-        if (cat.includes('punt') || cat.includes('general') || cat.includes('special')) {
-             if (l.includes('avg') && !l.includes('return')) return 'Punting Average';
-             if (l.includes('avg') && l.includes('return')) return 'Punt Return Average';
-        }
-        if (cat.includes('pass')) {
-            if (l === 'yds' || l === 'yards') return isDefensiveCategory ? 'Passing Yards Allowed' : 'Passing Yards';
-            if (l === 'td') return isDefensiveCategory ? 'Passing TDs Allowed' : 'Passing TDs';
-        }
-        if (cat.includes('rush')) {
-            if (l === 'yds' || l === 'yards') return isDefensiveCategory ? 'Rushing Yards Allowed' : 'Rushing Yards';
-            if (l === 'td') return isDefensiveCategory ? 'Rushing TDs Allowed' : 'Rushing TDs';
-        }
-        if (cat.includes('defens')) {
-            if (l === 'sacks') return 'Sacks';
-            if (l === 'int' || l === 'interceptions') return 'Interceptions';
-        }
-        if (l === 'total yards' || l === 'yds/g') return isDefensiveCategory ? 'Total Yards Allowed' : 'Total Yards';
+    let canonical = canonicalizeStatLabel(sport, label, catName);
+
+    if (canonical === 'Points' && shouldTreatAsDefensiveMetric) canonical = 'Opponent Points';
+    if (canonical === 'Rebounds' && shouldTreatAsDefensiveMetric && !l.includes('def')) canonical = 'Opponent Rebounds';
+    if (canonical === 'Field Goal %' && shouldTreatAsDefensiveMetric) canonical = 'Opponent Field Goal %';
+
+    if (canonical === 'Passing Yards' && shouldTreatAsDefensiveMetric) canonical = 'Passing Yards Allowed';
+    if (canonical === 'Rushing Yards' && shouldTreatAsDefensiveMetric) canonical = 'Rushing Yards Allowed';
+    if (canonical === 'Total Yards' && shouldTreatAsDefensiveMetric) canonical = 'Total Yards Allowed';
+
+    if (cat.includes('pass') && (l === 'yds' || l === 'yards')) canonical = shouldTreatAsDefensiveMetric ? 'Passing Yards Allowed' : 'Passing Yards';
+    if (cat.includes('rush') && (l === 'yds' || l === 'yards')) canonical = shouldTreatAsDefensiveMetric ? 'Rushing Yards Allowed' : 'Rushing Yards';
+    if (cat.includes('pass') && l === 'td') canonical = shouldTreatAsDefensiveMetric ? 'Passing TDs Allowed' : 'Passing TDs';
+    if (cat.includes('rush') && l === 'td') canonical = shouldTreatAsDefensiveMetric ? 'Rushing TDs Allowed' : 'Rushing TDs';
+
+    // NCAAF feed can misclassify rushing offense labels into allowed variants.
+    // Force canonical offense wording for team cards and league alignment.
+    if (sport === 'NCAAF' && canonical === 'Rushing Yards Allowed') {
+        canonical = 'Rushing Yards';
     }
 
-    if (['NBA', 'NCAAM', 'NCAAW', 'WNBA'].includes(sport)) {
-        if (l === 'fgm') return 'Field Goals Made';
-        if (l === 'fga') return 'Field Goals Attempted';
-        if (l === '3pm') return '3-Pointers Made';
-        if (l === '3pa') return '3-Pointers Attempted';
-        if (l === 'ftm') return 'Free Throws Made';
-        if (l === 'fta') return 'Free Throws Attempted';
-        if (l === 'oreb' || l === 'off reb') return 'Offensive Rebounds';
-        if (l === 'dreb' || l === 'def reb') return 'Defensive Rebounds';
-        if (l === '3p%' || l === '3-point field goal %' || l === 'three point %') return '3-Point %';
-    }
+    return canonical || label;
+};
 
-    if (l === 'pts' || l === 'ppg' || l === 'points') {
-        if (isDefensiveCategory) return 'Opponent Points';
-        return 'Points';
-    }
-    
-    if (l === 'reb' || l === 'rpg' || l === 'rebounds' || l === 'total rebounds') {
-        if (isDefensiveCategory && !l.includes('def')) return 'Opponent Rebounds';
-        return 'Rebounds';
-    }
-
-    if (l === 'ast' || l === 'apg') return 'Assists';
-    if (l === 'stl' || l === 'spg') return 'Steals';
-    if (l === 'blk' || l === 'bpg') return 'Blocks';
-    if (l === 'to' || l === 'topg' || l === 'turnover' || l === 'turnovers') return 'Turnovers';
-    
-    if (l === 'fg%' || l === 'field goal %' || l === 'field goal percentage' || l === 'fg percentage') {
-        if (isDefensiveCategory) return 'Opponent Field Goal %';
-        return 'Field Goal %';
-    }
-    
-    if (l === 'opp ppg' || l === 'points allowed' || l === 'opponent points' || l === 'pa') return 'Opponent Points';
-    if (l === 'opp reb' || l === 'opponent rebounds' || l === 'rebounds allowed' || l === 'opp rpg') return 'Opponent Rebounds';
-    if (l === 'opp fg%' || l === 'opponent field goal %' || l === 'defensive field goal %' || l === 'opp field goal %') return 'Opponent Field Goal %';
-
-    if (l === 'points' || l === 'points for' || l === 'pf' || l === 'pts' || l.includes('gf/gp') || l === 'ppg') return 'Points';
-    if (l.includes('ga/gp')) return 'Opponent Points';
-    
-    return label;
+const shouldDropDetailedLabel = (label: string): boolean => {
+    const l = label.toLowerCase().trim();
+    if (!l) return true;
+    const META_ONLY = [
+        'rank',
+        'seed',
+        'conference',
+        'division',
+        'streak',
+        'clinch',
+        'postponed'
+    ];
+    return META_ONLY.some(term => l.includes(term));
 };
 
 const cleanCategory = (catName: string, sport: Sport): string => {
-    const c = catName.toLowerCase();
-    
-    if (['NBA', 'NCAAM', 'NCAAW', 'WNBA'].includes(sport)) {
-        if (c.includes('shoot') || c.includes('scoring') || c.includes('field goal')) return 'Shooting';
-        if (c.includes('rebound')) return 'Rebounding';
-        if (c.includes('defens') || c.includes('opponent')) return 'Defense';
-        if (c.includes('assist') || c.includes('turnover')) return 'Ball Control';
-        if (c.includes('general') || c.includes('miscellaneous')) return 'General';
-    }
-    
-    if (['NFL', 'NCAAF'].includes(sport)) {
-        if (c.includes('kick') || c.includes('punt') || c.includes('special') || c.includes('return')) return 'Special Teams';
-        if (c.includes('rush')) return 'Rushing';
-        if (c.includes('pass')) return 'Passing';
-        if (c.includes('receiv')) return 'Receiving';
-        if (c.includes('defens')) return 'Defense';
-        if (c.includes('offens')) return 'Offense';
-    }
-
-    if (c.includes('offens')) return 'Offense';
-    if (c.includes('defens')) return 'Defense';
-    return 'General';
+    return inferCanonicalCategory(sport, '', catName);
 };
 
-// Generic threshold Helper to determine if a value looks like a total based on magnitude
-const getStatThreshold = (label: string): number => {
-    const l = label.toLowerCase();
-    
-    // Distances
-    if (l.includes('yard')) return 600; 
-    
-    // Scoring
-    if (l.includes('point') || l.includes('pts') || l.includes('ppg')) return 160; 
-    
-    // Attempts vs Makes
-    if (l.includes('attempt') || l.includes('fga')) return 120;
-    if (l.includes('made') || l.includes('fgm')) return 60;
-    
-    // Rebounds/Assists
-    if (l.includes('rebound')) return 70;
-    if (l.includes('assist')) return 45;
-    
-    // Low volume counts
-    if (l.includes('steal') || l.includes('block') || l.includes('sack') || l.includes('interception') || l.includes('touchdown') || l.includes('goal') || l.includes('save') || l.includes('run') || l.includes('hit') || l.includes('error')) {
-        return 20; // Lowered from 25 to catch early season totals
+const normalizeDetailedDisplayLabel = (rawLabel: string): string => {
+    const raw = String(rawLabel || '').trim();
+    if (!raw) return '';
+
+    const lower = raw.toLowerCase();
+    if (lower === 'leadchange' || lower === 'lead change') return 'Lead Changes';
+    if (
+        lower === 'fieldgoalsmade-fieldgoalsattempted' ||
+        lower === 'field goals made-field goals attempted'
+    ) return 'FG';
+    if (
+        lower === 'threepointfieldgoalsmade-threepointfieldgoalsattempted' ||
+        lower === 'three point field goals made-three point field goals attempted'
+    ) return '3PT';
+    if (
+        lower === 'freethrowsmade-freethrowsattempted' ||
+        lower === 'free throws made-free throws attempted'
+    ) return 'FT';
+
+    let label = raw
+        .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+        .replace(/_/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    if (/^[a-z0-9][a-z0-9 -]*$/.test(label) && label === label.toLowerCase()) {
+        label = label
+            .split(' ')
+            .filter(Boolean)
+            .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+            .join(' ');
     }
-    
-    // Minutes
-    if (l.includes('min')) return 70; 
-    
-    return 100000; // Default high to avoid dividing undefined things
+
+    return label;
 };
 
-const isTotalValue = (val: number, label: string): boolean => {
-    const l = label.toLowerCase();
-    // Never divide percentages, ratings, or explicit averages
-    if (l.includes('%') || l.includes('pct') || l.includes('rate') || l.includes('avg') || l.includes('rating') || l.includes('ratio')) return false;
-    return val > getStatThreshold(label);
+const normalizeDetailedStatsForDisplay = (stats: TeamStatItem[], sport: Sport): TeamStatItem[] => {
+    const deduped = new Map<string, TeamStatItem>();
+
+    stats.forEach((item) => {
+        if (!item?.label) return;
+        const displayLabel = normalizeDetailedDisplayLabel(item.label);
+        if (!displayLabel) return;
+
+        const canonicalLabel = canonicalizeStatLabel(sport, displayLabel, item.category || '');
+        const finalLabel = canonicalLabel || displayLabel;
+        const finalCategory = inferCanonicalCategory(sport, finalLabel, item.category || 'General');
+        const key = `${finalCategory}|${finalLabel.toLowerCase()}`;
+        if (!deduped.has(key)) {
+            deduped.set(key, { ...item, label: finalLabel, category: finalCategory });
+        }
+    });
+
+    return Array.from(deduped.values());
 };
 
 // Helper to get GP from record string "W-L-T"
@@ -289,34 +355,504 @@ const getGPFromRecord = (recordSummary?: string): number => {
     return parts.reduce((acc, val) => acc + (isNaN(val) ? 0 : val), 0);
 };
 
-export const fetchTeamSeasonStats = async (sport: Sport, teamId: string, seasonType: number = 2, year?: number, ignoreCache: boolean = false, fallbackData?: any): Promise<TeamStatItem[]> => {
+const PLAYOFF_MERGE_SPORTS = new Set<Sport>([
+    'NFL', 'NCAAF', 'NBA', 'NHL', 'MLB', 'WNBA', 'NCAAM', 'NCAAW'
+]);
+
+const getDefaultSeasonGames = (sport: Sport): number => {
+    if (sport === 'NFL') return 17;
+    if (sport === 'NCAAF') return 12;
+    if (sport === 'NBA' || sport === 'NHL') return 82;
+    if (sport === 'MLB') return 162;
+    if (sport === 'WNBA') return 40;
+    if (sport === 'NCAAM' || sport === 'NCAAW') return 31;
+    return 1;
+};
+
+const clamp01 = (value: number): number => Math.max(0, Math.min(1, value));
+
+const annotateStatsProvenance = (
+    sport: Sport,
+    stats: TeamStatItem[],
+    source: TeamStatItem['source'],
+    seasonYear?: number,
+): TeamStatItem[] => {
+    if (!Array.isArray(stats) || stats.length === 0) return [];
+    const gamesPlayed = getGamesPlayedFromStats(stats, 0);
+    const expectedGames = Math.max(1, getDefaultSeasonGames(sport));
+    const coverage = gamesPlayed > 0 ? clamp01(gamesPlayed / expectedGames) : undefined;
+
+    return stats.map((item) => ({
+        ...item,
+        source,
+        sampleSize: gamesPlayed > 0 ? Math.round(gamesPlayed) : item.sampleSize,
+        coverage: coverage ?? item.coverage,
+        seasonYear: seasonYear ?? item.seasonYear,
+    }));
+};
+
+const parseStatNumber = (value: string): number => {
+    const n = parseFloat(value.replace(/,/g, '').replace('%', ''));
+    return isNaN(n) ? 0 : n;
+};
+
+const getPerGameThreshold = (label: string): number => {
+    const l = label.toLowerCase();
+    if (l.includes('yard')) return 600;
+    if (l.includes('point') || l.includes('pts')) return 160;
+    if (l.includes('attempt') || l.includes('fga')) return 120;
+    if (l.includes('made') || l.includes('fgm')) return 60;
+    if (l.includes('rebound')) return 70;
+    if (l.includes('assist')) return 45;
+    if (l.includes('first down')) return 80;
+    if (l.includes('shot')) return 70;
+    if (l.includes('steal') || l.includes('block') || l.includes('sack') || l.includes('interception') || l.includes('touchdown') || l.includes('goal') || l.includes('save') || l.includes('run') || l.includes('hit') || l.includes('error')) {
+        return 20;
+    }
+    return 100000;
+};
+
+const isRateLikeLabel = (label: string): boolean => {
+    return isRateLikeStatLabel(label);
+};
+
+const isSourceAverageLabel = (rawLabel: string): boolean => {
+    const l = rawLabel.toLowerCase();
+    return (
+        l.includes('%') ||
+        l.includes('pct') ||
+        l.includes('avg') ||
+        l.includes('rate') ||
+        l.includes('ratio') ||
+        l.includes('rating') ||
+        l.includes('/g') ||
+        l.includes(' per ') ||
+        l.includes('ppg') ||
+        l.includes('rpg') ||
+        l.includes('apg') ||
+        l.includes('spg') ||
+        l.includes('bpg') ||
+        l.includes('topg') ||
+        l.includes('yds/g')
+    );
+};
+
+const getGamesPlayedFromStats = (stats: TeamStatItem[], fallback = 0): number => {
+    const gpStat = stats.find(s => {
+        const label = s.label.toLowerCase();
+        return label === 'games played' || label === 'games' || label === 'gp';
+    });
+
+    const gpVal = gpStat ? parseStatNumber(gpStat.value) : 0;
+    if (gpVal > 0) return gpVal;
+
+    const wins = stats.find(s => s.label.toLowerCase() === 'wins');
+    const losses = stats.find(s => s.label.toLowerCase() === 'losses');
+    const ties = stats.find(s => s.label.toLowerCase() === 'ties');
+    const wlTotal = parseStatNumber(wins?.value || '0') + parseStatNumber(losses?.value || '0') + parseStatNumber(ties?.value || '0');
+    if (wlTotal > 0) return wlTotal;
+
+    return fallback;
+};
+
+const normalizeStatsToPerGame = (stats: TeamStatItem[], fallbackGp = 0): TeamStatItem[] => {
+    if (stats.length === 0) return stats;
+
+    const gp = getGamesPlayedFromStats(stats, fallbackGp);
+    if (gp <= 1) return stats;
+
+    return stats.map((item) => {
+        const lower = item.label.toLowerCase();
+        const raw = parseStatNumber(item.value);
+        const isNumeric = Number.isFinite(raw);
+        if (!isNumeric) return item;
+        if (shouldSumAcrossSeasons(lower)) return item;
+        if (isRateLikeLabel(lower)) return item;
+
+        const threshold = getPerGameThreshold(lower);
+        if (Math.abs(raw) <= threshold) return item;
+
+        const perGame = raw / gp;
+        const signed = lower.includes('differential');
+        const value = signed && perGame > 0 ? `+${perGame.toFixed(1)}` : perGame.toFixed(1);
+        return { ...item, value };
+    });
+};
+
+const normalizeStatsToPerGameStrict = (stats: TeamStatItem[], fallbackGp = 0): TeamStatItem[] => {
+    if (stats.length === 0) return stats;
+
+    const gp = getGamesPlayedFromStats(stats, fallbackGp);
+    if (gp <= 1) return stats;
+
+    return stats.map((item) => {
+        const lower = item.label.toLowerCase();
+        const raw = parseStatNumber(item.value);
+        if (!Number.isFinite(raw)) return item;
+        if (shouldSumAcrossSeasons(lower)) return item;
+        if (isRateLikeLabel(lower) || item.value.includes('%')) return item;
+
+        const perGame = raw / gp;
+        const signed = lower.includes('differential') || lower.includes('margin');
+        const value = signed && perGame > 0 ? `+${perGame.toFixed(1)}` : perGame.toFixed(1);
+        return { ...item, value };
+    });
+};
+
+const dedupeStatsByCategoryLabel = (stats: TeamStatItem[]): TeamStatItem[] => {
+    const deduped = new Map<string, TeamStatItem>();
+    stats.forEach((item) => {
+        const key = `${item.category || 'General'}|${item.label.toLowerCase()}`;
+        if (!deduped.has(key)) deduped.set(key, item);
+    });
+    return Array.from(deduped.values());
+};
+
+const inferStatCategory = (stat: TeamStatItem): string => {
+    if (stat.category && stat.category.trim()) return stat.category;
+    const label = stat.label.toLowerCase();
+    if (label.includes('opponent') || label.includes('allowed') || label.includes('against')) return 'Opponent';
+    if (label.includes('differential') || label.includes('margin')) return 'Differential';
+    if (label.includes('field goal') || label.includes('rebound') || label.includes('assist') || label.includes('turnover') || label.includes('yards') || label.includes('point')) return 'Team';
+    return 'General';
+};
+
+const toCanonicalSeasonStats = (stats: TeamStatItem[], fallbackGp = 0, sport?: Sport): TeamStatItem[] => {
+    const normalized = normalizeStatsToPerGame(stats, fallbackGp);
+    const deduped = new Map<string, TeamStatItem>();
+
+    normalized.forEach((stat) => {
+        const rawCategory = (stat.category || 'General').trim() || 'General';
+        const canonicalLabel = sport
+            ? (normalizeLabel(stat.label, rawCategory, sport) || stat.label)
+            : stat.label;
+
+        const categoryHint = sport ? cleanCategory(rawCategory, sport) : rawCategory;
+        const canonicalStat: TeamStatItem = { ...stat, label: canonicalLabel, category: categoryHint };
+        let category = inferStatCategory(canonicalStat);
+        const labelLower = canonicalLabel.toLowerCase();
+
+        if (labelLower.includes('opponent') || labelLower.includes('allowed') || labelLower.includes('against')) {
+            category = 'Opponent';
+        } else if (labelLower.includes('differential') || labelLower.includes('margin')) {
+            category = 'Differential';
+        } else if (categoryHint && categoryHint !== 'General') {
+            category = categoryHint;
+        }
+
+        const key = `${category}|${canonicalLabel.toLowerCase()}`;
+        if (!deduped.has(key)) {
+            deduped.set(key, { ...stat, label: canonicalLabel, category });
+        }
+    });
+
+    return Array.from(deduped.values());
+};
+
+const hasCoreInternalStats = (sport: Sport, stats: TeamStatItem[]): boolean => {
+    if (stats.length < 6) return false;
+    const labels = new Set(stats.map(s => s.label.toLowerCase()));
+    const has = (label: string) => labels.has(label.toLowerCase());
+
+    if (['NBA', 'WNBA', 'NCAAM', 'NCAAW'].includes(sport)) {
+        return has('points') && has('rebounds') && has('field goal %');
+    }
+    if (['NFL', 'NCAAF'].includes(sport)) {
+        return has('points') && has('opponent points') && (has('total yards') || has('passing yards'));
+    }
+    if (sport === 'MLB') {
+        return has('runs') || has('era');
+    }
+    if (sport === 'NHL') {
+        return has('goals') && has('goals against');
+    }
+    return stats.length >= 8;
+};
+
+const shouldSumAcrossSeasons = (label: string): boolean => {
+    const l = label.toLowerCase();
+    return (
+        l.includes('win') ||
+        l.includes('loss') ||
+        l.includes('tie') ||
+        l === 'games' ||
+        l === 'games played'
+    );
+};
+
+const hasMeaningfulPostseasonStats = (post: TeamStatItem[], reg: TeamStatItem[]): boolean => {
+    if (post.length === 0) return false;
+    const postGames = (() => {
+        const gp = post.find(s => s.label.toLowerCase() === 'games played' || s.label.toLowerCase() === 'games');
+        return gp ? parseStatNumber(gp.value) : 0;
+    })();
+    if (postGames > 0) return true;
+
+    const regMap = new Map(reg.map(s => [s.label.toLowerCase(), s.value]));
+    return post.some(s => {
+        const label = s.label.toLowerCase();
+        const postVal = parseStatNumber(s.value);
+        const regVal = parseStatNumber(regMap.get(label) || '0');
+        return Math.abs(postVal - regVal) > 0.001 && postVal !== 0;
+    });
+};
+
+type SeasonStatDetailLevel = 'canonical' | 'full';
+
+const getMinDetailedCoverage = (sport: Sport): number => {
+    if (['NFL', 'NCAAF', 'NBA', 'WNBA', 'NCAAM', 'NCAAW'].includes(sport)) return 14;
+    if (['NHL', 'MLB'].includes(sport)) return 10;
+    return 8;
+};
+
+const applyDerivedRanks = (sport: Sport, stats: TeamStatItem[]): TeamStatItem[] => {
+    if (!Array.isArray(stats) || stats.length === 0) return [];
+    return stats.map((item) => {
+        if (!item || !item.label) return item;
+        if (typeof item.rank === 'number' && item.rank > 0) return item;
+        const derived = calculateDerivedRank(sport, item.label, String(item.value ?? ''));
+        return derived > 0 ? { ...item, rank: derived } : item;
+    });
+};
+
+const parseComparableStatValue = (
+    value: string | number | undefined | null,
+    label?: string,
+): number | null => {
+    if (value === null || value === undefined) return null;
+    const raw = String(value).trim();
+    if (!raw) return null;
+    if (/[a-zA-Z]/.test(raw) && !raw.toLowerCase().includes('e')) return null;
+
+    const timeMatch = raw.match(/^\s*(\d+):(\d{2})(?::(\d{2}))?\s*$/);
+    if (timeMatch) {
+        if (timeMatch[3] !== undefined) {
+            const hours = parseInt(timeMatch[1], 10);
+            const minutes = parseInt(timeMatch[2], 10);
+            const seconds = parseInt(timeMatch[3], 10);
+            if (!Number.isFinite(hours) || !Number.isFinite(minutes) || !Number.isFinite(seconds)) return null;
+            return (hours * 60) + minutes + (seconds / 60);
+        }
+        const minutes = parseInt(timeMatch[1], 10);
+        const seconds = parseInt(timeMatch[2], 10);
+        if (!Number.isFinite(minutes) || !Number.isFinite(seconds)) return null;
+        return minutes + (seconds / 60);
+    }
+
+    const pairedMatch = raw.match(/^\s*(-?\d+(?:\.\d+)?)\s*[-/]\s*(-?\d+(?:\.\d+)?)\s*$/);
+    if (pairedMatch) {
+        const made = parseFloat(pairedMatch[1]);
+        const attempts = parseFloat(pairedMatch[2]);
+        if (!Number.isFinite(made) || !Number.isFinite(attempts)) return null;
+        if (attempts === 0) return 0;
+
+        const labelLower = String(label || '').toLowerCase();
+        const looksLikeRatePair =
+            labelLower.includes('%') ||
+            labelLower.includes('pct') ||
+            labelLower.includes('percent') ||
+            labelLower.includes('rate') ||
+            labelLower.includes('ratio') ||
+            labelLower.includes('completion') ||
+            labelLower.includes('conversions') ||
+            labelLower.includes('on target') ||
+            labelLower.includes('field goal') ||
+            labelLower.includes('free throw') ||
+            labelLower.includes('three point') ||
+            labelLower.includes('3-point') ||
+            labelLower.includes('3pt') ||
+            labelLower.includes('power play') ||
+            labelLower.includes('penalty kill');
+
+        if (!looksLikeRatePair) return null;
+        return (made / attempts) * 100;
+    }
+
+    const n = parseFloat(raw.replace(/,/g, '').replace('%', '').replace('+', ''));
+    if (!Number.isFinite(n)) return null;
+    if (raw.includes('%') && Math.abs(n) <= 1) return n * 100;
+    return n;
+};
+
+const isInverseRankLabel = (label: string): boolean => {
+    const l = String(label || '').toLowerCase();
+    if (!l) return false;
+    if (l.includes('differential') || l.includes('margin')) return false;
+    if (l.includes('turnover differential') || l.includes('turnover margin')) return false;
+    if (l.includes('assist') && l.includes('turnover') && (l.includes('ratio') || l.includes('/'))) return false;
+    if (l.includes('allowed') || l.includes('against') || l.includes('opponent')) return true;
+    if (l.includes('turnover') || l.includes('interception')) return true;
+    if (l.includes('foul') || l.includes('penalt') || l.includes('card')) return true;
+    if (l.includes('giveaway') || l.includes('error') || l.includes('sack yards lost')) return true;
+    if (l === 'era') return true;
+    if (l.includes('loss')) return true;
+    return false;
+};
+
+const buildLeagueRankMaps = (leagueStatsByTeam: Record<string, TeamStatItem[]>) => {
+    const byFullKey = new Map<string, Map<string, number>>();
+    const byLabelOnly = new Map<string, Map<string, number>>();
+    const samplesByFullKey = new Map<string, { teamId: string; value: number; label: string }[]>();
+    const samplesByLabelOnly = new Map<string, { teamId: string; value: number; label: string }[]>();
+
+    Object.entries(leagueStatsByTeam).forEach(([teamId, stats]) => {
+        if (!Array.isArray(stats)) return;
+        stats.forEach((stat) => {
+            if (!stat?.label) return;
+            const parsed = parseComparableStatValue(stat.value, stat.label);
+            if (parsed === null) return;
+            const label = stat.label.trim();
+            const category = (stat.category || 'General').trim();
+            const fullKey = `${category.toLowerCase()}|${label.toLowerCase()}`;
+            if (!samplesByFullKey.has(fullKey)) samplesByFullKey.set(fullKey, []);
+            samplesByFullKey.get(fullKey)!.push({ teamId, value: parsed, label });
+
+            const labelOnlyKey = label.toLowerCase();
+            if (!samplesByLabelOnly.has(labelOnlyKey)) samplesByLabelOnly.set(labelOnlyKey, []);
+            samplesByLabelOnly.get(labelOnlyKey)!.push({ teamId, value: parsed, label });
+        });
+    });
+
+    const rankSamples = (samples: { teamId: string; value: number; label: string }[], inverse: boolean): Map<string, number> => {
+        const sorted = [...samples].sort((a, b) => {
+            if (inverse) return a.value - b.value;
+            return b.value - a.value;
+        });
+        const ranks = new Map<string, number>();
+        let prevVal: number | null = null;
+        let prevRank = 0;
+        sorted.forEach((entry, idx) => {
+            const rank = (prevVal !== null && Math.abs(entry.value - prevVal) < 1e-9) ? prevRank : (idx + 1);
+            prevVal = entry.value;
+            prevRank = rank;
+            if (!ranks.has(entry.teamId)) ranks.set(entry.teamId, rank);
+        });
+        return ranks;
+    };
+
+    samplesByFullKey.forEach((samples, fullKey) => {
+        if (samples.length < 2) return;
+        const inverse = isInverseRankLabel(samples[0].label);
+        byFullKey.set(fullKey, rankSamples(samples, inverse));
+    });
+
+    samplesByLabelOnly.forEach((samples, labelOnlyKey) => {
+        if (samples.length < 2) return;
+        const inverse = isInverseRankLabel(samples[0].label);
+        byLabelOnly.set(labelOnlyKey, rankSamples(samples, inverse));
+    });
+
+    return { byFullKey, byLabelOnly };
+};
+
+const applyInternalLeagueRanks = (
+    sport: Sport,
+    teamId: string,
+    stats: TeamStatItem[],
+): TeamStatItem[] => {
+    if (!Array.isArray(stats) || stats.length === 0) return [];
+    const rawLeagueStatsByTeam = getInternalTeamStatsBySport(sport);
+    if (!rawLeagueStatsByTeam || Object.keys(rawLeagueStatsByTeam).length < 2) return stats;
+
+    const leagueStatsByTeam: Record<string, TeamStatItem[]> = {};
+    Object.entries(rawLeagueStatsByTeam).forEach(([id, teamStats]) => {
+        const prepared = dedupeStatsByCategoryLabel(
+            (Array.isArray(teamStats) ? teamStats : [])
+                .filter((item) => item && item.label)
+                .map((item) => {
+                    const rawCategory = (item.category || '').trim();
+                    const category = rawCategory || inferStatCategory(item);
+                    return { ...item, category };
+                }),
+        );
+        leagueStatsByTeam[id] = normalizeDetailedStatsForDisplay(prepared, sport);
+    });
+
+    const { byFullKey, byLabelOnly } = buildLeagueRankMaps(leagueStatsByTeam);
+    return stats.map((item) => {
+        if (!item?.label) return item;
+        const fullKey = `${(item.category || 'General').toLowerCase()}|${item.label.toLowerCase()}`;
+        const labelOnlyKey = item.label.toLowerCase();
+        const rankFromFull = byFullKey.get(fullKey)?.get(teamId);
+        const rankFromLabel = byLabelOnly.get(labelOnlyKey)?.get(teamId);
+        const empiricalRank = rankFromFull ?? rankFromLabel;
+        if (empiricalRank && empiricalRank > 0) {
+            return { ...item, rank: empiricalRank };
+        }
+        return item;
+    });
+};
+
+export const fetchTeamSeasonStats = async (
+    sport: Sport,
+    teamId: string,
+    seasonType: number = 2,
+    year?: number,
+    ignoreCache: boolean = false,
+    fallbackData?: any,
+    detailLevel: SeasonStatDetailLevel = 'canonical',
+): Promise<TeamStatItem[]> => {
+    await ensureInternalSportLoaded(sport);
+
     const seedKey = `${sport}-${teamId}`;
     const endpoint = ESPN_ENDPOINTS[sport];
+    const internalStats = (!year && seasonType === 2) ? getInternalTeamStats(sport, teamId) : [];
+    const isFullDetail = detailLevel === 'full';
+    const minDetailedCoverage = getMinDetailedCoverage(sport);
+
+    // Use internal snapshot first when coverage is sufficient (and cache is allowed).
+    if (!ignoreCache && internalStats.length > 0) {
+        if (isFullDetail) {
+            // Internal DB team stats are already stored as per-game season averages.
+            const normalizedInternalDetailed = normalizeDetailedStatsForDisplay(
+                dedupeStatsByCategoryLabel(internalStats),
+                sport,
+            );
+            const hasSufficientInternalDetail =
+                normalizedInternalDetailed.length >= minDetailedCoverage ||
+                hasCoreInternalStats(sport, normalizedInternalDetailed);
+            if (hasSufficientInternalDetail) {
+                const ranked = applyInternalLeagueRanks(sport, teamId, applyDerivedRanks(sport, normalizedInternalDetailed));
+                return annotateStatsProvenance(sport, ranked, 'internal_db', year);
+            }
+        } else if (hasCoreInternalStats(sport, internalStats)) {
+            const ranked = applyInternalLeagueRanks(sport, teamId, applyDerivedRanks(sport, toCanonicalSeasonStats(internalStats, 0, sport)));
+            return annotateStatsProvenance(sport, ranked, 'internal_db', year);
+        }
+    }
     
-    if (!ignoreCache && !year && seasonType === 2) {
+    if (!isFullDetail && !ignoreCache && !year && seasonType === 2) {
         try {
             const cached = await getTeamStats(sport, teamId);
             const hasData = cached && cached.stats && cached.stats.length > 0 && cached.stats.some(s => s.label === 'Points' || s.label === 'Wins');
             if (hasData) {
-                return cached.stats;
+                const normalizedCached = toCanonicalSeasonStats(cached.stats, 0, sport);
+                const hasSufficientCoverage = normalizedCached.length >= minDetailedCoverage || hasCoreInternalStats(sport, normalizedCached);
+                if (hasSufficientCoverage) {
+                    const ranked = applyInternalLeagueRanks(sport, teamId, applyDerivedRanks(sport, normalizedCached));
+                    return annotateStatsProvenance(sport, ranked, 'cached', year);
+                }
             }
         } catch (e) {}
     }
 
     let stats: TeamStatItem[] = [];
+    let statsSource: TeamStatItem['source'] = 'espn_api';
     let derivedGP = 0;
 
-    // 1. Fetch Summary INDEPENDENTLY to get specific GP
-    try {
-        const summaryUrl = `https://site.api.espn.com/apis/site/v2/sports/${endpoint}/teams/${teamId}`;
-        const sumRes = await fetchWithRetry(summaryUrl, 1);
-        if (sumRes.ok) {
-            const sumData = await sumRes.json();
-            const recordStr = sumData.team?.record?.items?.[0]?.summary; 
-            derivedGP = getGPFromRecord(recordStr);
+    // 1. Fetch Summary for regular season GP fallback.
+    if (seasonType === 2) {
+        try {
+            const summaryUrl = `https://site.api.espn.com/apis/site/v2/sports/${endpoint}/teams/${teamId}`;
+            const sumRes = await fetchWithRetry(summaryUrl, 1);
+            if (sumRes.ok) {
+                const sumData = await sumRes.json();
+                const recordStr = sumData.team?.record?.items?.[0]?.summary; 
+                derivedGP = getGPFromRecord(recordStr);
+            }
+        } catch (e) {
+            console.warn("Could not derive GP from summary", e);
         }
-    } catch (e) {
-        console.warn("Could not derive GP from summary", e);
     }
     
     try {
@@ -350,37 +886,56 @@ export const fetchTeamSeasonStats = async (sport: Sport, teamId: string, seasonT
                 v3Data.categories.forEach((cat: any) => {
                     if (cat.totals && cat.labels && cat.totals.length === cat.labels.length) {
                         const rawCatName = cat.displayName || cat.name || 'General';
-                        const uiCategory = cleanCategory(rawCatName, sport);
+                        const uiCategory = isFullDetail ? rawCatName : cleanCategory(rawCatName, sport);
                         
                         cat.labels.forEach((label: string, idx: number) => {
-                            let finalLabel = normalizeLabel(label, rawCatName, sport);
-                            if (!finalLabel) return; 
+                            const rawLabel = String(label || '').trim();
+                            if (!rawLabel) return;
+
+                            let finalLabel = normalizeLabel(rawLabel, rawCatName, sport);
+                            if (!finalLabel) {
+                                if (!isFullDetail || shouldDropDetailedLabel(rawLabel)) return;
+                                finalLabel = rawLabel;
+                            }
 
                             const valStr = normalizeStat(cat.totals[idx]);
                             let valNum = parseFloat(valStr.replace(/,/g, '').replace('%', ''));
                             if (isNaN(valNum)) valNum = 0;
 
-                            let rankVal = valNum;
-                            
-                            // Robust check for Total vs Avg using thresholds and confirmed GP
-                            // If it looks like a total AND we have a valid GP > 1, divide it.
-                            if (isTotalValue(valNum, finalLabel) && finalGP > 1) {
-                                valNum = valNum / finalGP;
-                                rankVal = valNum;
-                            }
+                            const normalizedLabelLooksRate = isRateLikeLabel(finalLabel);
+                            const sourceLabelLooksRate = isSourceAverageLabel(rawLabel);
+                            const valueLooksPercent = valStr.includes('%') || finalLabel.includes('%');
+                            const threshold = getPerGameThreshold(finalLabel);
 
-                            // Format display value
+                            const shouldAveragePerGame =
+                                !normalizedLabelLooksRate &&
+                                !sourceLabelLooksRate &&
+                                !valueLooksPercent &&
+                                finalGP > 1 &&
+                                Math.abs(valNum) > threshold;
+                            const normalizedValue = shouldAveragePerGame ? (valNum / finalGP) : valNum;
+                            const rankVal = normalizedValue;
+
                             let displayValue = valStr;
-                            const labelLower = finalLabel.toLowerCase();
-                            
-                            // Re-format if we converted to average OR if it was already an avg
-                            if (isTotalValue(parseFloat(valStr.replace(/,/g, '')), finalLabel) || labelLower.includes('opponent') || labelLower.includes('avg')) {
-                                displayValue = valNum.toFixed(1);
+                            if (Number.isFinite(normalizedValue)) {
+                                if (valueLooksPercent || normalizedLabelLooksRate || sourceLabelLooksRate) {
+                                    displayValue = valueLooksPercent ? `${normalizedValue.toFixed(1)}%` : normalizedValue.toFixed(1);
+                                } else {
+                                    // Team cards should display season stats as per-game averages for counting stats.
+                                    displayValue = normalizedValue.toFixed(1);
+                                }
                             }
 
                             const apiRank = calculateDerivedRank(sport, finalLabel, String(rankVal));
 
-                            if (!stats.some(s => s.label.toLowerCase() === finalLabel!.toLowerCase())) {
+                            const exists = stats.some(s => {
+                                const sameLabel = s.label.toLowerCase() === finalLabel!.toLowerCase();
+                                if (!sameLabel) return false;
+                                if (!isFullDetail) return true;
+                                return (s.category || 'General').toLowerCase() === (uiCategory || 'General').toLowerCase();
+                            });
+
+                            if (!exists) {
                                 stats.push({
                                     label: finalLabel,
                                     value: displayValue,
@@ -394,14 +949,21 @@ export const fetchTeamSeasonStats = async (sport: Sport, teamId: string, seasonT
             }
         }
     } catch (e) {
-        if (SEEDED_STATS[seedKey] && stats.length === 0) stats = SEEDED_STATS[seedKey];
+        if (SEEDED_STATS[seedKey] && stats.length === 0) {
+            stats = SEEDED_STATS[seedKey];
+            statsSource = 'fallback_standings';
+        }
     }
     
     if (stats.length < 3) {
         let summaryStats: TeamStatItem[] = [];
         
-        if (fallbackData) {
+        if (internalStats.length > 0) {
+            summaryStats = internalStats;
+            statsSource = 'internal_db';
+        } else if (fallbackData) {
             summaryStats = convertStandingsToStats(fallbackData, sport);
+            statsSource = 'fallback_standings';
         } else if (!year && seasonType === 2) {
             try {
                 const summaryUrl = `https://site.api.espn.com/apis/site/v2/sports/${endpoint}/teams/${teamId}`;
@@ -421,6 +983,7 @@ export const fetchTeamSeasonStats = async (sport: Sport, teamId: string, seasonT
                                 wins: statsObj.wins,
                                 losses: statsObj.losses
                             }, sport);
+                            statsSource = 'fallback_standings';
                         }
                     }
                 }
@@ -428,7 +991,13 @@ export const fetchTeamSeasonStats = async (sport: Sport, teamId: string, seasonT
         }
 
         summaryStats.forEach(sumStat => {
-            if (!stats.some(s => s.label === sumStat.label)) {
+            const exists = stats.some(s => {
+                const sameLabel = s.label.toLowerCase() === sumStat.label.toLowerCase();
+                if (!sameLabel) return false;
+                if (!isFullDetail) return true;
+                return (s.category || 'General').toLowerCase() === (sumStat.category || 'General').toLowerCase();
+            });
+            if (!exists) {
                 stats.push(sumStat);
             }
         });
@@ -468,32 +1037,176 @@ export const fetchTeamSeasonStats = async (sport: Sport, teamId: string, seasonT
         });
     }
 
-    stats.forEach(item => {
-        if (['Points', 'Rebounds', 'Field Goal %', 'Assists', 'Blocks', 'Steals', 'Turnovers', 'Total Yards', 'Passing Yards', 'Rushing Yards', 'First Downs', '3-Point %'].includes(item.label)) {
-            item.category = 'Team';
-        }
-        else if (item.label.startsWith('Opponent') || item.label.includes('Allowed')) {
-            item.category = 'Opponent';
-        }
-        else if (item.label.includes('Differential')) {
-            item.category = 'Differential';
-        }
-        else if (item.label.includes('Punt') || item.label.includes('Kick')) {
-            item.category = 'Special Teams';
-        }
-    });
-    
-    if (!year && seasonType === 2 && stats.length > 0) {
+    if (!isFullDetail) {
+        stats.forEach(item => {
+            if (['Points', 'Rebounds', 'Field Goal %', 'Assists', 'Blocks', 'Steals', 'Turnovers', 'Total Yards', 'Passing Yards', 'Rushing Yards', 'First Downs', '3-Point %'].includes(item.label)) {
+                item.category = 'Team';
+            }
+            else if (item.label.startsWith('Opponent') || item.label.includes('Allowed')) {
+                item.category = 'Opponent';
+            }
+            else if (item.label.includes('Differential')) {
+                item.category = 'Differential';
+            }
+            else if (item.label.includes('Punt') || item.label.includes('Kick')) {
+                item.category = 'Special Teams';
+            }
+        });
+    }
+
+    const normalizedStats = isFullDetail
+        ? (() => {
+            // Full-detail values are already normalized during extraction (or come from internal DB).
+            return normalizeDetailedStatsForDisplay(dedupeStatsByCategoryLabel(stats), sport);
+        })()
+        : toCanonicalSeasonStats(stats, derivedGP, sport);
+    const rankedNormalizedStats = applyInternalLeagueRanks(sport, teamId, applyDerivedRanks(sport, normalizedStats));
+    const rankedWithProvenance = annotateStatsProvenance(sport, rankedNormalizedStats, statsSource, year);
+
+    if (!isFullDetail && !year && seasonType === 2 && rankedWithProvenance.length > 0) {
         saveStatsBatch([{
             id: seedKey,
             sport,
             teamId,
-            stats,
+            stats: rankedWithProvenance,
             timestamp: Date.now()
         }]).catch(() => {});
     }
 
-    return stats;
+    return rankedWithProvenance;
+};
+
+export const fetchTeamCurrentSeasonStats = async (
+    sport: Sport,
+    teamId: string,
+    fallbackData?: any,
+    forceRefresh = false,
+): Promise<TeamStatItem[]> => {
+    const regular = toCanonicalSeasonStats(
+        await fetchTeamSeasonStats(sport, teamId, 2, undefined, forceRefresh, fallbackData),
+        0,
+        sport,
+    );
+    if (!PLAYOFF_MERGE_SPORTS.has(sport)) return regular;
+
+    try {
+        const postseason = await fetchTeamSeasonStats(sport, teamId, 3, undefined, true);
+        if (!hasMeaningfulPostseasonStats(postseason, regular)) return regular;
+        const merged = toCanonicalSeasonStats(
+            mergeSeasonStats(regular, postseason, getDefaultSeasonGames(sport)),
+            0,
+            sport,
+        );
+
+        if (merged.length > 0) {
+            saveStatsBatch([{
+                id: `${sport}-${teamId}`,
+                sport,
+                teamId,
+                stats: merged,
+                timestamp: Date.now(),
+            }]).catch(() => {});
+        }
+
+        return merged;
+    } catch {
+        return regular;
+    }
+};
+
+const mergeSeasonStatsByCategory = (reg: TeamStatItem[], post: TeamStatItem[], defaultRegGP: number = 1): TeamStatItem[] => {
+    let gpReg = getGamesPlayedFromStats(reg, defaultRegGP);
+    if (gpReg === 0 && reg.length > 0) gpReg = defaultRegGP;
+
+    let gpPost = getGamesPlayedFromStats(post, 0);
+    if (gpPost === 0 && post.length > 0) gpPost = 1;
+
+    if (gpPost === 0) return reg;
+
+    const keyOf = (item: TeamStatItem): string => `${(item.category || 'General').toLowerCase()}|${item.label.toLowerCase()}`;
+    const regMap = new Map(reg.map(item => [keyOf(item), item]));
+    const postMap = new Map(post.map(item => [keyOf(item), item]));
+    const keys = new Set<string>([...regMap.keys(), ...postMap.keys()]);
+    const totalGP = gpReg + gpPost;
+    const merged: TeamStatItem[] = [];
+
+    keys.forEach((key) => {
+        const rItem = regMap.get(key);
+        const pItem = postMap.get(key) || (rItem ? post.find(p => p.label.toLowerCase() === rItem.label.toLowerCase()) : undefined);
+        const base = rItem || pItem;
+        if (!base) return;
+
+        if (!rItem || !pItem) {
+            merged.push(base);
+            return;
+        }
+
+        const labelLower = base.label.toLowerCase();
+        const vReg = parseStatNumber(rItem.value);
+        const vPost = parseStatNumber(pItem.value);
+        if (!Number.isFinite(vReg) || !Number.isFinite(vPost)) {
+            merged.push(base);
+            return;
+        }
+
+        const mergedValue = shouldSumAcrossSeasons(labelLower)
+            ? (vReg + vPost)
+            : (totalGP > 0 ? ((vReg * gpReg) + (vPost * gpPost)) / totalGP : vReg);
+
+        const isPct = base.value.includes('%') || labelLower.includes('pct') || labelLower.includes('%') || labelLower.includes('rate');
+        const formatted = isPct
+            ? `${mergedValue.toFixed(1)}%`
+            : shouldSumAcrossSeasons(labelLower)
+                ? Math.round(mergedValue).toString()
+                : mergedValue.toFixed(1);
+
+        merged.push({
+            ...base,
+            value: formatted,
+            rank: rItem.rank,
+        });
+    });
+
+    return merged.sort((a, b) => {
+        const catCmp = (a.category || 'General').localeCompare(b.category || 'General');
+        if (catCmp !== 0) return catCmp;
+        return a.label.localeCompare(b.label);
+    });
+};
+
+export const fetchTeamCurrentSeasonStatsDetailed = async (
+    sport: Sport,
+    teamId: string,
+    fallbackData?: any,
+    forceRefresh = false,
+): Promise<TeamStatItem[]> => {
+    const regular = await fetchTeamSeasonStats(
+        sport,
+        teamId,
+        2,
+        undefined,
+        forceRefresh,
+        fallbackData,
+        'full',
+    );
+    if (!PLAYOFF_MERGE_SPORTS.has(sport)) return regular;
+
+    try {
+        const postseason = await fetchTeamSeasonStats(
+            sport,
+            teamId,
+            3,
+            undefined,
+            true,
+            undefined,
+            'full',
+        );
+
+        if (!hasMeaningfulPostseasonStats(postseason, regular)) return regular;
+        return mergeSeasonStatsByCategory(regular, postseason, getDefaultSeasonGames(sport));
+    } catch {
+        return regular;
+    }
 };
 
 // ... (autoSyncLeagueStats, syncFullDatabase, getStoredLeagueStats, fetchTeamProfile, fetchTeamSchedule, fetchTeamStatistics exports remain unchanged)
@@ -521,7 +1234,7 @@ export const autoSyncLeagueStats = async (
             const chunk = teamIds.slice(i, i + CHUNK_SIZE);
             const promises = chunk.map(id => {
                 const fallback = standingsMap?.get(id);
-                return fetchTeamSeasonStats(sport, id, 2, undefined, force, fallback);
+                return fetchTeamCurrentSeasonStats(sport, id, fallback, force);
             });
             
             try {
@@ -583,48 +1296,113 @@ export const syncFullDatabase = async (onProgress?: (percent: number) => void) =
     if (onProgress) onProgress(100);
 };
 
+const toDetailedLeagueStats = (stats: TeamStatItem[], sport: Sport): TeamStatItem[] => {
+    if (!Array.isArray(stats) || stats.length === 0) return [];
+    const prepared = dedupeStatsByCategoryLabel(
+        stats
+            .filter((item) => item && item.label)
+            .map((item) => {
+                const rawCategory = (item.category || '').trim();
+                const category = rawCategory || inferStatCategory(item);
+                return { ...item, category };
+            }),
+    );
+    return normalizeDetailedStatsForDisplay(prepared, sport);
+};
+
 export const getStoredLeagueStats = async (
     sport: Sport, 
     teams: { id: string, name: string, logo?: string }[],
     fallbackMap?: Map<string, any>
 ): Promise<{ rows: LeagueStatRow[], lastUpdated: number | null }> => {
+    await ensureInternalSportLoaded(sport);
+
     let storedRecords = await getStatsBySport(sport);
     const storedMap = new Map(storedRecords.map(r => [r.teamId, r]));
+    const internalGeneratedAtMs = Date.parse(getInternalDatabaseGeneratedAt()) || 0;
+
+    teams.forEach((team) => {
+        const internalStats = getInternalTeamStats(sport, team.id);
+        if (internalStats.length > 0) {
+            const detailedInternalStats = toDetailedLeagueStats(internalStats, sport);
+            const existing = storedMap.get(team.id);
+            const existingCount = existing?.stats?.length || 0;
+            const shouldReplace =
+                !existing ||
+                detailedInternalStats.length > existingCount ||
+                ((internalGeneratedAtMs || 0) > (existing?.timestamp || 0));
+
+            if (shouldReplace) {
+                storedMap.set(team.id, {
+                    id: `${sport}-${team.id}`,
+                    sport,
+                    teamId: team.id,
+                    stats: detailedInternalStats,
+                    timestamp: internalGeneratedAtMs || Date.now(),
+                });
+            }
+        }
+    });
+
     const missingIds: string[] = [];
     const rows: LeagueStatRow[] = [];
     let newestTimestamp = 0;
 
     teams.forEach(team => {
         let record = storedMap.get(team.id);
+        let needsHydration = false;
+        const minDetailedStats = ['NFL', 'NCAAF', 'NBA', 'WNBA', 'NCAAM', 'NCAAW'].includes(sport) ? 8 : 5;
+
+        if (record?.stats) {
+            record.stats = toDetailedLeagueStats(record.stats, sport);
+        }
         
-        const hasRealStats = record && record.stats && record.stats.length > 2 && record.stats.some(s => s.label === 'Points');
+        const hasRealStats = !!(
+            record &&
+            record.stats &&
+            (
+                record.stats.length >= minDetailedStats ||
+                hasCoreInternalStats(sport, record.stats)
+            )
+        );
         
         if (!hasRealStats) {
+            needsHydration = true;
             if (fallbackMap && fallbackMap.has(team.id)) {
-                const fallbackStats = convertStandingsToStats(fallbackMap.get(team.id), sport);
+                const fallbackStats = toDetailedLeagueStats(convertStandingsToStats(fallbackMap.get(team.id), sport), sport);
                 
                 if (!record) {
                     record = { id: `${sport}-${team.id}`, sport, teamId: team.id, stats: fallbackStats, timestamp: Date.now() };
-                    missingIds.push(team.id);
                 } else {
                     fallbackStats.forEach(fb => {
-                        if (!record!.stats.some(s => s.label === fb.label)) {
+                        if (!record!.stats.some(s =>
+                            s.label.toLowerCase() === fb.label.toLowerCase() &&
+                            (s.category || 'General').toLowerCase() === (fb.category || 'General').toLowerCase()
+                        )) {
                             record!.stats.push(fb);
                         }
                     });
                 }
             } else if (SEEDED_STATS[`${sport}-${team.id}`]) {
-                record = { id: `${sport}-${team.id}`, sport, teamId: team.id, stats: SEEDED_STATS[`${sport}-${team.id}`], timestamp: Date.now() };
+                record = {
+                    id: `${sport}-${team.id}`,
+                    sport,
+                    teamId: team.id,
+                    stats: toDetailedLeagueStats(SEEDED_STATS[`${sport}-${team.id}`], sport),
+                    timestamp: Date.now()
+                };
             }
+        }
+
+        if (needsHydration && !missingIds.includes(team.id)) {
+            missingIds.push(team.id);
         }
 
         if (record) {
             if (record.timestamp > newestTimestamp) newestTimestamp = record.timestamp;
             const statsMap: Record<string, string> = {};
-            record.stats.forEach(s => {
-                statsMap[`${s.category || 'General'}|${s.label}`] = s.value; 
-                statsMap[`${s.label}`] = s.value; 
-                statsMap[`General|${s.label}`] = s.value; 
+            toDetailedLeagueStats(record.stats, sport).forEach(s => {
+                statsMap[`${s.category || 'General'}|${s.label}`] = s.value;
             });
             rows.push({ team: { id: team.id, name: team.name, logo: team.logo }, stats: statsMap, ranks: {} });
         }
@@ -637,6 +1415,44 @@ export const getStoredLeagueStats = async (
     return { rows, lastUpdated: newestTimestamp };
 };
 
+export const getStoredTeamSeasonStats = async (
+    sport: Sport,
+    team: { id: string; name: string; logo?: string },
+    fallbackStats?: any,
+): Promise<TeamStatItem[]> => {
+    const fallbackMap = fallbackStats ? new Map<string, any>([[team.id, fallbackStats]]) : undefined;
+    const { rows } = await getStoredLeagueStats(sport, [team], fallbackMap);
+    const row = rows.find((r) => r.team.id === team.id);
+    if (!row) return [];
+
+    const output = Object.entries(row.stats || {}).map(([fullKey, value]) => {
+        const separatorIndex = fullKey.indexOf('|');
+        let category = separatorIndex >= 0 ? fullKey.slice(0, separatorIndex) : 'General';
+        let label = separatorIndex >= 0 ? fullKey.slice(separatorIndex + 1) : fullKey;
+        const rank = row.ranks?.[fullKey];
+
+        if (sport === 'NCAAF' && label.toLowerCase() === 'rushing yards allowed') {
+            label = 'Rushing Yards';
+            category = 'Offense';
+        }
+
+        return {
+            label,
+            value,
+            category: category || 'General',
+            rank: typeof rank === 'number' && rank > 0 ? rank : undefined,
+            source: 'internal_db' as const,
+        };
+    });
+
+    const ranked = applyInternalLeagueRanks(sport, team.id, output);
+    return ranked.sort((a, b) => {
+        const categoryCompare = String(a.category || 'General').localeCompare(String(b.category || 'General'));
+        if (categoryCompare !== 0) return categoryCompare;
+        return a.label.localeCompare(b.label);
+    });
+};
+
 export const fetchTeamProfile = async (sport: Sport, teamId: string): Promise<TeamProfile | null> => {
     const endpoint = ESPN_ENDPOINTS[sport];
     const baseUrl = `https://site.api.espn.com/apis/site/v2/sports/${endpoint}/teams/${teamId}`;
@@ -644,9 +1460,10 @@ export const fetchTeamProfile = async (sport: Sport, teamId: string): Promise<Te
     const isUSSport = ['NBA', 'NFL', 'NHL', 'MLB', 'WNBA'].includes(sport);
 
     try {
-        const [response, standingsGroups] = await Promise.all([
+        const [response, standingsGroups, nationalRank] = await Promise.all([
             fetchWithRetry(`${baseUrl}?${params.toString()}`),
-            fetchStandings(sport, 'DIVISION') 
+            fetchStandings(sport, 'DIVISION'),
+            fetchNCAATeamRank(sport, teamId),
         ]);
 
         if (!response.ok) return null;
@@ -673,12 +1490,13 @@ export const fetchTeamProfile = async (sport: Sport, teamId: string): Promise<Te
             }
         }
 
-        const seasonStats = await fetchTeamSeasonStats(sport, teamId, 2, undefined, false, fallbackStats);
+        const seasonStats = await fetchTeamCurrentSeasonStats(sport, teamId, fallbackStats);
 
         return {
             id: t.id, 
             location: normalizeLocation(t, sport), 
             name: t.displayName || formatTeamName(t, sport),
+            rank: nationalRank,
             abbreviation: t.abbreviation, 
             displayName: t.displayName, 
             color: t.color ? `#${t.color}` : undefined, 
@@ -695,17 +1513,32 @@ export const fetchTeamProfile = async (sport: Sport, teamId: string): Promise<Te
 };
 
 export const fetchTeamSchedule = async (sport: Sport, teamId: string): Promise<Game[]> => {
+    await ensureInternalSportLoaded(sport);
+
+    const internal = getInternalTeamSchedule(sport, teamId);
+    if (internal.length > 0) {
+        return internal.filter((game) => !shouldHideUndeterminedPlayoffGame(game));
+    }
+
     const endpoint = ESPN_ENDPOINTS[sport];
     const baseUrl = `https://site.api.espn.com/apis/site/v2/sports/${endpoint}/teams/${teamId}/schedule`;
     try {
         const response = await fetchWithRetry(baseUrl);
         if (!response.ok) return [];
         const data = await response.json();
-        return (data.events || []).map((e: any) => mapEventToGame(e, sport));
+        return (data.events || [])
+            .map((e: any) => mapEventToGame(e, sport))
+            .filter((game: Game) => !shouldHideUndeterminedPlayoffGame(game));
     } catch { return []; }
 };
 
 export const fetchTeamStatistics = async (sport: Sport, teamId: string): Promise<TeamStatistics | null> => {
+    await ensureInternalSportLoaded(sport);
+    const internalPlayerStats = getInternalTeamPlayerStats(sport, teamId);
+    if (internalPlayerStats.length > 0) {
+        return { categories: internalPlayerStats };
+    }
+
     const endpoint = ESPN_ENDPOINTS[sport];
     const baseUrl = `https://site.web.api.espn.com/apis/common/v3/sports/${endpoint}/teams/${teamId}/statistics`;
     try {
@@ -734,11 +1567,7 @@ export const fetchTeamStatistics = async (sport: Sport, teamId: string): Promise
     } catch { return null; }
 };
 
-const groupRegex = (obj: any) => {
-    return new RegExp(''); 
-};
-
-// Robust Merger: Always produces Average per Game for Volume Stats
+// Merge regular + postseason stat feeds into one current-season per-game set.
 const mergeSeasonStats = (reg: TeamStatItem[], post: TeamStatItem[], defaultRegGP: number = 1): TeamStatItem[] => {
     const getVal = (items: TeamStatItem[], label: string) => {
         const item = items.find(i => i.label.toLowerCase() === label.toLowerCase());
@@ -753,93 +1582,51 @@ const mergeSeasonStats = (reg: TeamStatItem[], post: TeamStatItem[], defaultRegG
     if (gpPost === 0 && post.length > 0) gpPost = 1;
 
     const totalGP = gpReg + gpPost;
-    
-    // If no postseason data, just return regular season
+
     if (gpPost === 0) return reg;
 
     const merged: TeamStatItem[] = [];
-    const processedLabels = new Set<string>();
-
-    // 2. Define Stats to Normalize as Averages
-    const AVG_KEYS = [
-        'points', 'points against', 'points for', 'opp points', 'opponent points',
-        'yards', 'passing yards', 'rushing yards', 'receiving yards', 'total yards',
-        'rebounds', 'assists', 'steals', 'blocks', 'turnovers',
-        'field goals made', 'field goals attempted',
-        '3-pointers made', '3-pointers attempted',
-        'free throws made', 'free throws attempted',
-        'sacks', 'interceptions',
-        'goals', 'goals for', 'goals against', 'saves', 'shots',
-        'passing avg', 'rushing avg'
-    ];
-    const AVG_LABELS = new Set(AVG_KEYS);
 
     reg.forEach(rItem => {
-        processedLabels.add(rItem.label);
         const pItem = post.find(p => p.label === rItem.label);
         const labelLower = rItem.label.toLowerCase();
-        
-        let newVal = 0;
+
         const vReg = parseFloat(rItem.value.replace(/,/g, '').replace('%', ''));
-        
+        if (isNaN(vReg)) {
+            merged.push(rItem);
+            return;
+        }
+
+        let newVal = vReg;
+
         if (!pItem) {
-            // Only have regular season data
-            // If it's a volume stat that looks like a total, convert to average for consistency
-            if (AVG_LABELS.has(labelLower) && isTotalValue(vReg, labelLower)) { 
-                 newVal = vReg / gpReg;
-            } else {
-                 newVal = vReg;
-            }
+            newVal = vReg;
         } else {
             const vPost = parseFloat(pItem.value.replace(/,/g, '').replace('%', ''));
-            
             if (isNaN(vReg) || isNaN(vPost)) {
                 merged.push(rItem);
                 return;
             }
 
-            const isPct = rItem.value.includes('%') || labelLower.includes('pct') || labelLower.includes('%');
-            const isExplicitAvg = labelLower.includes('avg') || labelLower.includes('per') || labelLower.includes('rating');
-            
-            // Logic A: Volume Stats -> Always convert to Average
-            if (AVG_LABELS.has(labelLower)) {
-                let regTotal = vReg;
-                let postTotal = vPost;
-
-                // Detect if source is Average or Total using generic thresholds
-                // We assume if it's NOT a total value (based on our function), it IS an average.
-                const isRegAvg = !isTotalValue(vReg, labelLower);
-                const isPostAvg = !isTotalValue(vPost, labelLower);
-
-                if (isRegAvg) regTotal = vReg * gpReg;
-                if (isPostAvg) postTotal = vPost * gpPost;
-
-                const grandTotal = regTotal + postTotal;
-                newVal = totalGP > 0 ? grandTotal / totalGP : 0;
-
-            } else if (isExplicitAvg || isPct) {
-                // Logic B: Already Averages/Rates -> Weighted Average
-                newVal = ((vReg * gpReg) + (vPost * gpPost)) / totalGP;
+            if (labelLower.includes('rank')) {
+                newVal = vReg;
+            } else if (shouldSumAcrossSeasons(labelLower)) {
+                newVal = vReg + vPost;
             } else {
-                // Logic C: Count Stats (e.g. Wins, Losses) -> Sum
-                // Unless it's explicitly 'Rank', then keep Reg.
-                if (labelLower.includes('rank')) newVal = vReg;
-                else newVal = vReg + vPost;
+                // Keep everything else as a GP-weighted season average.
+                newVal = totalGP > 0 ? ((vReg * gpReg) + (vPost * gpPost)) / totalGP : vReg;
             }
         }
 
         const isPct = rItem.value.includes('%') || labelLower.includes('pct') || labelLower.includes('%');
         let valStr = '';
-        
+
         if (isPct) {
             valStr = newVal.toFixed(1) + '%';
+        } else if (shouldSumAcrossSeasons(labelLower)) {
+            valStr = Math.round(newVal).toString();
         } else {
-            // Volume Stats converted to average should show decimals
-            if (AVG_LABELS.has(labelLower)) {
-                valStr = newVal.toFixed(1);
-            } else {
-                valStr = rItem.value.includes('.') ? newVal.toFixed(1) : Math.round(newVal).toString();
-            }
+            valStr = newVal.toFixed(1);
         }
 
         merged.push({

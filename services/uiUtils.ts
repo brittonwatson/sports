@@ -2,25 +2,86 @@
 import { ScoringPlay, Play, Sport, SOCCER_LEAGUES } from '../types';
 
 export const getTeamColor = (primary: string | undefined, alternate: string | undefined, isDarkMode: boolean): string => {
-    const defaultColor = isDarkMode ? '#e5e5e5' : '#171717'; 
-    
-    if (!primary) return defaultColor;
+    const defaultColor = isDarkMode ? '#e5e7eb' : '#171717';
 
-    const p = primary.toLowerCase().replace('#', '');
-    const a = alternate ? alternate.toLowerCase().replace('#', '') : null;
+    const normalizeHex = (value?: string): string | null => {
+        if (!value) return null;
+        const trimmed = value.trim().replace('#', '');
+        if (/^[0-9a-fA-F]{3}$/.test(trimmed)) {
+            return trimmed.split('').map((c) => `${c}${c}`).join('').toLowerCase();
+        }
+        if (/^[0-9a-fA-F]{6}$/.test(trimmed)) return trimmed.toLowerCase();
+        return null;
+    };
 
-    const isBlack = p === '000000';
-    const isWhite = p === 'ffffff';
+    const hexToRgb = (hex: string): { r: number; g: number; b: number } => ({
+        r: parseInt(hex.slice(0, 2), 16),
+        g: parseInt(hex.slice(2, 4), 16),
+        b: parseInt(hex.slice(4, 6), 16),
+    });
 
-    if (isDarkMode && isBlack) {
-        return a && a !== '000000' ? `#${a}` : '#ffffff';
+    const rgbToHex = (rgb: { r: number; g: number; b: number }): string =>
+        `#${[rgb.r, rgb.g, rgb.b].map((n) => Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, '0')).join('')}`;
+
+    const srgbToLinear = (channel: number): number => {
+        const c = channel / 255;
+        return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+    };
+
+    const luminance = (hex: string): number => {
+        const { r, g, b } = hexToRgb(hex);
+        const rl = srgbToLinear(r);
+        const gl = srgbToLinear(g);
+        const bl = srgbToLinear(b);
+        return (0.2126 * rl) + (0.7152 * gl) + (0.0722 * bl);
+    };
+
+    const mixTowardWhite = (hex: string, amount: number): string => {
+        const clamped = Math.max(0, Math.min(1, amount));
+        const { r, g, b } = hexToRgb(hex);
+        return rgbToHex({
+            r: r + ((255 - r) * clamped),
+            g: g + ((255 - g) * clamped),
+            b: b + ((255 - b) * clamped),
+        });
+    };
+
+    const primaryHex = normalizeHex(primary);
+    const alternateHex = normalizeHex(alternate);
+    if (!primaryHex) return defaultColor;
+
+    const isBlack = primaryHex === '000000';
+    const isWhite = primaryHex === 'ffffff';
+
+    if (!isDarkMode) {
+        if (isWhite) return alternateHex ? `#${alternateHex}` : '#000000';
+        return `#${primaryHex}`;
     }
-    
-    if (!isDarkMode && isWhite) {
-        return a && a !== 'ffffff' ? `#${a}` : '#000000';
+
+    let candidate = primaryHex;
+    if (isBlack) {
+        candidate = alternateHex && alternateHex !== '000000' ? alternateHex : 'ffffff';
     }
 
-    return primary;
+    const candidateLum = luminance(candidate);
+    const alternateLum = alternateHex ? luminance(alternateHex) : 0;
+
+    if (alternateHex && alternateHex !== candidate && alternateLum > candidateLum + 0.06) {
+        candidate = alternateHex;
+    }
+
+    // Ensure accent colors remain visible on dark surfaces.
+    let finalColor = `#${candidate}`;
+    let finalLum = luminance(candidate);
+    if (finalLum < 0.20) {
+        finalColor = mixTowardWhite(candidate, 0.28);
+        finalLum = luminance(normalizeHex(finalColor) || candidate);
+    }
+    if (finalLum < 0.28) {
+        finalColor = mixTowardWhite(normalizeHex(finalColor) || candidate, 0.42);
+    }
+
+    return finalColor;
 };
 
 export const getRankColor = (rank: number | undefined) => {

@@ -42,6 +42,7 @@ export const mapEventToGame = (event: any, sport: Sport, leagueLogo?: string): G
     return {
         id: event.id,
         homeTeam: formatTeamName(homeComp?.team, sport),
+        homeTeamAbbreviation: homeComp?.team?.abbreviation,
         homeTeamId: homeComp?.team?.id,
         homeTeamLogo: homeComp?.team?.logo || homeComp?.team?.logos?.[0]?.href,
         homeTeamRank: (homeRank > 0 && homeRank !== 99) ? homeRank : undefined,
@@ -50,6 +51,7 @@ export const mapEventToGame = (event: any, sport: Sport, leagueLogo?: string): G
         homeScore: normalizeStat(homeComp?.score),
         
         awayTeam: formatTeamName(awayComp?.team, sport),
+        awayTeamAbbreviation: awayComp?.team?.abbreviation,
         awayTeamId: awayComp?.team?.id,
         awayTeamLogo: awayComp?.team?.logo || awayComp?.team?.logos?.[0]?.href,
         awayTeamRank: (awayRank > 0 && awayRank !== 99) ? awayRank : undefined,
@@ -76,6 +78,8 @@ export const mapEventToGame = (event: any, sport: Sport, leagueLogo?: string): G
         location: location,
         weather: event.weather?.displayValue,
         temperature: event.weather?.temperature ? `${event.weather.temperature}°` : undefined,
+        seasonYear: event.season?.year,
+        seasonType: event.season?.type,
         
         situation: sport === 'NFL' || sport === 'NCAAF' ? (event.competitions?.[0]?.situation ? {
              down: event.competitions[0].situation.down,

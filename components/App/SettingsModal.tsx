@@ -24,9 +24,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   useEffect(() => {
     if (isOpen && !user && googleButtonRef.current) {
-      // @ts-ignore
       if (window.google) {
-        // @ts-ignore
         window.google.accounts.id.renderButton(googleButtonRef.current, {
           theme: isDarkMode ? 'filled_black' : 'outline',
           size: 'large',

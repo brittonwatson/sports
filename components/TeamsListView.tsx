@@ -3,6 +3,7 @@ import React, { useState, useMemo } from 'react';
 import { StandingsGroup, Sport, Standing } from '../types';
 import { LOCAL_TEAMS } from '../data/teams';
 import { ChevronRight, Filter, ChevronDown, Check } from 'lucide-react';
+import { getTeamAbbreviation } from '../services/teamAbbreviation';
 
 interface TeamsListViewProps {
     groups: StandingsGroup[];
@@ -41,7 +42,12 @@ export const TeamsListView: React.FC<TeamsListViewProps> = ({ groups, sport, onT
                     team: {
                         id: t.id,
                         name: t.name,
-                        abbreviation: t.name.substring(0, 3).toUpperCase(),
+                        abbreviation: getTeamAbbreviation({
+                            league: sport,
+                            teamId: t.id,
+                            teamName: t.name,
+                            providedAbbreviation: t.abbreviation,
+                        }),
                         logo: t.logo
                     },
                     rank: idx + 1,

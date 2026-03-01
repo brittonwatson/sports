@@ -1,0 +1,603 @@
+Bundesliga	Accurate Crosses
+Bundesliga	Accurate Long Balls
+Bundesliga	Accurate Passes
+Bundesliga	Blocked Shots
+Bundesliga	Clearances
+Bundesliga	Corner Kicks
+Bundesliga	Cross %
+Bundesliga	Crosses
+Bundesliga	Effective Clearances
+Bundesliga	Effective Tackles
+Bundesliga	Fouls
+Bundesliga	Games Played
+Bundesliga	Interceptions
+Bundesliga	Long Balls
+Bundesliga	Long Balls %
+Bundesliga	Losses
+Bundesliga	Offsides
+Bundesliga	On Target %
+Bundesliga	Opponent Points
+Bundesliga	Pass Completion %
+Bundesliga	Passes
+Bundesliga	Penalty Goals
+Bundesliga	Penalty Kicks Taken
+Bundesliga	Points
+Bundesliga	Points Differential
+Bundesliga	Possession %
+Bundesliga	Red Cards
+Bundesliga	Saves
+Bundesliga	Shots
+Bundesliga	Shots On Target
+Bundesliga	Tackle %
+Bundesliga	Tackles
+Bundesliga	Ties
+Bundesliga	Wins
+Bundesliga	Yellow Cards
+EPL	Accurate Crosses
+EPL	Accurate Long Balls
+EPL	Accurate Passes
+EPL	Blocked Shots
+EPL	Clearances
+EPL	Corner Kicks
+EPL	Cross %
+EPL	Crosses
+EPL	Effective Clearances
+EPL	Effective Tackles
+EPL	Fouls
+EPL	Games Played
+EPL	Interceptions
+EPL	Long Balls
+EPL	Long Balls %
+EPL	Losses
+EPL	Offsides
+EPL	On Target %
+EPL	Opponent Points
+EPL	Pass Completion %
+EPL	Passes
+EPL	Penalty Goals
+EPL	Penalty Kicks Taken
+EPL	Points
+EPL	Points Differential
+EPL	Possession %
+EPL	Red Cards
+EPL	Saves
+EPL	Shots
+EPL	Shots On Target
+EPL	Tackle %
+EPL	Tackles
+EPL	Ties
+EPL	Wins
+EPL	Yellow Cards
+La Liga	Accurate Crosses
+La Liga	Accurate Long Balls
+La Liga	Accurate Passes
+La Liga	Blocked Shots
+La Liga	Clearances
+La Liga	Corner Kicks
+La Liga	Cross %
+La Liga	Crosses
+La Liga	Effective Clearances
+La Liga	Effective Tackles
+La Liga	Fouls
+La Liga	Games Played
+La Liga	Interceptions
+La Liga	Long Balls
+La Liga	Long Balls %
+La Liga	Losses
+La Liga	Offsides
+La Liga	On Target %
+La Liga	Opponent Points
+La Liga	Pass Completion %
+La Liga	Passes
+La Liga	Penalty Goals
+La Liga	Penalty Kicks Taken
+La Liga	Points
+La Liga	Points Differential
+La Liga	Possession %
+La Liga	Red Cards
+La Liga	Saves
+La Liga	Shots
+La Liga	Shots On Target
+La Liga	Tackle %
+La Liga	Tackles
+La Liga	Ties
+La Liga	Wins
+La Liga	Yellow Cards
+Ligue 1	Accurate Crosses
+Ligue 1	Accurate Long Balls
+Ligue 1	Accurate Passes
+Ligue 1	Blocked Shots
+Ligue 1	Clearances
+Ligue 1	Corner Kicks
+Ligue 1	Cross %
+Ligue 1	Crosses
+Ligue 1	Effective Clearances
+Ligue 1	Effective Tackles
+Ligue 1	Fouls
+Ligue 1	Games Played
+Ligue 1	Interceptions
+Ligue 1	Long Balls
+Ligue 1	Long Balls %
+Ligue 1	Losses
+Ligue 1	Offsides
+Ligue 1	On Target %
+Ligue 1	Opponent Points
+Ligue 1	Pass Completion %
+Ligue 1	Passes
+Ligue 1	Penalty Goals
+Ligue 1	Penalty Kicks Taken
+Ligue 1	Points
+Ligue 1	Points Differential
+Ligue 1	Possession %
+Ligue 1	Red Cards
+Ligue 1	Saves
+Ligue 1	Shots
+Ligue 1	Shots On Target
+Ligue 1	Tackle %
+Ligue 1	Tackles
+Ligue 1	Ties
+Ligue 1	Wins
+Ligue 1	Yellow Cards
+MLB	Assists
+MLB	At Bats
+MLB	At Bats Per Home Run
+MLB	Balks
+MLB	Balls In Play Average
+MLB	Balls In Zone
+MLB	Batter Rating
+MLB	Batters Faced
+MLB	Batters Hit
+MLB	Batting Average
+MLB	Blown Saves
+MLB	Catcher Interference
+MLB	Caught Stealing
+MLB	Caught Stealing Percentage
+MLB	Cheap Wins
+MLB	Complete Games
+MLB	Defensive Wins Above Replacement
+MLB	Double Plays
+MLB	Doubles
+MLB	Earned Run Average
+MLB	Earned Runs
+MLB	Earned runs
+MLB	Errors
+MLB	Extra Base Hits
+MLB	Extra Bases
+MLB	Fielding Percentage
+MLB	Finishes
+MLB	Fly Balls
+MLB	Full Innings
+MLB	Game Score
+MLB	Game Winning RBIs
+MLB	Games Played
+MLB	Games Started
+MLB	Grand Slam Home Runs
+MLB	Ground Balls
+MLB	Ground Into Double Play
+MLB	Ground To Fly Ball Ratio
+MLB	Hit By Pitch
+MLB	Hits
+MLB	Holds
+MLB	Home Runs
+MLB	Inherited Runners
+MLB	Inherited Runners Scored
+MLB	Innings pitched
+MLB	Intentional Walks
+MLB	Is Qualified
+MLB	Is Qualified In Steals
+MLB	Isolated Power
+MLB	Losses
+MLB	MLB Rating
+MLB	OBP Pct + SLG Pct
+MLB	Offensive Wins Above Replacement
+MLB	On Base Percentage
+MLB	Opponent Batting Average
+MLB	Opponent Points
+MLB	Opponent's OPB Pct + SLG Pct
+MLB	Opponent's On-base pct.
+MLB	Opponent's Slugging pct.
+MLB	Opportunities
+MLB	Outfield Assists
+MLB	Outs Made
+MLB	Outs On Field
+MLB	Part Innings Played
+MLB	Partial Innings
+MLB	Passed Balls
+MLB	Patience Ratio
+MLB	Perfect Games
+MLB	Pickoff Attempts
+MLB	Pickoffs
+MLB	Pinch At Bats
+MLB	Pinch Hit Average
+MLB	Pinch Hits
+MLB	Pitch Count
+MLB	Pitches
+MLB	Pitches As Starter
+MLB	Pitches Per Inning
+MLB	Pitches Per Plate Appearance
+MLB	Pitches Per Start
+MLB	Plate Appearances
+MLB	Player Rating
+MLB	Points
+MLB	Points Differential
+MLB	Projected Home Runs
+MLB	Putouts
+MLB	Qualified
+MLB	Qualified Catcher
+MLB	Qualified Pitcher
+MLB	Quality Starts
+MLB	Range Factor
+MLB	Run Support
+MLB	Run Support Average
+MLB	Runners Left On Base
+MLB	Runs
+MLB	Runs Batted In
+MLB	Runs Created
+MLB	Runs Created Per 27 Outs
+MLB	Runs Produced
+MLB	Runs Ratio
+MLB	Sacrifice Bunts
+MLB	Sacrifice Flies
+MLB	Sacrifice Hit
+MLB	Save Opportunities
+MLB	Save Opportunities Per Win
+MLB	Save Percentage
+MLB	Saves
+MLB	Secondary Average
+MLB	Secondary Average Minus Batting Average
+MLB	Shutouts
+MLB	Slugging Percentage
+MLB	Stolen Base Percentage
+MLB	Stolen Bases
+MLB	Stolen Bases Allowed
+MLB	Strike To Pitch Ratio
+MLB	Strikeout To Walk Ratio
+MLB	Strikeouts
+MLB	Strikeouts Per 9 Innings
+MLB	Strikes
+MLB	Successful Chances
+MLB	TP
+MLB	Team Games Played
+MLB	Third Innings Pitched
+MLB	Third Innings Played
+MLB	Ties
+MLB	Total Bases
+MLB	Total Chances
+MLB	Tough Losses
+MLB	Triples
+MLB	Walk To Strikeout Ratio
+MLB	Walks
+MLB	Walks Per Plate Appearance
+MLB	Walks Plus Hits Per Inning Pitched
+MLB	Wild Pitches
+MLB	Win Percentage
+MLB	Wins
+MLB	Wins Above Replacement
+MLB	Zone Rating
+MLS	Accurate Crosses
+MLS	Accurate Long Balls
+MLS	Accurate Passes
+MLS	Blocked Shots
+MLS	Clearances
+MLS	Corner Kicks
+MLS	Cross %
+MLS	Crosses
+MLS	Effective Clearances
+MLS	Effective Tackles
+MLS	Fouls
+MLS	Games Played
+MLS	Interceptions
+MLS	Long Balls
+MLS	Long Balls %
+MLS	Losses
+MLS	Offsides
+MLS	On Target %
+MLS	Opponent Points
+MLS	Pass Completion %
+MLS	Passes
+MLS	Penalty Goals
+MLS	Penalty Kicks Taken
+MLS	Points
+MLS	Points Differential
+MLS	Possession %
+MLS	Red Cards
+MLS	Saves
+MLS	Shots
+MLS	Shots On Target
+MLS	Tackle %
+MLS	Tackles
+MLS	Ties
+MLS	Wins
+MLS	Yellow Cards
+NBA	3-Pointers Attempted
+NBA	3-Pointers Made
+NBA	Assists
+NBA	Blocks
+NBA	Defensive Rebounds
+NBA	Fast Break Points
+NBA	Field Goal %
+NBA	Field Goals Attempted
+NBA	Field Goals Made
+NBA	Flagrant Fouls
+NBA	Fouls
+NBA	Free Throw %
+NBA	Free Throws Attempted
+NBA	Free Throws Made
+NBA	Games Played
+NBA	Largest Lead
+NBA	Lead Change
+NBA	Lead Changes
+NBA	Losses
+NBA	Offensive Rebounds
+NBA	Opponent Points
+NBA	Percent Led
+NBA	Points
+NBA	Points Conceded Off Turnovers
+NBA	Points Differential
+NBA	Points in Paint
+NBA	Rebounds
+NBA	Steals
+NBA	Team Turnovers
+NBA	Technical Fouls
+NBA	Three Point %
+NBA	Ties
+NBA	Total Technical Fouls
+NBA	Total Turnovers
+NBA	Turnovers
+NBA	Wins
+NCAAF	1st Downs
+NCAAF	3rd Down Attempts
+NCAAF	3rd Down Conversions
+NCAAF	4th Down Attempts
+NCAAF	4th Down Conversions
+NCAAF	Fumbles Lost
+NCAAF	Games Played
+NCAAF	Interceptions Thrown
+NCAAF	Losses
+NCAAF	Opponent Points
+NCAAF	Pass Attempts
+NCAAF	Pass Completions
+NCAAF	Passing Yards
+NCAAF	Penalties
+NCAAF	Penalty Yards
+NCAAF	Points
+NCAAF	Points Differential
+NCAAF	Possession Minutes
+NCAAF	Rushing Attempts
+NCAAF	Rushing Yards
+NCAAF	Total Yards
+NCAAF	Turnovers
+NCAAF	Wins
+NCAAF	Yards per Pass
+NCAAF	Yards per Rush
+NCAAM	3-Pointers Attempted
+NCAAM	3-Pointers Made
+NCAAM	Assists
+NCAAM	Blocks
+NCAAM	Defensive Rebounds
+NCAAM	Fast Break Points
+NCAAM	Field Goal %
+NCAAM	Field Goals Attempted
+NCAAM	Field Goals Made
+NCAAM	Flagrant Fouls
+NCAAM	Fouls
+NCAAM	Free Throw %
+NCAAM	Free Throws Attempted
+NCAAM	Free Throws Made
+NCAAM	Games Played
+NCAAM	Largest Lead
+NCAAM	Lead Change
+NCAAM	Lead Changes
+NCAAM	Losses
+NCAAM	Offensive Rebounds
+NCAAM	Opponent Points
+NCAAM	Percent Led
+NCAAM	Points
+NCAAM	Points Conceded Off Turnovers
+NCAAM	Points Differential
+NCAAM	Points in Paint
+NCAAM	Rebounds
+NCAAM	Steals
+NCAAM	Team Turnovers
+NCAAM	Technical Fouls
+NCAAM	Three Point %
+NCAAM	Ties
+NCAAM	Total Technical Fouls
+NCAAM	Total Turnovers
+NCAAM	Turnovers
+NCAAM	Wins
+NCAAW	3-Pointers Attempted
+NCAAW	3-Pointers Made
+NCAAW	Assists
+NCAAW	Blocks
+NCAAW	Defensive Rebounds
+NCAAW	Fast Break Points
+NCAAW	Field Goal %
+NCAAW	Field Goals Attempted
+NCAAW	Field Goals Made
+NCAAW	Fouls
+NCAAW	Free Throw %
+NCAAW	Free Throws Attempted
+NCAAW	Free Throws Made
+NCAAW	Games Played
+NCAAW	Largest Lead
+NCAAW	Lead Change
+NCAAW	Lead Changes
+NCAAW	Losses
+NCAAW	Offensive Rebounds
+NCAAW	Opponent Points
+NCAAW	Percent Led
+NCAAW	Points
+NCAAW	Points Conceded Off Turnovers
+NCAAW	Points Differential
+NCAAW	Points in Paint
+NCAAW	Rebounds
+NCAAW	Steals
+NCAAW	Team Turnovers
+NCAAW	Technical Fouls
+NCAAW	Three Point %
+NCAAW	Ties
+NCAAW	Total Technical Fouls
+NCAAW	Total Turnovers
+NCAAW	Turnovers
+NCAAW	Wins
+NFL	1st Downs
+NFL	3rd Down Attempts
+NFL	3rd Down Conversions
+NFL	4th Down Attempts
+NFL	4th Down Conversions
+NFL	Defensive / Special Teams TDs
+NFL	Fumbles Lost
+NFL	Games Played
+NFL	Interceptions Thrown
+NFL	Losses
+NFL	Opponent Points
+NFL	Pass Attempts
+NFL	Pass Completions
+NFL	Passing 1st Downs
+NFL	Passing Yards
+NFL	Penalties
+NFL	Penalty 1st Downs
+NFL	Penalty Yards
+NFL	Points
+NFL	Points Differential
+NFL	Possession Minutes
+NFL	Red Zone Attempts
+NFL	Red Zone Conversions
+NFL	Rushing 1st Downs
+NFL	Rushing Attempts
+NFL	Rushing Yards
+NFL	Sack Yards Lost
+NFL	Sacks Allowed
+NFL	Ties
+NFL	Total Drives
+NFL	Total Plays
+NFL	Total Yards
+NFL	Turnovers
+NFL	Wins
+NFL	Yards per Pass
+NFL	Yards per Play
+NFL	Yards per Rush
+NHL	Blocked Shots
+NHL	Faceoff Win %
+NHL	Faceoffs Won
+NHL	Games Played
+NHL	Giveaways
+NHL	Hits
+NHL	Losses
+NHL	Opponent Points
+NHL	Penalties
+NHL	Penalty Minutes
+NHL	Points
+NHL	Points Differential
+NHL	Power Play %
+NHL	Power Play Goals
+NHL	Power Play Opportunities
+NHL	Shootout Goals
+NHL	Short-Handed Goals
+NHL	Shots
+NHL	Takeaways
+NHL	Ties
+NHL	Wins
+Serie A	Accurate Crosses
+Serie A	Accurate Long Balls
+Serie A	Accurate Passes
+Serie A	Blocked Shots
+Serie A	Clearances
+Serie A	Corner Kicks
+Serie A	Cross %
+Serie A	Crosses
+Serie A	Effective Clearances
+Serie A	Effective Tackles
+Serie A	Fouls
+Serie A	Games Played
+Serie A	Interceptions
+Serie A	Long Balls
+Serie A	Long Balls %
+Serie A	Losses
+Serie A	Offsides
+Serie A	On Target %
+Serie A	Opponent Points
+Serie A	Pass Completion %
+Serie A	Passes
+Serie A	Penalty Goals
+Serie A	Penalty Kicks Taken
+Serie A	Points
+Serie A	Points Differential
+Serie A	Possession %
+Serie A	Red Cards
+Serie A	Saves
+Serie A	Shots
+Serie A	Shots On Target
+Serie A	Tackle %
+Serie A	Tackles
+Serie A	Ties
+Serie A	Wins
+Serie A	Yellow Cards
+UCL	Accurate Crosses
+UCL	Accurate Long Balls
+UCL	Accurate Passes
+UCL	Blocked Shots
+UCL	Clearances
+UCL	Corner Kicks
+UCL	Cross %
+UCL	Crosses
+UCL	Effective Clearances
+UCL	Effective Tackles
+UCL	Fouls
+UCL	Games Played
+UCL	Interceptions
+UCL	Long Balls
+UCL	Long Balls %
+UCL	Losses
+UCL	Offsides
+UCL	On Target %
+UCL	Opponent Points
+UCL	Pass Completion %
+UCL	Passes
+UCL	Penalty Goals
+UCL	Penalty Kicks Taken
+UCL	Points
+UCL	Points Differential
+UCL	Possession %
+UCL	Red Cards
+UCL	Saves
+UCL	Shots
+UCL	Shots On Target
+UCL	Tackle %
+UCL	Tackles
+UCL	Ties
+UCL	Wins
+UCL	Yellow Cards
+WNBA	3-Pointers Attempted
+WNBA	3-Pointers Made
+WNBA	Assists
+WNBA	Blocks
+WNBA	Defensive Rebounds
+WNBA	Fast Break Points
+WNBA	Field Goal %
+WNBA	Field Goals Attempted
+WNBA	Field Goals Made
+WNBA	Flagrant Fouls
+WNBA	Fouls
+WNBA	Free Throw %
+WNBA	Free Throws Attempted
+WNBA	Free Throws Made
+WNBA	Games Played
+WNBA	Largest Lead
+WNBA	Losses
+WNBA	Offensive Rebounds
+WNBA	Opponent Points
+WNBA	Points
+WNBA	Points Conceded Off Turnovers
+WNBA	Points Differential
+WNBA	Points in Paint
+WNBA	Rebounds
+WNBA	Steals
+WNBA	Team Turnovers
+WNBA	Technical Fouls
+WNBA	Three Point %
+WNBA	Total Technical Fouls
+WNBA	Total Turnovers
+WNBA	Turnovers
+WNBA	Wins

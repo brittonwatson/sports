@@ -3,10 +3,18 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "engines": {
+    "node": ">=20.11.0"
+  },
   "scripts": {
     "dev": "vite",
+    "start": "vite",
+    "typecheck": "tsc --noEmit",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "check": "npm run typecheck && npm run build",
+    "sync:internal-db": "node scripts/sync-internal-db.mjs",
+    "report:quality": "node scripts/report-model-quality.mjs"
   },
   "dependencies": {
     "recharts": "^3.6.0",

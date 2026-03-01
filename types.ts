@@ -4,6 +4,10 @@ export interface TeamStatItem {
   value: string;
   rank?: number;
   category?: string; // Added for grouping in detail view
+  source?: 'internal_db' | 'espn_api' | 'cached' | 'fallback_standings' | 'derived_schedule';
+  sampleSize?: number;
+  coverage?: number; // 0..1 where available
+  seasonYear?: number;
 }
 
 export interface GameSituation {
@@ -48,6 +52,7 @@ export interface StatCorrelation {
 export interface Game {
   id: string;
   homeTeam: string;
+  homeTeamAbbreviation?: string;
   homeTeamId?: string; // Added for possession matching
   homeTeamLogo?: string;
   homeTeamRank?: number;
@@ -55,6 +60,7 @@ export interface Game {
   homeTeamAlternateColor?: string;
   homeScore?: string;
   awayTeam: string;
+  awayTeamAbbreviation?: string;
   awayTeamId?: string; // Added for possession matching
   awayTeamLogo?: string;
   awayTeamRank?: number;
@@ -82,6 +88,8 @@ export interface Game {
   location?: string;
   weather?: string;
   temperature?: string;
+  seasonYear?: number;
+  seasonType?: number;
 }
 
 export interface FactorComparison {
@@ -315,6 +323,7 @@ export interface UserProfile {
 export interface TeamOption {
   id: string;
   name: string;
+  abbreviation?: string;
   logo?: string;
   league: Sport;
 }
@@ -338,6 +347,7 @@ export interface TeamProfile {
   id: string;
   location: string; // City/State/Country
   name: string; // Full Name
+  rank?: number;
   abbreviation: string;
   displayName: string;
   color?: string;

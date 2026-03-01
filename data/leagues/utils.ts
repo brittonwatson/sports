@@ -12,6 +12,7 @@ export const getLogo = (league: string, abbr: string, id: string, isSoccer = fal
 export const t = (league: Sport, name: string, abbr: string, id: string, isSoccer = false): TeamOption => ({
     id: id,
     name,
+    abbreviation: abbr,
     league,
     logo: getLogo(league, abbr, id, isSoccer)
 });

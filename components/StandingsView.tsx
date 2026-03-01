@@ -11,6 +11,7 @@ interface StandingsViewProps {
     onTypeChange?: (type: StandingsType) => void;
     onTeamClick?: (teamId: string, league: Sport) => void;
     isLoading?: boolean;
+    useApiRankForNCAA?: boolean;
 }
 
 // Config to determine where the cutoff line goes
@@ -34,7 +35,7 @@ const SHOW_CONF_RECORD_LEAGUES: Sport[] = ['NCAAF', 'NCAAM', 'NCAAW', 'WNBA', 'N
 // Sports eligible for the toggle
 const TOGGLE_ELIGIBLE_SPORTS: Sport[] = ['NFL', 'NBA', 'NHL', 'MLB', 'WNBA'];
 
-export const StandingsView: React.FC<StandingsViewProps> = ({ groups, sport, type = 'STANDINGS', activeType = 'PLAYOFF', onTypeChange, onTeamClick, isLoading = false }) => {
+export const StandingsView: React.FC<StandingsViewProps> = ({ groups, sport, type = 'STANDINGS', activeType = 'PLAYOFF', onTypeChange, onTeamClick, isLoading = false, useApiRankForNCAA = false }) => {
     const config = CUTOFF_CONFIG[sport];
     const isNCAA = sport.startsWith('NCAA');
     const isRankings = type === 'RANKINGS';
@@ -125,6 +126,12 @@ export const StandingsView: React.FC<StandingsViewProps> = ({ groups, sport, typ
                         // For Rankings view (e.g. AP Top 25), rely strictly on rank
                         if (isRankings) return a.rank - b.rank;
 
+                        // When the app requests NCAA Top-25 behavior inside standings views,
+                        // keep API rank ordering so teams are not reshuffled by conference records.
+                        if (isNCAA && useApiRankForNCAA) {
+                            return a.rank - b.rank;
+                        }
+
                         // For NCAA Conference Standings
                         if (isNCAA) {
                             // 1. Conference Winning Percentage
@@ -197,7 +204,7 @@ export const StandingsView: React.FC<StandingsViewProps> = ({ groups, sport, typ
                                 <tbody>
                                     {sortedStandings.map((team, idx) => {
                                         // Calculate display rank dynamically based on sort order if API rank looks unordered or if we re-sorted
-                                        const displayRank = isNCAA && !isRankings ? idx + 1 : team.rank;
+                                        const displayRank = isNCAA && !isRankings && !useApiRankForNCAA ? idx + 1 : team.rank;
                                         
                                         // Check if we need a cutoff border
                                         let borderClass = "border-b border-slate-100 dark:border-slate-800/40";

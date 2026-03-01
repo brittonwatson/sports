@@ -7,12 +7,14 @@ import { fetchPlayerProfile } from '../services/playerService';
 import { PredictionView } from './PredictionView';
 import { GroundingSources } from './GroundingSources';
 import { getScoringPlayPoints } from '../services/uiUtils';
+import { getGameTeamAbbreviation } from '../services/teamAbbreviation';
 
 // Modular Components
 import { FootballField } from './live/FootballField';
 import { BaseballDiamond } from './live/BaseballDiamond';
 import { ActiveLineupList } from './live/ActiveLineupList';
 import { ScoreboardTable } from './live/ScoreboardTable';
+import { CurrentBoxScore } from './live/CurrentBoxScore';
 
 interface LiveGameViewProps {
   game: Game;
@@ -58,8 +60,8 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({ game, gameDetails, p
   const isLive = game.status === 'in_progress';
   
   const stats = prediction?.stats;
-  const homeAbbr = game.homeTeam.substring(0, 3).toUpperCase();
-  const awayAbbr = game.awayTeam.substring(0, 3).toUpperCase();
+  const homeAbbr = getGameTeamAbbreviation(game, 'home');
+  const awayAbbr = getGameTeamAbbreviation(game, 'away');
 
   // Categorize Stats
   const categorizedStats = useMemo(() => {
@@ -259,7 +261,7 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({ game, gameDetails, p
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                  {/* A. Linescore / Summary */}
                  <div className="bg-white dark:bg-slate-900/40 rounded-2xl border border-slate-200 dark:border-slate-800 p-4 shadow-sm flex flex-col min-h-[220px]">
-                     <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3 flex items-center gap-2">
+                     <h4 className="text-xs font-bold text-slate-600 dark:text-slate-200 uppercase tracking-wider mb-3 flex items-center gap-2">
                          <Layout size={14} /> {isLive ? 'Live Scoring' : 'Final Score'}
                      </h4>
                      <div className="flex-1 flex flex-col justify-center">
@@ -285,29 +287,38 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({ game, gameDetails, p
                         gameDetails={gameDetails}
                         isDarkMode={isDarkMode} 
                         type={isBasketball ? 'BASKETBALL' : isHockey ? 'HOCKEY' : 'SOCCER'}
-                        onPlayerClick={onTeamClick ? undefined : (pid) => setSelectedPlayerId(pid)}
+                        onPlayerClick={(pid) => setSelectedPlayerId(pid)}
                      />
                  </div>
               </div>
 
-              {/* 3. Live Stats Grid */}
+              {/* 3. Current Box Score */}
+              {gameDetails?.boxscore && gameDetails.boxscore.length > 0 && (
+                  <CurrentBoxScore
+                      game={game}
+                      gameDetails={gameDetails}
+                      onPlayerClick={(pid) => setSelectedPlayerId(pid)}
+                  />
+              )}
+
+              {/* 4. Live Stats Grid */}
               {Object.keys(categorizedStats).length > 0 && (
                   <div className="bg-white dark:bg-slate-900/40 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm">
                       <div 
                           className="px-5 py-3 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center cursor-pointer bg-slate-50/50 dark:bg-slate-900/50 hover:bg-slate-100 dark:hover:bg-slate-800/80 transition-colors"
                           onClick={() => setShowLiveStats(!showLiveStats)}
                       >
-                          <h4 className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider flex items-center gap-2">
+                          <h4 className="text-xs font-bold text-slate-600 dark:text-slate-200 uppercase tracking-wider flex items-center gap-2">
                               <BarChart2 size={14} /> Live Team Stats
                           </h4>
-                          {showLiveStats ? <ChevronUp size={16} className="text-slate-400" /> : <ChevronDown size={16} className="text-slate-400" />}
+                          {showLiveStats ? <ChevronUp size={16} className="text-slate-500 dark:text-slate-300" /> : <ChevronDown size={16} className="text-slate-500 dark:text-slate-300" />}
                       </div>
                       
                       {showLiveStats && (
                           <div className="p-5 space-y-6 animate-fade-in">
                               {Object.entries(categorizedStats).map(([category, items]) => (
                                   <div key={category}>
-                                      <h5 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-3 pl-1 border-l-2 border-slate-200 dark:border-slate-700">{category}</h5>
+                                      <h5 className="text-[10px] font-bold text-slate-600 dark:text-slate-300 uppercase tracking-wider mb-3 pl-1 border-l-2 border-slate-300 dark:border-slate-600">{category}</h5>
                                       <div className="space-y-3">
                                           {items.map((stat, idx) => {
                                               const hVal = parseStatValue(stat.homeValue);
@@ -317,9 +328,9 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({ game, gameDetails, p
                                               
                                               return (
                                                   <div key={idx} className="flex items-center justify-between text-xs">
-                                                      <span className={`w-12 text-right font-mono ${aBold ? 'font-bold text-slate-900 dark:text-white' : 'text-slate-500 dark:text-slate-400'}`}>{stat.awayValue}</span>
-                                                      <span className="flex-1 text-center font-medium text-slate-600 dark:text-slate-300 px-2 truncate">{stat.label}</span>
-                                                      <span className={`w-12 text-left font-mono ${hBold ? 'font-bold text-slate-900 dark:text-white' : 'text-slate-500 dark:text-slate-400'}`}>{stat.homeValue}</span>
+                                                      <span className={`w-12 text-right font-mono ${aBold ? 'font-bold text-slate-900 dark:text-white' : 'text-slate-700 dark:text-slate-200'}`}>{stat.awayValue}</span>
+                                                      <span className="flex-1 text-center font-medium text-slate-700 dark:text-slate-200 px-2 truncate">{stat.label}</span>
+                                                      <span className={`w-12 text-left font-mono ${hBold ? 'font-bold text-slate-900 dark:text-white' : 'text-slate-700 dark:text-slate-200'}`}>{stat.homeValue}</span>
                                                   </div>
                                               );
                                           })}
@@ -331,10 +342,10 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({ game, gameDetails, p
                   </div>
               )}
 
-              {/* 4. Play by Play */}
+              {/* 5. Play by Play */}
               <div className="bg-white dark:bg-slate-900/40 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm">
                   <div className="px-5 py-3 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50 flex justify-between items-center">
-                      <h4 className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider flex items-center gap-2">
+                      <h4 className="text-xs font-bold text-slate-600 dark:text-slate-200 uppercase tracking-wider flex items-center gap-2">
                           <List size={14} /> Play-by-Play
                       </h4>
                       <div className="flex bg-slate-200 dark:bg-slate-800 rounded-lg p-0.5">
@@ -355,7 +366,7 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({ game, gameDetails, p
                   
                   <div className="max-h-[400px] overflow-y-auto custom-scrollbar">
                       {sortedPlays.length === 0 ? (
-                          <div className="p-8 text-center text-slate-400 text-xs italic">No plays available yet.</div>
+                          <div className="p-8 text-center text-slate-600 dark:text-slate-300 text-xs italic">No plays available yet.</div>
                       ) : (
                           <div className="divide-y divide-slate-100 dark:divide-slate-800/50">
                               {sortedPlays.map((play) => {
@@ -364,8 +375,8 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({ game, gameDetails, p
                                   return (
                                       <div key={play.id} className="p-4 hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors flex gap-4 items-start">
                                           <div className="flex flex-col items-center min-w-[40px] pt-1">
-                                              <span className="text-[10px] font-bold text-slate-400 font-mono">{play.clock}</span>
-                                              <span className="text-[9px] font-bold text-slate-300 dark:text-slate-600">Q{play.period}</span>
+                                              <span className="text-[10px] font-bold text-slate-500 dark:text-slate-300 font-mono">{play.clock}</span>
+                                              <span className="text-[9px] font-bold text-slate-500 dark:text-slate-400">Q{play.period}</span>
                                           </div>
                                           
                                           {/* Team Logo Column */}
@@ -379,7 +390,7 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({ game, gameDetails, p
 
                                           <div className="flex-1">
                                               {teamInfo && (
-                                                  <div className="text-[10px] font-bold text-slate-500 mb-0.5">{teamInfo.name}</div>
+                                                  <div className="text-[10px] font-bold text-slate-600 dark:text-slate-300 mb-0.5">{teamInfo.name}</div>
                                               )}
                                               <p className="text-xs text-slate-700 dark:text-slate-300 leading-relaxed font-medium">{play.text}</p>
                                               {((('scoringPlay' in play) && play.scoringPlay) || ('isHome' in play) || play.type?.toLowerCase().includes('score') || play.type?.toLowerCase().includes('goal') || pointsStr) && (

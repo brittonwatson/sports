@@ -1,0 +1,226 @@
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+html,
+body {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  touch-action: manipulation;
+}
+
+body {
+  margin: 0;
+}
+
+a,
+button,
+[role="button"],
+input,
+select,
+textarea,
+label {
+  touch-action: manipulation;
+}
+
+/* Dark-mode readability overrides:
+   The app uses many slate-500/600 utility classes that become too low-contrast
+   against dark backgrounds. These rules raise the floor for text contrast. */
+.dark .dark\:text-slate-700 {
+  color: #b8b8b8;
+}
+
+.dark .dark\:text-slate-600 {
+  color: #c7c7c7;
+}
+
+.dark .dark\:text-slate-500 {
+  color: #d5d5d5;
+}
+
+.dark .dark\:text-slate-400 {
+  color: #e2e2e2;
+}
+
+/* Fallback for places missing an explicit dark:text-* class. */
+.dark .text-slate-700:not([class*="dark:text-"]) {
+  color: #b3b3b3;
+}
+
+.dark .text-slate-600:not([class*="dark:text-"]) {
+  color: #c2c2c2;
+}
+
+.dark .text-slate-500:not([class*="dark:text-"]) {
+  color: #d0d0d0;
+}
+
+.dark .text-slate-400:not([class*="dark:text-"]) {
+  color: #dcdcdc;
+}
+
+/* Accent readability in dark mode (indigo/blue/purple families). */
+.dark .dark\:text-indigo-500 {
+  color: #b4c0ff;
+}
+
+.dark .dark\:text-indigo-400 {
+  color: #ccd5ff;
+}
+
+.dark .dark\:text-indigo-300 {
+  color: #e0e6ff;
+}
+
+.dark .dark\:text-blue-500 {
+  color: #7fc8ff;
+}
+
+.dark .dark\:text-blue-400 {
+  color: #99d5ff;
+}
+
+.dark .dark\:text-blue-300 {
+  color: #b8e4ff;
+}
+
+.dark .dark\:text-purple-500 {
+  color: #d3b4ff;
+}
+
+.dark .dark\:text-purple-400 {
+  color: #dfc5ff;
+}
+
+.dark .dark\:text-purple-300 {
+  color: #ead7ff;
+}
+
+.dark .dark\:text-violet-500 {
+  color: #cdbbff;
+}
+
+.dark .dark\:text-violet-400 {
+  color: #d9ccff;
+}
+
+.dark .dark\:text-violet-300 {
+  color: #e7ddff;
+}
+
+/* Fallback for accent text lacking explicit dark:text-* variants. */
+.dark .text-indigo-600:not([class*="dark:text-"]),
+.dark .text-indigo-500:not([class*="dark:text-"]),
+.dark .text-indigo-400:not([class*="dark:text-"]) {
+  color: #b9c5ff;
+}
+
+.dark .text-blue-700:not([class*="dark:text-"]),
+.dark .text-blue-600:not([class*="dark:text-"]),
+.dark .text-blue-500:not([class*="dark:text-"]),
+.dark .text-blue-400:not([class*="dark:text-"]) {
+  color: #8dceff;
+}
+
+.dark .text-purple-700:not([class*="dark:text-"]),
+.dark .text-purple-600:not([class*="dark:text-"]),
+.dark .text-purple-500:not([class*="dark:text-"]),
+.dark .text-purple-400:not([class*="dark:text-"]),
+.dark .text-violet-700:not([class*="dark:text-"]),
+.dark .text-violet-600:not([class*="dark:text-"]),
+.dark .text-violet-500:not([class*="dark:text-"]),
+.dark .text-violet-400:not([class*="dark:text-"]) {
+  color: #d6c1ff;
+}
+
+/* Lift near-black surfaces and borders so text doesn't get swallowed. */
+.dark .dark\:bg-slate-950 {
+  background-color: #16181d;
+}
+
+.dark .dark\:bg-slate-950\/95 {
+  background-color: rgba(22, 24, 29, 0.95);
+}
+
+.dark .dark\:bg-slate-950\/80 {
+  background-color: rgba(22, 24, 29, 0.8);
+}
+
+.dark .dark\:bg-slate-900 {
+  background-color: #21252d;
+}
+
+.dark .dark\:bg-slate-900\/80 {
+  background-color: rgba(33, 37, 45, 0.8);
+}
+
+.dark .dark\:bg-slate-900\/65 {
+  background-color: rgba(33, 37, 45, 0.65);
+}
+
+.dark .dark\:bg-slate-900\/60 {
+  background-color: rgba(33, 37, 45, 0.6);
+}
+
+.dark .dark\:bg-slate-900\/50 {
+  background-color: rgba(33, 37, 45, 0.5);
+}
+
+.dark .dark\:bg-slate-900\/40 {
+  background-color: rgba(33, 37, 45, 0.4);
+}
+
+.dark .dark\:bg-slate-900\/30 {
+  background-color: rgba(33, 37, 45, 0.3);
+}
+
+.dark .dark\:bg-slate-900\/20 {
+  background-color: rgba(33, 37, 45, 0.2);
+}
+
+.dark .dark\:border-slate-800 {
+  border-color: #4a515f;
+}
+
+.dark .dark\:border-slate-800\/80 {
+  border-color: rgba(74, 81, 95, 0.8);
+}
+
+.dark .dark\:border-slate-800\/60 {
+  border-color: rgba(74, 81, 95, 0.6);
+}
+
+.dark .dark\:border-slate-800\/50 {
+  border-color: rgba(74, 81, 95, 0.5);
+}
+
+/* Boost tinted dark surfaces used for analysis/highlight cards. */
+.dark .dark\:bg-indigo-900\/10 {
+  background-color: rgba(99, 102, 241, 0.2);
+}
+
+.dark .dark\:bg-indigo-900\/20 {
+  background-color: rgba(99, 102, 241, 0.28);
+}
+
+.dark .dark\:bg-indigo-900\/30 {
+  background-color: rgba(99, 102, 241, 0.36);
+}
+
+.dark .dark\:border-indigo-900\/30 {
+  border-color: rgba(165, 180, 252, 0.5);
+}
+
+.dark .dark\:border-indigo-800 {
+  border-color: #7f8cff;
+}
+
+.dark .dark\:text-indigo-200\/80 {
+  color: rgba(229, 235, 255, 0.96);
+}
+
+.dark .dark\:text-blue-300\/80 {
+  color: rgba(188, 228, 255, 0.96);
+}

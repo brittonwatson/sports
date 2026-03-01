@@ -1,7 +1,11 @@
 
 import { Sport } from "../types";
 
-export const API_KEY = process.env.API_KEY;
+export const API_KEY =
+  import.meta.env.VITE_GEMINI_API_KEY ||
+  process.env.GEMINI_API_KEY ||
+  process.env.API_KEY ||
+  '';
 
 export const ESPN_ENDPOINTS: Record<Sport, string> = {
   'NBA': 'basketball/nba',

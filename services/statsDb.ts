@@ -3,7 +3,7 @@ import { TeamStatItem } from "../types";
 
 const DB_NAME = 'ProbabilisDB';
 const STORE_NAME = 'team_stats';
-const VERSION = 2; // Incremented to force schema upgrade/clear
+const VERSION = 4; // Incremented to clear pre-aggregation cached stat shapes
 
 interface StoredStats {
     id: string; // key: `${sport}-${teamId}`
@@ -26,8 +26,8 @@ const openDB = (): Promise<IDBDatabase> => {
         
         request.onupgradeneeded = (event) => {
             const db = (event.target as IDBOpenDBRequest).result;
-            // Clear old data if upgrading from version 1 (or any older version)
-            if (event.oldVersion < 2) {
+            // Clear old data when upgrading from any previous schema version.
+            if (event.oldVersion < VERSION) {
                 if (db.objectStoreNames.contains(STORE_NAME)) {
                     db.deleteObjectStore(STORE_NAME);
                 }

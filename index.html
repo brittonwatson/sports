@@ -98,6 +98,23 @@
         document.documentElement.classList.add('dark')
       }
     </script>
+    <script>
+      // Prevent mobile double-tap zoom while preserving pinch zoom.
+      (function () {
+        let lastTouchEnd = 0;
+        document.addEventListener(
+          'touchend',
+          function (event) {
+            const now = Date.now();
+            if (now - lastTouchEnd <= 280) {
+              event.preventDefault();
+            }
+            lastTouchEnd = now;
+          },
+          { passive: false }
+        );
+      })();
+    </script>
   <script type="module" src="/index.tsx"></script>
 </body>
 </html>

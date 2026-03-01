@@ -2,7 +2,9 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Sport, StandingsGroup, LeagueStatRow } from '../types';
 import { getStoredLeagueStats } from '../services/teamService';
 import { dbEvents } from '../services/statsDb';
-import { Loader2, ArrowUp, ArrowDown, Activity, Database, CheckCircle2, RefreshCw } from 'lucide-react';
+import { Loader2, ArrowUp, ArrowDown, Activity, Database, CheckCircle2, RefreshCw, AlertTriangle } from 'lucide-react';
+import { isInverseMetricLabel } from '../services/statDictionary';
+import { auditInternalSportData, SportIntegrityReport } from '../services/dataIntegrity';
 
 interface LeagueStatsViewProps {
     groups: StandingsGroup[];
@@ -10,13 +12,131 @@ interface LeagueStatsViewProps {
     onTeamClick: (teamId: string, league: Sport) => void;
 }
 
-const parseVal = (v: string) => parseFloat(v.replace(/,/g, '').replace('%', '').replace('+', ''));
+const parseVal = (v: string, key?: string): number | null => {
+    const raw = String(v || '').trim();
+    if (!raw) return null;
+
+    const timeMatch = raw.match(/^(\d+):(\d{2})(?::(\d{2}))?$/);
+    if (timeMatch) {
+        if (timeMatch[3] !== undefined) {
+            const hours = parseInt(timeMatch[1], 10);
+            const minutes = parseInt(timeMatch[2], 10);
+            const seconds = parseInt(timeMatch[3], 10);
+            if (!Number.isFinite(hours) || !Number.isFinite(minutes) || !Number.isFinite(seconds)) return null;
+            return (hours * 60) + minutes + (seconds / 60);
+        }
+        const minutes = parseInt(timeMatch[1], 10);
+        const seconds = parseInt(timeMatch[2], 10);
+        if (!Number.isFinite(minutes) || !Number.isFinite(seconds)) return null;
+        return minutes + (seconds / 60);
+    }
+
+    const pairedMatch = raw.match(/^(-?\d+(?:\.\d+)?)\s*[-/]\s*(-?\d+(?:\.\d+)?)$/);
+    if (pairedMatch) {
+        const made = parseFloat(pairedMatch[1]);
+        const attempts = parseFloat(pairedMatch[2]);
+        if (!Number.isFinite(made) || !Number.isFinite(attempts)) return null;
+        if (attempts === 0) return 0;
+        const label = String((key || '').split('|')[1] || key || '').toLowerCase();
+        const looksLikeRatePair =
+            label.includes('%') ||
+            label.includes('pct') ||
+            label.includes('percent') ||
+            label.includes('rate') ||
+            label.includes('ratio') ||
+            label.includes('completion') ||
+            label.includes('conversions') ||
+            label.includes('on target') ||
+            label.includes('field goal') ||
+            label.includes('free throw') ||
+            label.includes('three point') ||
+            label.includes('3-point') ||
+            label.includes('3pt') ||
+            label.includes('power play') ||
+            label.includes('penalty kill');
+        return looksLikeRatePair ? (made / attempts) * 100 : null;
+    }
+
+    const n = parseFloat(raw.replace(/,/g, '').replace('%', '').replace('+', ''));
+    if (!Number.isFinite(n)) return null;
+    return raw.includes('%') && Math.abs(n) <= 1 ? n * 100 : n;
+};
+
+const CATEGORY_ORDER = [
+    'Overview',
+    'Team',
+    'Opponent',
+    'Differential',
+    'Offense',
+    'Defense',
+    'Special Teams',
+    'Shooting',
+    'Rebounding',
+    'Ball Control',
+    'Passing',
+    'Rushing',
+    'Efficiency',
+    'Batting',
+    'Pitching',
+    'Fielding',
+    'Other',
+    'General'
+];
+
+const SPORT_PRIORITY_LABELS: Record<string, string[]> = {
+    NBA: [
+        'Points', 'Opponent Points', 'Points Differential',
+        'Rebounds', 'Opponent Rebounds', 'Rebounds Differential',
+        'Assists', 'Turnovers', 'Steals', 'Blocks',
+        'Field Goal %', 'Opponent Field Goal %', '3-Point %'
+    ],
+    WNBA: [
+        'Points', 'Opponent Points', 'Points Differential',
+        'Rebounds', 'Opponent Rebounds', 'Rebounds Differential',
+        'Assists', 'Turnovers', 'Steals', 'Blocks',
+        'Field Goal %', 'Opponent Field Goal %', '3-Point %'
+    ],
+    NCAAM: [
+        'Points', 'Opponent Points', 'Points Differential',
+        'Rebounds', 'Opponent Rebounds', 'Rebounds Differential',
+        'Assists', 'Turnovers', 'Steals', 'Blocks',
+        'Field Goal %', 'Opponent Field Goal %', '3-Point %'
+    ],
+    NCAAW: [
+        'Points', 'Opponent Points', 'Points Differential',
+        'Rebounds', 'Opponent Rebounds', 'Rebounds Differential',
+        'Assists', 'Turnovers', 'Steals', 'Blocks',
+        'Field Goal %', 'Opponent Field Goal %', '3-Point %'
+    ],
+    NFL: [
+        'Points', 'Opponent Points', 'Points Differential',
+        'Total Yards', 'Total Yards Allowed',
+        'Passing Yards', 'Passing Yards Allowed',
+        'Rushing Yards', 'Rushing Yards Allowed',
+        'First Downs', 'Sacks', 'Interceptions',
+        'Turnover Differential'
+    ],
+    NCAAF: [
+        'Points', 'Opponent Points', 'Points Differential',
+        'Total Yards', 'Total Yards Allowed',
+        'Passing Yards', 'Passing Yards Allowed',
+        'Rushing Yards', 'Rushing Yards Allowed',
+        'First Downs', 'Sacks', 'Interceptions',
+        'Turnover Differential'
+    ]
+};
+
+const isInverseMetricKey = (key: string): boolean => {
+    const label = key.split('|')[1] || key;
+    return isInverseMetricLabel(label);
+};
 
 export const LeagueStatsView: React.FC<LeagueStatsViewProps> = ({ groups, sport, onTeamClick }) => {
     const [statsData, setStatsData] = useState<LeagueStatRow[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const [lastUpdated, setLastUpdated] = useState<number | null>(null);
     const [sortConfig, setSortConfig] = useState<{ key: string, direction: 'asc' | 'desc' } | null>(null);
+    const [integrityReport, setIntegrityReport] = useState<SportIntegrityReport | null>(null);
     const scrollContainerRef = useRef<HTMLDivElement>(null);
 
     // Filter teams based on groups (e.g. if filtered by Conference in generic view)
@@ -50,15 +170,18 @@ export const LeagueStatsView: React.FC<LeagueStatsViewProps> = ({ groups, sport,
                 
                 const rankedRows = [...rows];
                 allKeys.forEach(key => {
-                    const label = key.split('|')[1]?.toLowerCase() || key.toLowerCase();
-                    const inverse = label.includes('allowed') || label.includes('against') || label.includes('turnover') || label.includes('interception') || label.includes('era');
-                    
-                    const sortedIndices = rankedRows.map((_, i) => i).sort((a, b) => {
-                        const valA = parseVal(rankedRows[a].stats[key] || '0');
-                        const valB = parseVal(rankedRows[b].stats[key] || '0');
-                        if (isNaN(valA) && isNaN(valB)) return 0;
-                        if (isNaN(valA)) return 1;
-                        if (isNaN(valB)) return -1;
+                    const inverse = isInverseMetricKey(key);
+
+                    const comparableIndices = rankedRows
+                        .map((_, i) => i)
+                        .filter((i) => parseVal(rankedRows[i].stats[key] || '', key) !== null);
+
+                    const sortedIndices = comparableIndices.sort((a, b) => {
+                        const valA = parseVal(rankedRows[a].stats[key] || '', key);
+                        const valB = parseVal(rankedRows[b].stats[key] || '', key);
+                        if (valA === null && valB === null) return 0;
+                        if (valA === null) return 1;
+                        if (valB === null) return -1;
                         return inverse ? valA - valB : valB - valA;
                     });
                     
@@ -80,16 +203,28 @@ export const LeagueStatsView: React.FC<LeagueStatsViewProps> = ({ groups, sport,
         }
     };
 
+    const loadIntegrity = async () => {
+        try {
+            const report = await auditInternalSportData(sport);
+            setIntegrityReport(report);
+        } catch (e) {
+            console.error(e);
+            setIntegrityReport(null);
+        }
+    };
+
     // Initial Load & Event Listener
     useEffect(() => {
         if (activeTeams.length === 0) return;
 
         loadFromDB(true);
+        loadIntegrity();
 
         const handleUpdate = (e: Event) => {
             const customEvent = e as CustomEvent;
             if (customEvent.detail?.sport === sport) {
                 loadFromDB(false); // Silent refresh
+                loadIntegrity();
             }
         };
 
@@ -97,104 +232,84 @@ export const LeagueStatsView: React.FC<LeagueStatsViewProps> = ({ groups, sport,
         return () => dbEvents.removeEventListener('stats_updated', handleUpdate);
     }, [activeTeams, sport]);
 
-    // Group stats by Category with strict layouts
+    // Group stats by category and surface every tracked stat column from the internal dataset.
     const categorizedColumns = useMemo<Record<string, string[]>>(() => {
         if (statsData.length === 0) return {};
-        
-        const isBasketball = ['NBA', 'WNBA', 'NCAAM', 'NCAAW'].includes(sport);
-        const isFootball = ['NFL', 'NCAAF'].includes(sport);
-        
-        const allKeys = new Set<string>();
-        statsData.forEach(row => Object.keys(row.stats).forEach(k => {
-            if (k.includes('|')) allKeys.add(k);
-        }));
-        const uniqueKeys = Array.from(allKeys);
-        
-        const findKey = (suffix: string) => uniqueKeys.find(k => k.endsWith(suffix) || k.split('|')[1] === suffix);
+        const keyMeta = new Map<string, { category: string; label: string; coverage: number }>();
 
-        if (isBasketball) {
-            return {
-                'Team': [
-                    findKey('Points') || 'Team|Points',
-                    findKey('Rebounds') || 'Team|Rebounds',
-                    findKey('Field Goal %') || 'Team|Field Goal %'
-                ].filter(Boolean) as string[],
-                
-                'Opponent': [
-                    findKey('Opponent Points') || 'Opponent|Opponent Points',
-                    findKey('Opponent Rebounds') || 'Opponent|Opponent Rebounds',
-                    findKey('Opponent Field Goal %') || 'Opponent|Opponent Field Goal %'
-                ].filter(Boolean) as string[],
-                
-                'Differential': [
-                    findKey('Points Differential') || 'Differential|Points Differential',
-                    findKey('Rebounds Differential') || 'Differential|Rebounds Differential',
-                    findKey('Field Goal % Differential') || 'Differential|Field Goal % Differential'
-                ].filter(Boolean) as string[]
-            };
-        }
+        statsData.forEach(row => {
+            const seen = new Set<string>();
+            Object.keys(row.stats).forEach(fullKey => {
+                if (!fullKey.includes('|') || seen.has(fullKey)) return;
+                seen.add(fullKey);
+                const [rawCategory = 'General', rawLabel = ''] = fullKey.split('|');
+                const category = rawCategory || 'General';
+                const label = (rawLabel || rawCategory || 'Unknown').trim();
+                if (!label) return;
 
-        if (isFootball) {
-            return {
-                'Offense': [
-                    findKey('Points') || 'Team|Points',
-                    findKey('Total Yards') || 'Team|Total Yards',
-                    findKey('Passing Yards') || 'Team|Passing Yards',
-                    findKey('Rushing Yards') || 'Team|Rushing Yards',
-                    findKey('First Downs') || 'Team|First Downs'
-                ].filter(Boolean) as string[],
-
-                'Defense': [
-                    findKey('Opponent Points') || 'Opponent|Opponent Points',
-                    findKey('Total Yards Allowed') || 'Opponent|Total Yards Allowed',
-                    findKey('Passing Yards Allowed') || 'Opponent|Passing Yards Allowed',
-                    findKey('Rushing Yards Allowed') || 'Opponent|Rushing Yards Allowed',
-                    findKey('Sacks') || 'Team|Sacks', // Sacks by defense
-                    findKey('Interceptions') || 'Team|Interceptions' // Defensive INTs
-                ].filter(Boolean) as string[],
-
-                'Special Teams': [
-                    findKey('Field Goal %') || 'Team|Field Goal %',
-                    findKey('Punting Average') || 'Team|Punting Average',
-                    findKey('Kick Return Average') || 'Team|Kick Return Average'
-                ].filter(Boolean) as string[],
-
-                'Differential': [
-                    findKey('Points Differential') || 'Differential|Points Differential',
-                    findKey('Turnover Differential') || 'Differential|Turnover Differential'
-                ].filter(Boolean) as string[]
-            };
-        }
-
-        // Default Layout for other sports (Soccer, Hockey, Baseball)
-        const categories: Record<string, string[]> = {};
-        const PREFERRED_ORDER = ['Overview', 'Offense', 'Defense', 'Scoring', 'Passing', 'Rushing', 'Shooting', 'Efficiency', 'Special Teams', 'General'];
-        
-        uniqueKeys.forEach(fullKey => {
-            const [cat, label] = fullKey.split('|');
-            const category = cat || 'General';
-            
-            if (label === 'Wins' || label === 'Points' || label === 'Differential') {
-                if (!categories['Overview']) categories['Overview'] = [];
-                if (!categories['Overview'].includes(fullKey)) categories['Overview'].push(fullKey);
-            } else {
-                if (!categories[category]) categories[category] = [];
-                categories[category].push(fullKey);
-            }
+                const existing = keyMeta.get(fullKey);
+                if (existing) {
+                    existing.coverage += 1;
+                } else {
+                    keyMeta.set(fullKey, { category, label, coverage: 1 });
+                }
+            });
         });
 
-        const sortedCats: Record<string, string[]> = {};
-        const sortedKeys = Object.keys(categories).sort((a, b) => {
-            const idxA = PREFERRED_ORDER.indexOf(a);
-            const idxB = PREFERRED_ORDER.indexOf(b);
-            if (idxA !== -1 && idxB !== -1) return idxA - idxB;
-            if (idxA !== -1) return -1;
-            if (idxB !== -1) return 1;
-            return a.localeCompare(b);
+        const allMetas = Array.from(keyMeta.entries()).map(([key, meta]) => ({ key, ...meta }));
+        if (allMetas.length === 0) return {};
+
+        const priorityLabels = SPORT_PRIORITY_LABELS[sport] || [];
+        const priorityIndex = new Map<string, number>();
+        priorityLabels.forEach((label, idx) => {
+            priorityIndex.set(label.toLowerCase(), idx);
         });
 
-        sortedKeys.forEach(k => sortedCats[k] = categories[k]);
-        return sortedCats;
+        const categories = new Map<string, string[]>();
+        const addKey = (category: string, key: string) => {
+            if (!categories.has(category)) categories.set(category, []);
+            const keys = categories.get(category)!;
+            if (!keys.includes(key)) keys.push(key);
+        };
+
+        const sortByPriorityCoverage = (a: { label: string; coverage: number }, b: { label: string; coverage: number }) => {
+            const pA = priorityIndex.get(a.label.toLowerCase());
+            const pB = priorityIndex.get(b.label.toLowerCase());
+            if (pA !== undefined && pB !== undefined && pA !== pB) return pA - pB;
+            if (pA !== undefined) return -1;
+            if (pB !== undefined) return 1;
+            if (a.coverage !== b.coverage) return b.coverage - a.coverage;
+            return a.label.localeCompare(b.label);
+        };
+
+        allMetas
+            .sort(sortByPriorityCoverage)
+            .forEach(meta => {
+                const category = meta.category || 'General';
+                addKey(category, meta.key);
+            });
+
+        const output: Record<string, string[]> = {};
+        Array.from(categories.keys())
+            .sort((a, b) => {
+                const idxA = CATEGORY_ORDER.indexOf(a);
+                const idxB = CATEGORY_ORDER.indexOf(b);
+                if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+                if (idxA !== -1) return -1;
+                if (idxB !== -1) return 1;
+                return a.localeCompare(b);
+            })
+            .forEach(category => {
+                const keys = categories.get(category) || [];
+                output[category] = [...keys].sort((keyA, keyB) => {
+                    const metaA = keyMeta.get(keyA);
+                    const metaB = keyMeta.get(keyB);
+                    if (!metaA || !metaB) return keyA.localeCompare(keyB);
+                    return sortByPriorityCoverage(metaA, metaB);
+                });
+            });
+
+        return output;
     }, [statsData, sport]);
 
     const handleSort = (key: string) => {
@@ -204,9 +319,7 @@ export const LeagueStatsView: React.FC<LeagueStatsViewProps> = ({ groups, sport,
         } else if (sortConfig && sortConfig.key === key && sortConfig.direction === 'asc') {
             direction = 'desc';
         } else {
-            const label = key.split('|')[1]?.toLowerCase() || '';
-            const inverse = label.includes('allowed') || label.includes('against') || label.includes('turnover') || label.includes('interception') || label.includes('era');
-            direction = inverse ? 'asc' : 'desc';
+            direction = isInverseMetricKey(key) ? 'asc' : 'desc';
         }
         setSortConfig({ key, direction });
     };
@@ -214,8 +327,11 @@ export const LeagueStatsView: React.FC<LeagueStatsViewProps> = ({ groups, sport,
     const sortedData: LeagueStatRow[] = useMemo(() => {
         if (!sortConfig) return statsData;
         return [...statsData].sort((a, b) => {
-            const valA = parseVal(a.stats[sortConfig.key] || '0');
-            const valB = parseVal(b.stats[sortConfig.key] || '0');
+            const valA = parseVal(a.stats[sortConfig.key] || '', sortConfig.key);
+            const valB = parseVal(b.stats[sortConfig.key] || '', sortConfig.key);
+            if (valA === null && valB === null) return 0;
+            if (valA === null) return 1;
+            if (valB === null) return -1;
             return sortConfig.direction === 'asc' ? valA - valB : valB - valA;
         });
     }, [statsData, sortConfig]);
@@ -268,8 +384,25 @@ export const LeagueStatsView: React.FC<LeagueStatsViewProps> = ({ groups, sport,
                             Database Active
                         </span>
                     )}
+                    {integrityReport && integrityReport.issues.length > 0 && (
+                        <span className="text-[10px] text-amber-600 dark:text-amber-400 font-bold flex items-center gap-1.5">
+                            <AlertTriangle size={12} />
+                            {integrityReport.issues.length} Integrity Warning{integrityReport.issues.length === 1 ? '' : 's'}
+                        </span>
+                    )}
                 </div>
             </div>
+            {integrityReport && (
+                <div className={`rounded-xl border px-3 py-2 text-[11px] ${
+                    integrityReport.issues.length > 0
+                        ? 'bg-amber-50/60 dark:bg-amber-950/20 border-amber-200 dark:border-amber-900/40 text-amber-800 dark:text-amber-300'
+                        : 'bg-emerald-50/60 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-900/40 text-emerald-700 dark:text-emerald-300'
+                }`}>
+                    {integrityReport.issues.length > 0
+                        ? `Integrity audit: ${integrityReport.teamsAudited} teams checked, ${integrityReport.issues.length} warning(s), average coverage ${(integrityReport.averageCoverage * 100).toFixed(0)}%.`
+                        : `Integrity audit: ${integrityReport.teamsAudited} teams checked with no active warnings (coverage ${(integrityReport.averageCoverage * 100).toFixed(0)}%).`}
+                </div>
+            )}
 
             <div className="relative border border-slate-200 dark:border-slate-800 rounded-2xl overflow-hidden bg-white dark:bg-slate-900/40 shadow-sm flex flex-col">
                 <div ref={scrollContainerRef} className="overflow-x-auto custom-scrollbar">
