@@ -107,6 +107,23 @@ export interface CalculationDetailItem {
     description: string;
 }
 
+export interface ConfidenceBreakdown {
+  base: number;
+  coverage: number; // 0..1
+  coveragePoints: number;
+  decisiveness: number; // top outcome minus runner-up probability (pct points)
+  decisivenessPoints: number;
+  evidenceStrength: number; // 0..1 based on strongest factors
+  evidencePoints: number;
+  liveProgress: number; // 0..1 elapsed game progress contribution
+  livePoints: number;
+  topOutcome: 'home' | 'away' | 'draw';
+  topOutcomeProbability: number;
+  runnerUpProbability: number;
+  formula: string;
+  summary: string;
+}
+
 export interface PredictionStats {
   winProbabilityHome: number;
   winProbabilityAway: number;
@@ -114,6 +131,7 @@ export interface PredictionStats {
   predictedScoreHome: number;
   predictedScoreAway: number;
   confidence: number;
+  confidenceBreakdown?: ConfidenceBreakdown;
   keyFactors: string[];
   factorBreakdown: FactorComparison[];
   calculationBreakdown: CalculationDetailItem[]; // New field for transparency

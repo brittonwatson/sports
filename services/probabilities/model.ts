@@ -1,5 +1,6 @@
 import {
     CalculationDetailItem,
+    ConfidenceBreakdown,
     FactorComparison,
     Game,
     GameDetails,
@@ -76,6 +77,7 @@ interface ModelOutcome {
     predictedScoreHome: number;
     predictedScoreAway: number;
     confidence: number;
+    confidenceBreakdown: ConfidenceBreakdown;
     keyFactors: string[];
     factorBreakdown: FactorComparison[];
     calculationBreakdown: CalculationDetailItem[];
@@ -109,6 +111,10 @@ interface TeamHistoryPrior {
     awayAdjustedOffense: number;
     homeAdjustedDefense: number;
     awayAdjustedDefense: number;
+    headToHeadMargin: number;
+    headToHeadHomeWins: number;
+    headToHeadAwayWins: number;
+    headToHeadDraws: number;
     marginVolatility: number;
     scoringVolatility: number;
 }
@@ -883,20 +889,38 @@ const buildHistoryPrior = (game: Game, profile: SportProfile): TeamHistoryPrior 
         .sort((a, b) => b.dateMs - a.dateMs)
         .slice(0, 10);
 
+    let h2hWeightedHome = 0;
+    let h2hWeightedAway = 0;
+    let h2hWeightedMargin = 0;
+    let h2hHomeWins = 0;
+    let h2hAwayWins = 0;
+    let h2hDraws = 0;
+
     if (h2hLogs.length > 0) {
-        const h2hWeightedHome = weightedMean(
+        h2hHomeWins = h2hLogs.filter((log) => log.homePoints > log.awayPoints).length;
+        h2hAwayWins = h2hLogs.filter((log) => log.awayPoints > log.homePoints).length;
+        h2hDraws = h2hLogs.length - h2hHomeWins - h2hAwayWins;
+
+        h2hWeightedHome = weightedMean(
             h2hLogs.map((log) => ({
                 value: log.homePoints,
                 weight: Math.exp(-Math.max(0, (cutoffMs - log.dateMs) / 86400000) / 70) * 1.2,
             })),
             mean(h2hLogs.map((log) => log.homePoints)),
         );
-        const h2hWeightedAway = weightedMean(
+        h2hWeightedAway = weightedMean(
             h2hLogs.map((log) => ({
                 value: log.awayPoints,
                 weight: Math.exp(-Math.max(0, (cutoffMs - log.dateMs) / 86400000) / 70) * 1.2,
             })),
             mean(h2hLogs.map((log) => log.awayPoints)),
+        );
+        h2hWeightedMargin = weightedMean(
+            h2hLogs.map((log) => ({
+                value: log.homePoints - log.awayPoints,
+                weight: Math.exp(-Math.max(0, (cutoffMs - log.dateMs) / 86400000) / 70) * 1.2,
+            })),
+            mean(h2hLogs.map((log) => log.homePoints - log.awayPoints)),
         );
         const h2hWeight = clamp(0.12 + (h2hLogs.length * 0.035), 0.12, 0.32);
         homeExpected = blend(homeExpected, h2hWeightedHome, h2hWeight);
@@ -968,6 +992,10 @@ const buildHistoryPrior = (game: Game, profile: SportProfile): TeamHistoryPrior 
         awayAdjustedOffense,
         homeAdjustedDefense,
         awayAdjustedDefense,
+        headToHeadMargin: h2hWeightedMargin,
+        headToHeadHomeWins: h2hHomeWins,
+        headToHeadAwayWins: h2hAwayWins,
+        headToHeadDraws: h2hDraws,
         marginVolatility,
         scoringVolatility,
     };
@@ -1521,12 +1549,30 @@ const computePregameModel = (
         );
         if (historyPrior.headToHeadGames > 0) {
             foundSignals += 1;
+            const h2hRecord = historyPrior.headToHeadDraws > 0
+                ? `${historyPrior.headToHeadHomeWins}-${historyPrior.headToHeadAwayWins}-${historyPrior.headToHeadDraws}`
+                : `${historyPrior.headToHeadHomeWins}-${historyPrior.headToHeadAwayWins}`;
+            const h2hUnit = profile.family === "baseball"
+                ? " runs"
+                : profile.family === "soccer" || profile.family === "hockey"
+                    ? " goals"
+                    : " pts";
+            const h2hThreshold = Math.max(0.05, profile.marginStdDev * 0.015);
+            const h2hImpact = historyPrior.headToHeadMargin > h2hThreshold
+                ? "positive"
+                : historyPrior.headToHeadMargin < -h2hThreshold
+                    ? "negative"
+                    : "neutral";
             findings.push({
                 label: "Head-to-Head Context",
-                value: `${historyPrior.headToHeadGames} games`,
-                impact: "neutral",
-                description: "Direct matchup history folded into prior",
-                magnitude: Math.min(1.1, historyPrior.headToHeadGames * 0.18),
+                value: `${h2hRecord} (${formatImpact(historyPrior.headToHeadMargin, h2hUnit)})`,
+                impact: h2hImpact,
+                description: `Direct matchup edge across ${historyPrior.headToHeadGames} meetings`,
+                magnitude: Math.min(
+                    1.2,
+                    (historyPrior.headToHeadGames * 0.11) +
+                        (Math.abs(historyPrior.headToHeadMargin) / Math.max(1, profile.marginStdDev)),
+                ),
             });
         }
     }
@@ -2054,14 +2100,68 @@ const applyOutcomeCertaintyCap = (
 const finalizeConfidence = (
     game: Game,
     homeWinProb: number,
+    awayWinProb: number,
+    drawProb: number,
     coverage: number,
     elapsedFraction: number,
-): number => {
-    if (game.status === "finished") return 99;
-    const decisiveness = Math.abs(homeWinProb - 50);
-    let confidence = 46 + (coverage * 26) + (decisiveness * 0.38);
-    if (game.status === "in_progress") confidence += elapsedFraction * 22;
-    return clamp(confidence, 35, 98);
+    findings: WeightedFinding[],
+): { value: number; breakdown: ConfidenceBreakdown } => {
+    const outcomes: Array<{ key: "home" | "away" | "draw"; value: number }> = [
+        { key: "home", value: homeWinProb },
+        { key: "away", value: awayWinProb },
+    ];
+    if (drawProb > 0.01) outcomes.push({ key: "draw", value: drawProb });
+    outcomes.sort((a, b) => b.value - a.value);
+
+    const topOutcome = outcomes[0] || { key: "home" as const, value: 50 };
+    const runnerUpOutcome = outcomes[1] || { key: topOutcome.key, value: topOutcome.value };
+    const decisiveness = clamp(topOutcome.value - runnerUpOutcome.value, 0, 100);
+    const coverageSignal = clamp(coverage, 0, 1);
+    const decisivenessSignal = clamp(decisiveness / 60, 0, 1);
+    const strongestFindings = [...findings]
+        .sort((a, b) => b.magnitude - a.magnitude)
+        .slice(0, 4);
+    const evidenceMean = strongestFindings.length > 0
+        ? strongestFindings.reduce((sum, finding) => sum + finding.magnitude, 0) / strongestFindings.length
+        : 0;
+    const evidenceStrength = clamp(evidenceMean / 1.25, 0, 1);
+    const liveProgress = game.status === "in_progress" ? clamp(elapsedFraction, 0, 1) : 0;
+
+    const base = 34;
+    const coveragePoints = coverageSignal * 30;
+    const decisivenessPoints = decisivenessSignal * 24;
+    const evidencePoints = evidenceStrength * 8;
+    const livePoints = liveProgress * 20;
+
+    let confidence = base + coveragePoints + decisivenessPoints + evidencePoints + livePoints;
+    if (game.status === "finished") confidence = 99;
+    else confidence = game.status === "in_progress"
+        ? clamp(confidence, 35, 98)
+        : clamp(confidence, 32, 96);
+
+    const summary = game.status === "finished"
+        ? "Final game result is deterministic."
+        : `Coverage ${Math.round(coverageSignal * 100)}%, top-outcome gap ${decisiveness.toFixed(1)} pts (${topOutcome.value.toFixed(1)} vs ${runnerUpOutcome.value.toFixed(1)}), evidence strength ${Math.round(evidenceStrength * 100)}%${game.status === "in_progress" ? `, live progress ${Math.round(liveProgress * 100)}%` : ""}.`;
+
+    return {
+        value: confidence,
+        breakdown: {
+            base,
+            coverage: coverageSignal,
+            coveragePoints,
+            decisiveness,
+            decisivenessPoints,
+            evidenceStrength,
+            evidencePoints,
+            liveProgress,
+            livePoints,
+            topOutcome: topOutcome.key,
+            topOutcomeProbability: topOutcome.value,
+            runnerUpProbability: runnerUpOutcome.value,
+            formula: "34 + coverage*30 + decisiveness*24 + evidence*8 + liveProgress*20",
+            summary,
+        },
+    };
 };
 
 const toTopBreakdowns = (findings: WeightedFinding[]): {
@@ -2280,7 +2380,15 @@ export const runProbabilityModel = (game: Game, details: GameDetails | null): Mo
         drawProbability = (drawProbability / probSum) * 100;
     }
 
-    const confidence = finalizeConfidence(game, winProbabilityHome, coverage, elapsedFraction);
+    const confidenceResult = finalizeConfidence(
+        game,
+        winProbabilityHome,
+        winProbabilityAway,
+        drawProbability,
+        coverage,
+        elapsedFraction,
+        findings,
+    );
     const { calculationBreakdown, keyFactors } = toTopBreakdowns(findings);
     const sortedFactorBreakdown = [...factorBreakdown]
         .sort((a, b) => Math.abs(b.homeValue - b.awayValue) - Math.abs(a.homeValue - a.awayValue))
@@ -2292,7 +2400,8 @@ export const runProbabilityModel = (game: Game, details: GameDetails | null): Mo
         drawProbability,
         predictedScoreHome: roundProjectedScore(projectedHome, profile),
         predictedScoreAway: roundProjectedScore(projectedAway, profile),
-        confidence,
+        confidence: confidenceResult.value,
+        confidenceBreakdown: confidenceResult.breakdown,
         keyFactors,
         factorBreakdown: sortedFactorBreakdown,
         calculationBreakdown,

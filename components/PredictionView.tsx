@@ -124,6 +124,17 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
 
   const homeAbbr = getGameTeamAbbreviation(game, 'home');
   const awayAbbr = getGameTeamAbbreviation(game, 'away');
+  const confidenceBreakdown = stats.confidenceBreakdown;
+  const confidenceTopLabel = confidenceBreakdown
+      ? (confidenceBreakdown.topOutcome === 'home'
+            ? game.homeTeam
+            : confidenceBreakdown.topOutcome === 'away'
+                ? game.awayTeam
+                : 'Draw')
+      : null;
+  const confidenceQuickSummary = confidenceBreakdown
+      ? `Coverage ${Math.round(confidenceBreakdown.coverage * 100)}% | Gap ${confidenceBreakdown.decisiveness.toFixed(1)} pts${game.status === 'in_progress' ? ` | Live ${Math.round(confidenceBreakdown.liveProgress * 100)}%` : ''}`
+      : null;
 
   const getImpactMeta = (impact: CalculationDetailItem['impact']) => {
       if (impact === 'positive') {
@@ -459,6 +470,16 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
                             <span className="text-slate-700 dark:text-slate-100">{stats.confidence.toFixed(0)}% Conf</span>
                         </div>
                     </div>
+                    {confidenceBreakdown && (
+                        <div className="mb-4 rounded-lg border border-slate-200 dark:border-slate-700 bg-white/70 dark:bg-slate-900/40 px-3 py-2">
+                            <div className="text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-300">
+                                Confidence Driver: {confidenceTopLabel} ({confidenceBreakdown.topOutcomeProbability.toFixed(1)}%)
+                            </div>
+                            <div className="text-[10px] text-slate-500 dark:text-slate-400 mt-1">
+                                {confidenceQuickSummary}
+                            </div>
+                        </div>
+                    )}
 
                     <div className="flex items-center gap-6 flex-1">
                         <div className="w-[80px] h-[80px] relative shrink-0">
@@ -869,6 +890,45 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
                                     </h4>
                                     {getDetailedOutlook()}
                                 </div>
+                                {confidenceBreakdown && (
+                                    <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-900/40 p-4 space-y-3">
+                                        <h4 className="text-xs font-bold text-slate-900 dark:text-white uppercase tracking-wider flex items-center gap-2">
+                                            <ShieldCheck size={14} className="text-emerald-500" /> Confidence Calculation
+                                        </h4>
+                                        <div className="grid grid-cols-2 gap-2 text-[11px]">
+                                            <div className="rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 py-1.5">
+                                                <div className="text-slate-500 dark:text-slate-400 uppercase tracking-wider text-[9px] font-bold">Coverage</div>
+                                                <div className="font-mono font-bold text-slate-800 dark:text-slate-200">
+                                                    {Math.round(confidenceBreakdown.coverage * 100)}% ({confidenceBreakdown.coveragePoints.toFixed(1)} pts)
+                                                </div>
+                                            </div>
+                                            <div className="rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 py-1.5">
+                                                <div className="text-slate-500 dark:text-slate-400 uppercase tracking-wider text-[9px] font-bold">Decisiveness</div>
+                                                <div className="font-mono font-bold text-slate-800 dark:text-slate-200">
+                                                    {confidenceBreakdown.decisiveness.toFixed(1)} ({confidenceBreakdown.decisivenessPoints.toFixed(1)} pts)
+                                                </div>
+                                            </div>
+                                            <div className="rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 py-1.5">
+                                                <div className="text-slate-500 dark:text-slate-400 uppercase tracking-wider text-[9px] font-bold">Evidence</div>
+                                                <div className="font-mono font-bold text-slate-800 dark:text-slate-200">
+                                                    {Math.round(confidenceBreakdown.evidenceStrength * 100)}% ({confidenceBreakdown.evidencePoints.toFixed(1)} pts)
+                                                </div>
+                                            </div>
+                                            <div className="rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 py-1.5">
+                                                <div className="text-slate-500 dark:text-slate-400 uppercase tracking-wider text-[9px] font-bold">Live Progress</div>
+                                                <div className="font-mono font-bold text-slate-800 dark:text-slate-200">
+                                                    {Math.round(confidenceBreakdown.liveProgress * 100)}% ({confidenceBreakdown.livePoints.toFixed(1)} pts)
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
+                                            {confidenceBreakdown.summary}
+                                        </div>
+                                        <div className="text-[10px] text-slate-400 dark:text-slate-500 font-mono">
+                                            Formula: {confidenceBreakdown.formula}
+                                        </div>
+                                    </div>
+                                )}
                             </div>
                         </div>
 

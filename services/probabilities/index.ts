@@ -14,6 +14,7 @@ export const calculateWinProbability = (game: Game, details: GameDetails | null)
         predictedScoreHome: Math.max(0, outcome.predictedScoreHome),
         predictedScoreAway: Math.max(0, outcome.predictedScoreAway),
         confidence: clamp(outcome.confidence, 1, 99),
+        confidenceBreakdown: outcome.confidenceBreakdown,
         keyFactors: outcome.keyFactors.length > 0 ? outcome.keyFactors : ["Statistical Baseline"],
         factorBreakdown: outcome.factorBreakdown,
         calculationBreakdown: outcome.calculationBreakdown,
@@ -21,4 +22,3 @@ export const calculateWinProbability = (game: Game, details: GameDetails | null)
         isModelOdds: !marketOdds,
     };
 };
-

@@ -30,9 +30,9 @@ export const MethodologyView = () => {
                 <div className="w-10 h-10 bg-rose-50 dark:bg-rose-900/20 rounded-xl flex items-center justify-center mb-4 text-rose-600 dark:text-rose-400">
                     <Zap size={20} />
                 </div>
-                <h3 className="font-bold text-slate-900 dark:text-white mb-2 font-display">10,000 Simulations</h3>
+                <h3 className="font-bold text-slate-900 dark:text-white mb-2 font-display">Distribution Modeling</h3>
                 <p className="text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
-                    Our client-side engine executes 10,000 Monte Carlo iterations per calculation, using Box-Muller transforms to model volatility and scoring distributions accurately.
+                    We model outcome distributions using matchup-specific volatility envelopes, Poisson/normal tails by sport, and non-terminal certainty caps so probabilities remain realistic before the game is decided.
                 </p>
             </div>
             <div className="bg-white dark:bg-slate-900/40 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
@@ -55,7 +55,7 @@ export const MethodologyView = () => {
                     <h3 className="text-xl font-bold font-display text-slate-900 dark:text-white mb-2">Win Probability</h3>
                     <div className="h-1 w-12 bg-indigo-500 rounded-full mb-4"></div>
                     <p className="text-sm text-slate-500 dark:text-slate-400 leading-relaxed">
-                        The core metric representing the frequency of victory across our 10,000 simulation set.
+                        The core metric representing each outcome channel (home, away, and draw where applicable) after matchup priors, live context, and uncertainty caps are applied.
                     </p>
                 </div>
                 <div className="md:w-2/3 space-y-4">
@@ -114,7 +114,7 @@ export const MethodologyView = () => {
                     <h3 className="text-xl font-bold font-display text-slate-900 dark:text-white mb-2">Confidence Index</h3>
                     <div className="h-1 w-12 bg-rose-500 rounded-full mb-4"></div>
                     <p className="text-sm text-slate-500 dark:text-slate-400 leading-relaxed">
-                        A measure of the spread of the simulation results.
+                        A composite score from model coverage, decisiveness between top outcomes, evidence strength, and live progress.
                     </p>
                 </div>
                 <div className="md:w-2/3 space-y-4">
@@ -124,7 +124,9 @@ export const MethodologyView = () => {
                             Statistical Certainty
                         </h4>
                         <p className="text-sm text-slate-600 dark:text-slate-400 leading-relaxed mt-2">
-                            A high confidence score implies that across 10,000 simulations, the winner was consistent. If the simulations split 50/50, the confidence drops to reflect the "Coin Flip" nature of the match.
+                            Confidence is computed as:
+                            <span className="font-mono"> 34 + coverage*30 + decisiveness*24 + evidence*8 + liveProgress*20</span>.
+                            Coverage reflects how many matchup signals were found, decisiveness is the gap between top and runner-up outcome probabilities, and live progress only applies in active games.
                         </p>
                     </div>
                 </div>
