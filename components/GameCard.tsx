@@ -17,6 +17,11 @@ export const GameCard: React.FC<GameCardProps> = ({ game, onSelect, isSelected, 
   const isFinished = game.status === 'finished';
   const isSoccer = SOCCER_LEAGUES.includes(game.league as Sport);
   const isPreseason = game.seasonType === 1;
+  const contextText = (game.context || '').trim();
+  const contextLower = contextText.toLowerCase();
+  const showContext = !!contextText &&
+    contextText !== game.gameStatus &&
+    !(isPreseason && contextLower.includes('preseason'));
 
   const handleTeamClick = (e: React.MouseEvent, teamId: string | undefined) => {
       e.stopPropagation();
@@ -118,8 +123,8 @@ export const GameCard: React.FC<GameCardProps> = ({ game, onSelect, isSelected, 
                 )}
                 {/* Show title/context if available (e.g. Playoff Series Name) */}
                 {/* Hide if it's just a duplicate of the live status (e.g. "12:34 - 1st") to prevent showing time twice */}
-                {game.context && game.context !== game.gameStatus && (
-                <span className={`text-xs text-slate-600 dark:text-slate-400 font-medium px-2 py-0.5 border border-transparent bg-slate-50 dark:bg-slate-800 rounded ${isPreseason ? 'inline-block' : 'hidden sm:inline-block'}`}>{game.context}</span>
+                {showContext && (
+                <span className={`text-xs text-slate-600 dark:text-slate-400 font-medium px-2 py-0.5 border border-transparent bg-slate-50 dark:bg-slate-800 rounded ${isPreseason ? 'inline-block' : 'hidden sm:inline-block'}`}>{contextText}</span>
                 )}
             </div>
 
