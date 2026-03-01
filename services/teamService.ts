@@ -29,10 +29,12 @@ import {
     getInternalTeamStatsBySport,
     getInternalTeamStats,
 } from "./internalDbService";
+import { scopeGamesToMostRecentSeason } from "./seasonScope";
 
 // Concurrency lock to prevent multiple syncs for the same sport at once
 const ACTIVE_SYNCS = new Set<string>();
 const SYNC_COOLDOWN = 60 * 60 * 1000; // 1 Hour
+const ACTIVE_HISTORICAL_SEASON_SYNCS = new Set<string>();
 const NCAA_RANKED_SPORTS = new Set<Sport>(['NCAAF', 'NCAAM', 'NCAAW']);
 const NCAA_RANK_CACHE_TTL = 15 * 60 * 1000; // 15 minutes
 const NCAA_RANK_CACHE = new Map<Sport, { fetchedAt: number; rankByTeamId: Map<string, number> }>();
@@ -1355,7 +1357,7 @@ export const getStoredLeagueStats = async (
     teams: { id: string, name: string, logo?: string }[],
     fallbackMap?: Map<string, any>,
     seasonYear?: number,
-): Promise<{ rows: LeagueStatRow[], lastUpdated: number | null }> => {
+): Promise<{ rows: LeagueStatRow[], lastUpdated: number | null, isHydrating: boolean }> => {
     await ensureInternalSportLoaded(sport);
 
     const targetSeasonYear = normalizeSeasonYearInput(seasonYear);
@@ -1467,67 +1469,57 @@ export const getStoredLeagueStats = async (
         }
     });
 
+    let isHydrating = false;
     if (missingIds.length > 0 && targetSeasonYear !== undefined) {
-        const CHUNK_SIZE = 4;
-        const hydratedRecords: {
-            id: string;
-            sport: Sport;
-            teamId: string;
-            seasonYear: number;
-            stats: TeamStatItem[];
-            timestamp: number;
-        }[] = [];
+        isHydrating = true;
+        const syncKey = `${sport}-${targetSeasonYear}`;
+        if (!ACTIVE_HISTORICAL_SEASON_SYNCS.has(syncKey)) {
+            ACTIVE_HISTORICAL_SEASON_SYNCS.add(syncKey);
+            const idsToHydrate = [...missingIds];
+            (async () => {
+                const CHUNK_SIZE = 4;
 
-        for (let i = 0; i < missingIds.length; i += CHUNK_SIZE) {
-            const chunk = missingIds.slice(i, i + CHUNK_SIZE);
-            const chunkResults = await Promise.all(
-                chunk.map(async (teamId) => {
-                    try {
-                        const stats = await loadHistoricalSeasonTeamStats(sport, teamId, targetSeasonYear);
-                        const detailed = toDetailedLeagueStats(stats, sport);
-                        if (detailed.length === 0) return null;
-                        return {
-                            id: `${sport}-${targetSeasonYear}-${teamId}`,
-                            sport,
-                            teamId,
-                            seasonYear: targetSeasonYear,
-                            stats: detailed,
-                            timestamp: Date.now(),
-                        };
-                    } catch {
-                        return null;
+                try {
+                    for (let i = 0; i < idsToHydrate.length; i += CHUNK_SIZE) {
+                        const chunk = idsToHydrate.slice(i, i + CHUNK_SIZE);
+                        const chunkResults = await Promise.all(
+                            chunk.map(async (teamId) => {
+                                try {
+                                    const stats = await loadHistoricalSeasonTeamStats(sport, teamId, targetSeasonYear);
+                                    const detailed = toDetailedLeagueStats(stats, sport);
+                                    if (detailed.length === 0) return null;
+                                    return {
+                                        id: `${sport}-${targetSeasonYear}-${teamId}`,
+                                        sport,
+                                        teamId,
+                                        seasonYear: targetSeasonYear,
+                                        stats: detailed,
+                                        timestamp: Date.now(),
+                                    };
+                                } catch {
+                                    return null;
+                                }
+                            }),
+                        );
+
+                        chunkResults.forEach((record) => {
+                            if (!record) return;
+                        });
+
+                        if (chunkResults.some((record) => Boolean(record))) {
+                            await saveStatsBatch(chunkResults.filter((record): record is NonNullable<typeof record> => Boolean(record)) as any);
+                        }
                     }
-                }),
-            );
-
-            chunkResults.forEach((record) => {
-                if (!record) return;
-                hydratedRecords.push(record);
-                storedMap.set(record.teamId, record as any);
-            });
+                } finally {
+                    ACTIVE_HISTORICAL_SEASON_SYNCS.delete(syncKey);
+                }
+            })();
         }
-
-        if (hydratedRecords.length > 0) {
-            await saveStatsBatch(hydratedRecords as any);
-        }
-
-        rows.length = 0;
-        newestTimestamp = 0;
-        teams.forEach((team) => {
-            const record = storedMap.get(team.id);
-            if (!record || !Array.isArray(record.stats) || record.stats.length === 0) return;
-            if (record.timestamp > newestTimestamp) newestTimestamp = record.timestamp;
-            const statsMap: Record<string, string> = {};
-            toDetailedLeagueStats(record.stats, sport).forEach((stat) => {
-                statsMap[`${stat.category || 'General'}|${stat.label}`] = stat.value;
-            });
-            rows.push({ team: { id: team.id, name: team.name, logo: team.logo }, stats: statsMap, ranks: {} });
-        });
     } else if (missingIds.length > 0) {
         autoSyncLeagueStats(sport, missingIds);
     }
 
-    return { rows, lastUpdated: newestTimestamp };
+    return { rows, lastUpdated: newestTimestamp, isHydrating };
 };
 
 export const getStoredTeamSeasonStats = async (
@@ -1627,12 +1619,18 @@ export const fetchTeamProfile = async (sport: Sport, teamId: string): Promise<Te
     } catch { return null; }
 };
 
-export const fetchTeamSchedule = async (sport: Sport, teamId: string): Promise<Game[]> => {
+export const fetchTeamSchedule = async (
+    sport: Sport,
+    teamId: string,
+    options?: { scope?: 'recent' | 'all' },
+): Promise<Game[]> => {
+    const scope = options?.scope || 'recent';
     await ensureInternalSportLoaded(sport);
 
     const internal = getInternalTeamSchedule(sport, teamId);
     if (internal.length > 0) {
-        return internal.filter((game) => !shouldHideUndeterminedPlayoffGame(game));
+        const filtered = internal.filter((game) => !shouldHideUndeterminedPlayoffGame(game));
+        return scope === 'all' ? filtered : scopeGamesToMostRecentSeason(filtered, sport);
     }
 
     const endpoint = ESPN_ENDPOINTS[sport];
@@ -1644,7 +1642,7 @@ export const fetchTeamSchedule = async (sport: Sport, teamId: string): Promise<G
         const mapped = (data.events || [])
             .map((e: any) => mapEventToGame(e, sport))
             .filter((game: Game) => !shouldHideUndeterminedPlayoffGame(game));
-        return mapped;
+        return scope === 'all' ? mapped : scopeGamesToMostRecentSeason(mapped, sport);
     } catch { return []; }
 };
 

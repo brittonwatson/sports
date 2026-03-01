@@ -638,22 +638,34 @@ export const App: React.FC = () => {
 
   useEffect(() => {
       let intervalId: ReturnType<typeof setInterval>;
+      let cancelled = false;
 
       if (selectedTeam) {
           const loadTeamData = async (background = false) => {
-              if (!background) setIsTeamLoading(true);
+              if (!background && !cancelled) setIsTeamLoading(true);
               try {
-                  const [profile, schedule] = await Promise.all([
+                  const [profile, recentSchedule] = await Promise.all([
                       fetchTeamProfile(selectedTeam.league, selectedTeam.id),
-                      fetchTeamSchedule(selectedTeam.league, selectedTeam.id)
+                      fetchTeamSchedule(selectedTeam.league, selectedTeam.id, { scope: 'recent' }),
                   ]);
+                  if (cancelled) return;
                   setTeamProfile(profile);
-                  setTeamSchedule(schedule);
-                  upsertGamesInRegistry(schedule);
+                  setTeamSchedule(recentSchedule);
+                  upsertGamesInRegistry(recentSchedule);
+
+                  if (!background) {
+                      fetchTeamSchedule(selectedTeam.league, selectedTeam.id, { scope: 'all' })
+                          .then((fullSchedule) => {
+                              if (cancelled || !Array.isArray(fullSchedule) || fullSchedule.length === 0) return;
+                              setTeamSchedule((prev) => (fullSchedule.length > prev.length ? fullSchedule : prev));
+                              upsertGamesInRegistry(fullSchedule);
+                          })
+                          .catch(() => {});
+                  }
               } catch (e) {
                   console.error("Failed to load team data", e);
               } finally {
-                  if (!background) setIsTeamLoading(false);
+                  if (!background && !cancelled) setIsTeamLoading(false);
               }
           };
           
@@ -669,6 +681,7 @@ export const App: React.FC = () => {
       }
 
       return () => {
+          cancelled = true;
           if (intervalId) clearInterval(intervalId);
       }
   }, [selectedTeam, upsertGamesInRegistry]);

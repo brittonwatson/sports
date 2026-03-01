@@ -224,6 +224,7 @@ const inferDisplayCategory = (sourceCategory: string, label: string, sport: Spor
 export const LeagueStatsView: React.FC<LeagueStatsViewProps> = ({ groups, sport, onTeamClick, seasonYear }) => {
     const [statsData, setStatsData] = useState<LeagueStatRow[]>([]);
     const [isLoading, setIsLoading] = useState(true);
+    const [isHydratingSeason, setIsHydratingSeason] = useState(false);
     const [lastUpdated, setLastUpdated] = useState<number | null>(null);
     const [sortConfig, setSortConfig] = useState<{ key: string, direction: 'asc' | 'desc' } | null>(null);
     const [integrityReport, setIntegrityReport] = useState<SportIntegrityReport | null>(null);
@@ -238,6 +239,7 @@ export const LeagueStatsView: React.FC<LeagueStatsViewProps> = ({ groups, sport,
     } | null>(null);
     const rootRef = useRef<HTMLDivElement>(null);
     const scrollContainerRef = useRef<HTMLDivElement>(null);
+    const [visibleRowCount, setVisibleRowCount] = useState(80);
 
     // Filter teams based on groups (e.g. if filtered by Conference in generic view)
     const activeTeams = useMemo(() => {
@@ -257,12 +259,13 @@ export const LeagueStatsView: React.FC<LeagueStatsViewProps> = ({ groups, sport,
     const loadFromDB = async (showLoading = true) => {
         if (showLoading) setIsLoading(true);
         try {
-            const { rows, lastUpdated: ts } = await getStoredLeagueStats(
+            const { rows, lastUpdated: ts, isHydrating } = await getStoredLeagueStats(
                 sport, 
                 activeTeams.map(t => ({ id: t.id, name: t.name, logo: t.logo })),
                 fallbackMap,
                 seasonYear,
             );
+            setIsHydratingSeason(isHydrating);
             
             if (rows.length > 0) {
                 // Calculate Ranks Client-Side
@@ -437,6 +440,16 @@ export const LeagueStatsView: React.FC<LeagueStatsViewProps> = ({ groups, sport,
         });
     }, [statsData, sortConfig]);
 
+    useEffect(() => {
+        setVisibleRowCount(80);
+    }, [sport, seasonYear, sortConfig, statsData.length]);
+
+    const visibleRows = useMemo(
+        () => sortedData.slice(0, visibleRowCount),
+        [sortedData, visibleRowCount],
+    );
+    const hasMoreRows = visibleRows.length < sortedData.length;
+
     const openStatModal = (row: LeagueStatRow, key: string, viewMode: 'DETAILS' | 'LEADERBOARD') => {
         const rawValue = row.stats[key];
         if (rawValue === undefined || rawValue === null) return;
@@ -469,6 +482,17 @@ export const LeagueStatsView: React.FC<LeagueStatsViewProps> = ({ groups, sport,
     }
 
     if (statsData.length === 0) {
+        if (isHydratingSeason) {
+            return (
+                <div className="flex flex-col items-center justify-center py-20 min-h-[50vh] animate-fade-in text-center px-4">
+                    <Loader2 size={36} className="text-indigo-500 animate-spin mb-4" />
+                    <h3 className="text-xl font-bold text-slate-900 dark:text-white mb-2">Hydrating Historical Season</h3>
+                    <p className="text-slate-500 dark:text-slate-400 max-w-md">
+                        Loading {sport} {typeof seasonYear === 'number' ? formatSeasonLabel(sport, seasonYear) : 'season'} data in the background.
+                    </p>
+                </div>
+            );
+        }
         return (
             <div className="flex flex-col items-center justify-center py-20 min-h-[50vh] animate-fade-in text-center px-4">
                 <div className="w-16 h-16 bg-slate-100 dark:bg-slate-900 rounded-full flex items-center justify-center mb-6 text-slate-400 dark:text-slate-500">
@@ -483,7 +507,7 @@ export const LeagueStatsView: React.FC<LeagueStatsViewProps> = ({ groups, sport,
     }
 
     const hasDetailedStats = Object.keys(categorizedColumns).length > 1;
-    const isSyncing = !hasDetailedStats || statsData.some(r => Object.keys(r.stats).length < 5);
+    const isSyncing = isHydratingSeason || !hasDetailedStats || statsData.some(r => Object.keys(r.stats).length < 5);
     const seasonLabel = typeof seasonYear === 'number' ? formatSeasonLabel(sport, seasonYear) : 'Current Season';
 
     return (
@@ -580,7 +604,7 @@ export const LeagueStatsView: React.FC<LeagueStatsViewProps> = ({ groups, sport,
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100 dark:divide-slate-800/50">
-                            {sortedData.map((row, rowIndex) => (
+                            {visibleRows.map((row, rowIndex) => (
                                 <tr key={row.team.id} className={`group transition-colors ${rowIndex % 2 === 0 ? 'bg-white/70 dark:bg-slate-950/45' : 'bg-slate-50/45 dark:bg-slate-900/20'} hover:bg-slate-50 dark:hover:bg-slate-800/30`}>
                                     <td className="sticky left-0 z-10 bg-white dark:bg-slate-950 group-hover:bg-slate-50 dark:group-hover:bg-slate-900 p-3 border-r border-slate-100 dark:border-slate-800 shadow-[2px_0_5px_rgba(0,0,0,0.05)] dark:shadow-[2px_0_5px_rgba(0,0,0,0.2)]">
                                         <button
@@ -658,6 +682,20 @@ export const LeagueStatsView: React.FC<LeagueStatsViewProps> = ({ groups, sport,
                     </table>
                 </div>
             </div>
+            {hasMoreRows && (
+                <div className="flex justify-center pt-2">
+                    <button
+                        type="button"
+                        onClick={() => setVisibleRowCount((count) => count + 80)}
+                        className="inline-flex items-center gap-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-4 py-2 text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+                    >
+                        Load More Teams
+                        <span className="text-[10px] text-slate-500 dark:text-slate-400">
+                            ({sortedData.length - visibleRows.length} remaining)
+                        </span>
+                    </button>
+                </div>
+            )}
             {selectedStat && (
                 <StatDetailModal
                     isOpen={true}
