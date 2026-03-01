@@ -3,7 +3,6 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { SPORTS, Sport, Game, PredictionResult, GroundingChunk, StandingsGroup, GameDetails, UserProfile, TeamOption, PredictionStats, StandingsType, TeamProfile, SOCCER_LEAGUES } from './types';
 import { fetchUpcomingGames, fetchBracketGames, fetchGameDetails } from './services/gameService';
 import { fetchStandings, fetchRankings, fetchTeamProfile, fetchTeamSchedule, syncFullDatabase } from './services/teamService';
-import { calculateWinProbability } from './services/probabilities/index';
 import { recordCompletedGames } from './services/internalDbService';
 import { generateAIAnalysis } from './services/aiService';
 import { getSeasonKeyForGame, listSeasonOptionsFromGames } from './services/seasonScope';
@@ -48,6 +47,15 @@ const ENABLE_RUNTIME_SYNC = import.meta.env.VITE_ENABLE_RUNTIME_SYNC === 'true';
 const ALL_VIEW_MODES: ViewMode[] = ['LIVE', 'UPCOMING', 'SCORES', 'STANDINGS', 'BRACKET', 'RANKINGS', 'CALENDAR', 'TEAMS', 'LEAGUE_STATS'];
 const PREDICTION_MODEL_VERSION = '2026-03-01-r7';
 const GAME_RENDER_BATCH = 36;
+
+type ProbabilityModule = typeof import('./services/probabilities/index');
+let probabilityModulePromise: Promise<ProbabilityModule> | null = null;
+const loadProbabilityModule = async (): Promise<ProbabilityModule> => {
+  if (!probabilityModulePromise) {
+    probabilityModulePromise = import('./services/probabilities/index');
+  }
+  return probabilityModulePromise;
+};
 
 const getOnboardingStorageKey = (userSub?: string): string =>
   userSub ? `onboarding_complete_${userSub}` : 'onboarding_complete';
@@ -243,6 +251,7 @@ export const App: React.FC = () => {
   const lastScrolledGameId = useRef<string | null>(null);
   const isApplyingPopState = useRef(false);
   const lastKnownUrl = useRef<string>('');
+  const seenFinishedSnapshots = useRef<Map<string, string>>(new Map());
 
   // Filter State
   const [activeFilter, setActiveFilter] = useState<string>('ALL');
@@ -263,7 +272,27 @@ export const App: React.FC = () => {
 
   const upsertGamesInRegistry = useCallback((incoming: Game[]) => {
     if (incoming.length === 0) return;
-    recordCompletedGames(incoming.filter((game) => game.status === 'finished'));
+    const completedToRecord: Game[] = [];
+    incoming.forEach((game) => {
+      if (game.status !== 'finished') return;
+      const gameId = String(game.id || `${game.dateTime}-${game.homeTeamId || 'home'}-${game.awayTeamId || 'away'}`);
+      const snapshot = `${game.homeScore || ''}|${game.awayScore || ''}|${game.gameStatus || ''}`;
+      const existing = seenFinishedSnapshots.current.get(gameId);
+      if (existing === snapshot) return;
+      seenFinishedSnapshots.current.set(gameId, snapshot);
+      completedToRecord.push(game);
+    });
+    if (completedToRecord.length > 0) {
+      recordCompletedGames(completedToRecord);
+    }
+
+    if (seenFinishedSnapshots.current.size > 6000) {
+      const keys = Array.from(seenFinishedSnapshots.current.keys());
+      keys.slice(0, seenFinishedSnapshots.current.size - 4000).forEach((key) => {
+        seenFinishedSnapshots.current.delete(key);
+      });
+    }
+
     setGameRegistry((prev) => {
       const next = new Map(prev);
       incoming.forEach((game) => {
@@ -890,7 +919,8 @@ export const App: React.FC = () => {
               });
       
             } else {
-              const { games } = await fetchUpcomingGames(tab as Sport, true);
+              const needsFullHistory = mode === 'SCORES' || mode === 'LEAGUE_STATS';
+              const { games } = await fetchUpcomingGames(tab as Sport, needsFullHistory);
               fetchedGames = games;
             }
       
@@ -913,7 +943,8 @@ export const App: React.FC = () => {
                 if (liveGame && liveGame.status === 'in_progress') {
                     try {
                         const details = await fetchGameDetails(liveGame.id, liveGame.league as Sport);
-                        const stats = calculateWinProbability(liveGame, details);
+                        const { calculateWinProbability } = await loadProbabilityModule();
+                        const stats = calculateWinProbability(liveGame, details, { latencyMode: 'background' });
                         
                         if (activeRequestId.current === liveGame.id) {
                             setPrediction(prev => prev ? { ...prev, stats } : { analysis: [], stats, groundingChunks: [] });
@@ -984,7 +1015,7 @@ export const App: React.FC = () => {
     const intervalId = setInterval(() => {
         if (!selectedTeam && selectedTab !== 'METHODOLOGY') {
             // Only auto-refresh if we are in a view that benefits from live updates
-            if (viewMode === 'LIVE' || viewMode === 'UPCOMING' || viewMode === 'SCORES') {
+            if (viewMode === 'LIVE' || viewMode === 'UPCOMING') {
                 loadData(selectedTab, viewMode, true);
             }
         }
@@ -1085,7 +1116,8 @@ export const App: React.FC = () => {
               const gameWithLatestOdds = { ...game, odds: details?.odds || game.odds };
 
               if (game.status !== 'finished') {
-                  const stats = calculateWinProbability(gameWithLatestOdds, details);
+                  const { calculateWinProbability } = await loadProbabilityModule();
+                  const stats = calculateWinProbability(gameWithLatestOdds, details, { latencyMode: 'interactive' });
                   const result = { analysis: [], stats, groundingChunks: [] };
                   
                   if (activeRequestId.current === game.id) {

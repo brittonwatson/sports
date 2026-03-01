@@ -231,9 +231,58 @@ export const recordCompletedGame = (game: Game): void => {
 
 export const recordCompletedGames = (games: Game[]): void => {
   if (!Array.isArray(games) || games.length === 0) return;
+
+  const perSport = new Map<Sport, Map<string, Game>>();
   games.forEach((game) => {
-    recordCompletedGame(game);
+    if (!game || game.status !== "finished") return;
+    const sport = game.league as Sport;
+    if (!sport) return;
+    if (!perSport.has(sport)) perSport.set(sport, new Map<string, Game>());
+    perSport.get(sport)!.set(gameStorageKey(game), game);
   });
+
+  if (perSport.size === 0) return;
+
+  loadLocalFinishedGames();
+  let hasLocalStorageChanges = false;
+
+  perSport.forEach((incomingMap, sport) => {
+    const incoming = Array.from(incomingMap.values());
+    if (incoming.length === 0) return;
+
+    const existingStored = localFinishedGamesBySport[sport] || [];
+    const existingByKey = new Map<string, Game>();
+    existingStored.forEach((entry) => existingByKey.set(gameStorageKey(entry), entry));
+
+    const hasDelta = incoming.some((entry) => {
+      const existing = existingByKey.get(gameStorageKey(entry));
+      if (!existing) return true;
+      return (
+        String(existing.homeScore || "") !== String(entry.homeScore || "") ||
+        String(existing.awayScore || "") !== String(entry.awayScore || "") ||
+        String(existing.gameStatus || "") !== String(entry.gameStatus || "")
+      );
+    });
+
+    if (hasDelta) {
+      localFinishedGamesBySport[sport] = mergeGamesById(existingStored, incoming)
+        .filter((entry) => entry.status === "finished");
+      hasLocalStorageChanges = true;
+    }
+
+    const existingHistory = runtimeDb.gamesHistoryBySport[sport] || [];
+    runtimeDb.gamesHistoryBySport[sport] = mergeGamesById(existingHistory, incoming);
+
+    const existingGames = runtimeDb.gamesBySport[sport] || [];
+    runtimeDb.gamesBySport[sport] = mergeGamesById(existingGames, incoming);
+
+    incoming.forEach((game) => {
+      if (game.homeTeamId) delete runtimeDb.teamSchedules[keyForTeam(sport, String(game.homeTeamId))];
+      if (game.awayTeamId) delete runtimeDb.teamSchedules[keyForTeam(sport, String(game.awayTeamId))];
+    });
+  });
+
+  if (hasLocalStorageChanges) persistLocalFinishedGames();
 };
 
 export const getInternalGamesForDate = (sport: Sport, date: Date): Game[] => {

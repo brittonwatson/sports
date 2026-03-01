@@ -84,6 +84,11 @@ interface ModelOutcome {
     calculationBreakdown: CalculationDetailItem[];
 }
 
+export interface ProbabilityModelOptions {
+    monteCarloSimulations?: number;
+    latencyMode?: "interactive" | "background" | "refine";
+}
+
 interface MonteCarloOutcome {
     home: number;
     away: number;
@@ -420,7 +425,35 @@ const OTHER_PROFILE: SportProfile = {
 };
 
 const STRICT_TEAM_HISTORY_MODE = true;
-const MONTE_CARLO_SIMULATIONS = 10000;
+const MONTE_CARLO_MIN_SIMULATIONS = 250;
+const MONTE_CARLO_MAX_SIMULATIONS = 10000;
+const MONTE_CARLO_MODE_DEFAULTS: Record<NonNullable<ProbabilityModelOptions["latencyMode"]>, number> = {
+    interactive: 1000,
+    background: 320,
+    refine: 8000,
+};
+const MONTE_CARLO_CACHE_TTL_MS = 2 * 60 * 1000;
+const MONTE_CARLO_CACHE_LIMIT = 128;
+const MONTE_CARLO_CACHE = new Map<string, { outcome: MonteCarloOutcome; storedAt: number }>();
+
+const getHardwareSimulationScale = (): number => {
+    if (typeof navigator === "undefined") return 1;
+
+    const cores = Number((navigator as { hardwareConcurrency?: number }).hardwareConcurrency || 0);
+    const memory = Number((navigator as { deviceMemory?: number }).deviceMemory || 0);
+
+    let scale = 1;
+    if (cores > 0 && cores <= 2) scale *= 0.52;
+    else if (cores > 0 && cores <= 4) scale *= 0.68;
+    else if (cores > 0 && cores <= 6) scale *= 0.84;
+
+    if (memory > 0 && memory <= 2) scale *= 0.68;
+    else if (memory > 0 && memory <= 4) scale *= 0.82;
+
+    return clamp(scale, 0.45, 1);
+};
+
+const MONTE_CARLO_HARDWARE_SCALE = getHardwareSimulationScale();
 
 const normalizeLabel = (label: string): string => normalizeStatToken(label);
 
@@ -469,6 +502,36 @@ const hashToSeed = (input: string): number => {
         hash = Math.imul(hash, 16777619);
     }
     return hash >>> 0;
+};
+
+const getMonteCarloSimulationCount = (
+    game: Game,
+    profile: SportProfile,
+    elapsedFraction: number,
+    options?: ProbabilityModelOptions,
+): number => {
+    const requested = Number(options?.monteCarloSimulations);
+    if (Number.isFinite(requested)) {
+        return Math.round(clamp(requested, MONTE_CARLO_MIN_SIMULATIONS, MONTE_CARLO_MAX_SIMULATIONS));
+    }
+
+    const mode = options?.latencyMode || "interactive";
+    let simulations = MONTE_CARLO_MODE_DEFAULTS[mode];
+
+    if (game.status === "in_progress") {
+        const remainingFraction = clamp(1 - elapsedFraction, 0.02, 1);
+        simulations = Math.round(simulations * (0.7 + (remainingFraction * 0.5)));
+    }
+
+    if (profile.family === "soccer" || profile.family === "hockey" || profile.family === "baseball") {
+        simulations = Math.round(simulations * 0.9);
+    }
+
+    if (mode !== "refine") {
+        simulations = Math.round(simulations * MONTE_CARLO_HARDWARE_SCALE);
+    }
+
+    return Math.round(clamp(simulations, MONTE_CARLO_MIN_SIMULATIONS, MONTE_CARLO_MAX_SIMULATIONS));
 };
 
 const createSeededRandom = (seed: number): (() => number) => {
@@ -2624,6 +2687,7 @@ const runMonteCarloOutcome = (
     baseMarginStdDev: number,
     scoringVolatility: number,
     elapsedFraction: number,
+    simulations: number,
 ): MonteCarloOutcome | null => {
     if (game.status === "finished") return null;
 
@@ -2650,6 +2714,14 @@ const runMonteCarloOutcome = (
             elapsedFraction.toFixed(4),
         ].join("|"),
     );
+    const cacheKey = `${seed}|${simulations}`;
+    const cached = MONTE_CARLO_CACHE.get(cacheKey);
+    const now = Date.now();
+    if (cached && (now - cached.storedAt) <= MONTE_CARLO_CACHE_TTL_MS) {
+        return cached.outcome;
+    }
+    if (cached) MONTE_CARLO_CACHE.delete(cacheKey);
+
     const rand = createSeededRandom(seed);
     const tieBreakHomeShare = clamp(
         0.5 + ((projectedMargin / Math.max(1.5, baseMarginStdDev * 3.2)) * 0.28),
@@ -2664,7 +2736,7 @@ const runMonteCarloOutcome = (
     let sumHome = 0;
     let sumAway = 0;
 
-    for (let i = 0; i < MONTE_CARLO_SIMULATIONS; i += 1) {
+    for (let i = 0; i < simulations; i += 1) {
         let finalHome = 0;
         let finalAway = 0;
 
@@ -2740,20 +2812,28 @@ const runMonteCarloOutcome = (
         }
     }
 
-    const homePct = (homeWinCount / MONTE_CARLO_SIMULATIONS) * 100;
-    const awayPct = (awayWinCount / MONTE_CARLO_SIMULATIONS) * 100;
-    const drawPct = profile.hasDraw ? (drawCount / MONTE_CARLO_SIMULATIONS) * 100 : 0;
+    const homePct = (homeWinCount / simulations) * 100;
+    const awayPct = (awayWinCount / simulations) * 100;
+    const drawPct = profile.hasDraw ? (drawCount / simulations) * 100 : 0;
     const normalized = renormalizeOutcomes(homePct, awayPct, drawPct);
 
-    return {
+    const outcome = {
         home: normalized.home,
         away: normalized.away,
         draw: normalized.draw,
-        meanHome: sumHome / MONTE_CARLO_SIMULATIONS,
-        meanAway: sumAway / MONTE_CARLO_SIMULATIONS,
-        tieRate: (tieCount / MONTE_CARLO_SIMULATIONS) * 100,
-        simulations: MONTE_CARLO_SIMULATIONS,
+        meanHome: sumHome / simulations,
+        meanAway: sumAway / simulations,
+        tieRate: (tieCount / simulations) * 100,
+        simulations,
     };
+
+    MONTE_CARLO_CACHE.set(cacheKey, { outcome, storedAt: now });
+    if (MONTE_CARLO_CACHE.size > MONTE_CARLO_CACHE_LIMIT) {
+        const oldestKey = MONTE_CARLO_CACHE.keys().next().value;
+        if (oldestKey) MONTE_CARLO_CACHE.delete(oldestKey);
+    }
+
+    return outcome;
 };
 
 const finalizeConfidence = (
@@ -2853,7 +2933,11 @@ const roundProjectedScore = (value: number, profile: SportProfile): number => {
     return Math.max(0, Math.round(value));
 };
 
-export const runProbabilityModel = (game: Game, details: GameDetails | null): ModelOutcome => {
+export const runProbabilityModel = (
+    game: Game,
+    details: GameDetails | null,
+    options?: ProbabilityModelOptions,
+): ModelOutcome => {
     const profile = getSportProfile(game.league);
     const {
         projectedTotal: baseProjectedTotal,
@@ -3095,6 +3179,7 @@ export const runProbabilityModel = (game: Game, details: GameDetails | null): Mo
     }
 
     if (game.status !== "finished") {
+        const monteCarloSimulations = getMonteCarloSimulationCount(game, profile, elapsedFraction, options);
         const monteCarlo = runMonteCarloOutcome(
             game,
             profile,
@@ -3104,6 +3189,7 @@ export const runProbabilityModel = (game: Game, details: GameDetails | null): Mo
             baseMarginStdDev,
             scoringVolatility,
             elapsedFraction,
+            monteCarloSimulations,
         );
         if (monteCarlo) {
             const mcBlendWeight = game.status === "in_progress" ? 0.88 : 0.84;

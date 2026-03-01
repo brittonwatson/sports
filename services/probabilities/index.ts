@@ -1,9 +1,13 @@
 import { Game, GameDetails, PredictionStats } from "../../types";
 import { clamp } from "./math";
-import { runProbabilityModel } from "./model";
+import { ProbabilityModelOptions, runProbabilityModel } from "./model";
 
-export const calculateWinProbability = (game: Game, details: GameDetails | null): PredictionStats => {
-    const outcome = runProbabilityModel(game, details);
+export const calculateWinProbability = (
+    game: Game,
+    details: GameDetails | null,
+    options?: ProbabilityModelOptions,
+): PredictionStats => {
+    const outcome = runProbabilityModel(game, details, options);
     const marketOdds = details?.odds || game.odds;
     const isDrawLeague = outcome.drawProbability > 0;
 
