@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Game } from '../../types';
+import { Game, RACING_LEAGUES } from '../../types';
 import { BellRing, ChevronDown, ChevronUp, Clock3, Radio, X } from 'lucide-react';
 import { getRealtimeLiveStatus, LiveStatusSeed } from '../../services/uiUtils';
 
@@ -146,6 +146,7 @@ export const FollowingBar: React.FC<FollowingBarProps> = ({
                 const isSelected = selectedGameId === game.id;
                 const isLive = game.status === 'in_progress';
                 const isFinished = game.status === 'finished';
+                const isRacing = RACING_LEAGUES.includes(game.league as any);
                 const liveSeed = liveSeedRef.current.get(game.id);
                 const elapsedSeconds = liveSeed ? Math.floor((Date.now() - liveSeed.startedAtMs) / 1000) : 0;
                 const liveStatusLabel = isLive
@@ -155,6 +156,14 @@ export const FollowingBar: React.FC<FollowingBarProps> = ({
                       elapsedSeconds,
                     )
                   : '';
+                const racingLeader = isRacing
+                  ? [...(game.racingOrderSnapshot || [])]
+                      .sort((a, b) => (a.position || Number.MAX_SAFE_INTEGER) - (b.position || Number.MAX_SAFE_INTEGER))[0]
+                  : null;
+                const leaderName = racingLeader?.name || game.homeTeam;
+                const leaderAbbreviation = racingLeader?.abbreviation;
+                const leaderLogo = racingLeader?.logo || game.homeTeamLogo;
+                const leaderNumber = racingLeader?.vehicleNumber;
                 return (
                   <button
                     key={game.id}
@@ -189,27 +198,45 @@ export const FollowingBar: React.FC<FollowingBarProps> = ({
                     </div>
 
                     <div className="space-y-1">
-                      <div className="flex items-center gap-2">
-                        {game.awayTeamLogo && <img src={game.awayTeamLogo} alt="" className="h-4 w-4 object-contain" />}
-                        <span className="hidden sm:inline text-sm font-bold text-slate-900 dark:text-white">
-                          {displayTeam(game.awayTeam, game.awayTeamAbbreviation)}
-                        </span>
-                        <span className="sm:hidden text-sm font-bold text-slate-900 dark:text-white">
-                          {compactTeamLabel(game.awayTeam, game.awayTeamAbbreviation)}
-                        </span>
-                        <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">@</span>
-                        {game.homeTeamLogo && <img src={game.homeTeamLogo} alt="" className="h-4 w-4 object-contain" />}
-                        <span className="hidden sm:inline text-sm font-bold text-slate-900 dark:text-white">
-                          {displayTeam(game.homeTeam, game.homeTeamAbbreviation)}
-                        </span>
-                        <span className="sm:hidden text-sm font-bold text-slate-900 dark:text-white">
-                          {compactTeamLabel(game.homeTeam, game.homeTeamAbbreviation)}
-                        </span>
-                      </div>
+                      {isRacing ? (
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                            Leader
+                          </span>
+                          {leaderLogo && <img src={leaderLogo} alt="" className="h-4 w-4 object-contain rounded-full" />}
+                          <span className="hidden sm:inline text-sm font-bold text-slate-900 dark:text-white truncate">
+                            {displayTeam(leaderName, leaderAbbreviation)}
+                            {leaderNumber ? ` #${leaderNumber}` : ''}
+                          </span>
+                          <span className="sm:hidden text-sm font-bold text-slate-900 dark:text-white truncate">
+                            {compactTeamLabel(leaderName, leaderAbbreviation)}
+                          </span>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          {game.awayTeamLogo && <img src={game.awayTeamLogo} alt="" className="h-4 w-4 object-contain" />}
+                          <span className="hidden sm:inline text-sm font-bold text-slate-900 dark:text-white">
+                            {displayTeam(game.awayTeam, game.awayTeamAbbreviation)}
+                          </span>
+                          <span className="sm:hidden text-sm font-bold text-slate-900 dark:text-white">
+                            {compactTeamLabel(game.awayTeam, game.awayTeamAbbreviation)}
+                          </span>
+                          <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">@</span>
+                          {game.homeTeamLogo && <img src={game.homeTeamLogo} alt="" className="h-4 w-4 object-contain" />}
+                          <span className="hidden sm:inline text-sm font-bold text-slate-900 dark:text-white">
+                            {displayTeam(game.homeTeam, game.homeTeamAbbreviation)}
+                          </span>
+                          <span className="sm:hidden text-sm font-bold text-slate-900 dark:text-white">
+                            {compactTeamLabel(game.homeTeam, game.homeTeamAbbreviation)}
+                          </span>
+                        </div>
+                      )}
                     </div>
 
                     <div className="mt-1 text-xs font-mono text-slate-600 dark:text-slate-300">
-                      {isLive || isFinished
+                      {(isLive || isFinished) && isRacing
+                        ? `P1 ${displayTeam(leaderName, leaderAbbreviation)}${isLive && liveStatusLabel ? ` • ${liveStatusLabel}` : ''}`
+                        : isLive || isFinished
                         ? `${game.awayScore || '0'}-${game.homeScore || '0'}${isLive && liveStatusLabel ? ` • ${liveStatusLabel}` : ''}`
                         : `${game.date} • ${game.time}`}
                     </div>
