@@ -22,13 +22,22 @@ import { extractNumber, fetchWithRetry } from "./utils";
 const CORE_BASE = "https://sports.core.api.espn.com/v2";
 const CORE_QUERY = "lang=en&region=us";
 const EVENT_CACHE_TTL_MS = 2 * 60 * 1000;
-const STANDINGS_CACHE_TTL_MS = 5 * 60 * 1000;
-const CALENDAR_CACHE_TTL_MS = 5 * 60 * 1000;
-const DRIVER_SEASON_CACHE_TTL_MS = 5 * 60 * 1000;
-const SEASON_DATA_CACHE_TTL_MS = 10 * 60 * 1000;
+const STANDINGS_CACHE_TTL_MS = 15 * 60 * 1000;
+const CALENDAR_CACHE_TTL_MS = 15 * 60 * 1000;
+const DRIVER_SEASON_CACHE_TTL_MS = 15 * 60 * 1000;
+const SEASON_DATA_CACHE_TTL_MS = 30 * 60 * 1000;
 const COMPLETED_EVENT_STORAGE_KEY = "sports_internal_racing_completed_events_v1";
+const PERSISTED_RACING_CACHE_STORAGE_KEY = "sports_internal_racing_payload_cache_v1";
 const MAX_COMPLETED_EVENTS_PER_SPORT = 240;
 const COMPLETED_EVENT_RETENTION_MS = 540 * 24 * 60 * 60 * 1000; // ~18 months
+const PERSISTED_EVENT_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+const PERSISTED_STANDINGS_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const PERSISTED_CALENDAR_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const PERSISTED_DRIVER_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const MAX_PERSISTED_EVENT_ENTRIES = 36;
+const MAX_PERSISTED_STANDINGS_ENTRIES = 8;
+const MAX_PERSISTED_CALENDAR_ENTRIES = 8;
+const MAX_PERSISTED_DRIVER_ENTRIES = 72;
 
 const eventCache = new Map<string, { fetchedAt: number; data: RacingEventBundle }>();
 const standingsCache = new Map<string, { fetchedAt: number; data: RacingStandingsPayload }>();
@@ -38,6 +47,8 @@ const seasonDataCache = new Map<string, { fetchedAt: number; data: SeasonDataSna
 const coreRefCache = new Map<string, any>();
 const completedEventStore = new Map<string, RacingEventBundle>();
 let completedEventStoreLoaded = false;
+let persistedRacingPayloadCacheLoaded = false;
+let persistPayloadCacheTimer: ReturnType<typeof setTimeout> | null = null;
 
 const RACING_SPORTS = new Set<Sport>(["F1", "INDYCAR", "NASCAR"]);
 const F1_ONLY_SESSION_TYPES = new Set(["practice", "free practice", "qualifying", "sprint shootout", "sprint", "race"]);
@@ -215,6 +226,109 @@ const buildRacingVenueAndLocation = (
 
 const canUseLocalStorage = (): boolean =>
   typeof window !== "undefined" && typeof window.localStorage !== "undefined";
+
+interface PersistedCacheEntry<T> {
+  fetchedAt: number;
+  data: T;
+}
+
+interface PersistedRacingPayloadEnvelope {
+  version: 1;
+  savedAt: number;
+  events?: Record<string, PersistedCacheEntry<RacingEventBundle>>;
+  standings?: Record<string, PersistedCacheEntry<RacingStandingsPayload>>;
+  calendars?: Record<string, PersistedCacheEntry<RacingCalendarPayload>>;
+  drivers?: Record<string, PersistedCacheEntry<RacingDriverSeasonResults>>;
+}
+
+const copyCacheEntry = <T>(value: { fetchedAt: number; data: T }): { fetchedAt: number; data: T } => ({
+  fetchedAt: value.fetchedAt,
+  data: value.data,
+});
+
+const serializeCacheBucket = <T>(
+  source: Map<string, { fetchedAt: number; data: T }>,
+  maxAgeMs: number,
+  maxEntries: number,
+): Record<string, PersistedCacheEntry<T>> => {
+  const now = Date.now();
+  const rows = Array.from(source.entries())
+    .filter(([, entry]) => Number.isFinite(entry.fetchedAt) && (now - entry.fetchedAt) <= maxAgeMs)
+    .sort((a, b) => b[1].fetchedAt - a[1].fetchedAt)
+    .slice(0, maxEntries);
+
+  const out: Record<string, PersistedCacheEntry<T>> = {};
+  rows.forEach(([key, entry]) => {
+    out[key] = copyCacheEntry(entry);
+  });
+  return out;
+};
+
+const hydrateCacheBucket = <T>(
+  raw: unknown,
+  target: Map<string, { fetchedAt: number; data: T }>,
+  maxAgeMs: number,
+): void => {
+  if (!raw || typeof raw !== "object") return;
+  const now = Date.now();
+  Object.entries(raw as Record<string, unknown>).forEach(([key, value]) => {
+    if (!value || typeof value !== "object") return;
+    const fetchedAt = Number((value as { fetchedAt?: number }).fetchedAt);
+    if (!Number.isFinite(fetchedAt) || fetchedAt <= 0) return;
+    if ((now - fetchedAt) > maxAgeMs) return;
+    const data = (value as { data?: T }).data;
+    if (data === undefined || data === null) return;
+
+    const existing = target.get(key);
+    if (existing && existing.fetchedAt >= fetchedAt) return;
+    target.set(key, { fetchedAt, data });
+  });
+};
+
+const persistRacingPayloadCaches = (): void => {
+  if (!canUseLocalStorage()) return;
+  try {
+    const payload: PersistedRacingPayloadEnvelope = {
+      version: 1,
+      savedAt: Date.now(),
+      events: serializeCacheBucket(eventCache, PERSISTED_EVENT_MAX_AGE_MS, MAX_PERSISTED_EVENT_ENTRIES),
+      standings: serializeCacheBucket(standingsCache, PERSISTED_STANDINGS_MAX_AGE_MS, MAX_PERSISTED_STANDINGS_ENTRIES),
+      calendars: serializeCacheBucket(calendarCache, PERSISTED_CALENDAR_MAX_AGE_MS, MAX_PERSISTED_CALENDAR_ENTRIES),
+      drivers: serializeCacheBucket(driverSeasonCache, PERSISTED_DRIVER_MAX_AGE_MS, MAX_PERSISTED_DRIVER_ENTRIES),
+    };
+    window.localStorage.setItem(PERSISTED_RACING_CACHE_STORAGE_KEY, JSON.stringify(payload));
+  } catch {
+    // Ignore quota/private mode failures.
+  }
+};
+
+const schedulePersistRacingPayloadCaches = (): void => {
+  if (!canUseLocalStorage()) return;
+  if (persistPayloadCacheTimer) return;
+  persistPayloadCacheTimer = setTimeout(() => {
+    persistPayloadCacheTimer = null;
+    persistRacingPayloadCaches();
+  }, 120);
+};
+
+const loadPersistedRacingPayloadCaches = (): void => {
+  if (persistedRacingPayloadCacheLoaded || !canUseLocalStorage()) return;
+  persistedRacingPayloadCacheLoaded = true;
+
+  try {
+    const raw = window.localStorage.getItem(PERSISTED_RACING_CACHE_STORAGE_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw) as Partial<PersistedRacingPayloadEnvelope>;
+    if (!parsed || typeof parsed !== "object") return;
+
+    hydrateCacheBucket<RacingEventBundle>(parsed.events, eventCache, PERSISTED_EVENT_MAX_AGE_MS);
+    hydrateCacheBucket<RacingStandingsPayload>(parsed.standings, standingsCache, PERSISTED_STANDINGS_MAX_AGE_MS);
+    hydrateCacheBucket<RacingCalendarPayload>(parsed.calendars, calendarCache, PERSISTED_CALENDAR_MAX_AGE_MS);
+    hydrateCacheBucket<RacingDriverSeasonResults>(parsed.drivers, driverSeasonCache, PERSISTED_DRIVER_MAX_AGE_MS);
+  } catch {
+    // Ignore malformed storage payloads.
+  }
+};
 
 const completedEventStorageKeyFor = (sport: Sport, eventId: string): string => `${sport}:${eventId}`;
 
@@ -1956,11 +2070,14 @@ export const fetchRacingCalendarPayload = async (sport: Sport): Promise<RacingCa
       events: [],
     };
   }
+  loadPersistedRacingPayloadCaches();
 
   const cacheKey = `${sport}:calendar`;
   const cached = calendarCache.get(cacheKey);
-  if (cached && (Date.now() - cached.fetchedAt) < CALENDAR_CACHE_TTL_MS) {
-    return cached.data;
+  if (cached) {
+    const ageMs = Date.now() - cached.fetchedAt;
+    if (ageMs < CALENDAR_CACHE_TTL_MS) return cached.data;
+    if (ageMs < PERSISTED_CALENDAR_MAX_AGE_MS) return cached.data;
   }
 
   const snapshot = await fetchSeasonDataSnapshot(sport);
@@ -1972,21 +2089,26 @@ export const fetchRacingCalendarPayload = async (sport: Sport): Promise<RacingCa
       events: [],
     };
     calendarCache.set(cacheKey, { fetchedAt: Date.now(), data: payload });
+    schedulePersistRacingPayloadCaches();
     return payload;
   }
 
   const payload = await buildCalendarPayloadFromSnapshot(snapshot);
   calendarCache.set(cacheKey, { fetchedAt: Date.now(), data: payload });
+  schedulePersistRacingPayloadCaches();
   return payload;
 };
 
 export const fetchRacingDriverSeasonResults = async (sport: Sport, driverId: string): Promise<RacingDriverSeasonResults | null> => {
   if (!isRacingSport(sport) || !driverId) return null;
+  loadPersistedRacingPayloadCaches();
 
   const cacheKey = `${sport}:${driverId}`;
   const cached = driverSeasonCache.get(cacheKey);
-  if (cached && (Date.now() - cached.fetchedAt) < DRIVER_SEASON_CACHE_TTL_MS) {
-    return cached.data;
+  if (cached) {
+    const ageMs = Date.now() - cached.fetchedAt;
+    if (ageMs < DRIVER_SEASON_CACHE_TTL_MS) return cached.data;
+    if (ageMs < PERSISTED_DRIVER_MAX_AGE_MS) return cached.data;
   }
 
   const snapshot = await fetchSeasonDataSnapshot(sport);
@@ -1996,15 +2118,20 @@ export const fetchRacingDriverSeasonResults = async (sport: Sport, driverId: str
   if (!payload) return null;
 
   driverSeasonCache.set(cacheKey, { fetchedAt: Date.now(), data: payload });
+  schedulePersistRacingPayloadCaches();
   return payload;
 };
 
 export const fetchRacingEventBundle = async (sport: Sport, eventId: string): Promise<RacingEventBundle | null> => {
   if (!isRacingSport(sport) || !eventId) return null;
+  loadPersistedRacingPayloadCaches();
   const cacheKey = `${sport}:${eventId}`;
   const cached = eventCache.get(cacheKey);
-  if (cached && (Date.now() - cached.fetchedAt) < EVENT_CACHE_TTL_MS) {
-    return cached.data;
+  if (cached) {
+    const ageMs = Date.now() - cached.fetchedAt;
+    if (ageMs < EVENT_CACHE_TTL_MS) return cached.data;
+    const hasLiveSession = (cached.data.sessions || []).some((session) => session.status === "in_progress");
+    if (!hasLiveSession && ageMs < PERSISTED_EVENT_MAX_AGE_MS) return cached.data;
   }
   const storedCompleted = getStoredCompletedEvent(sport, eventId);
 
@@ -2013,6 +2140,7 @@ export const fetchRacingEventBundle = async (sport: Sport, eventId: string): Pro
   if (!event) {
     if (storedCompleted) {
       eventCache.set(cacheKey, { fetchedAt: Date.now(), data: storedCompleted });
+      schedulePersistRacingPayloadCaches();
       return storedCompleted;
     }
     return null;
@@ -2095,6 +2223,7 @@ export const fetchRacingEventBundle = async (sport: Sport, eventId: string): Pro
     recordCompletedEventBundle(result);
   }
   eventCache.set(cacheKey, { fetchedAt: Date.now(), data: result });
+  schedulePersistRacingPayloadCaches();
   return result;
 };
 
@@ -2102,11 +2231,14 @@ export const fetchRacingStandingsPayload = async (sport: Sport): Promise<RacingS
   if (!isRacingSport(sport)) {
     return { sport, updatedAt: new Date().toISOString(), tables: [] };
   }
+  loadPersistedRacingPayloadCaches();
 
   const cacheKey = `${sport}:standings`;
   const cached = standingsCache.get(cacheKey);
-  if (cached && (Date.now() - cached.fetchedAt) < STANDINGS_CACHE_TTL_MS) {
-    return cached.data;
+  if (cached) {
+    const ageMs = Date.now() - cached.fetchedAt;
+    if (ageMs < STANDINGS_CACHE_TTL_MS) return cached.data;
+    if (ageMs < PERSISTED_STANDINGS_MAX_AGE_MS) return cached.data;
   }
 
   const root = await fetchJsonSafe(buildCoreLeagueUrl(sport, "standings"));
@@ -2191,5 +2323,6 @@ export const fetchRacingStandingsPayload = async (sport: Sport): Promise<RacingS
   }
 
   standingsCache.set(cacheKey, { fetchedAt: Date.now(), data: payload });
+  schedulePersistRacingPayloadCaches();
   return payload;
 };
