@@ -1,5 +1,5 @@
 import React, { useMemo, useState, useEffect } from 'react';
-import { Game, RACING_LEAGUES, RacingCalendarEvent, RacingCalendarPayload, Sport } from '../types';
+import { Game, RACING_LEAGUES, RacingCalendarEvent, RacingCalendarPayload, RacingCalendarSession, Sport } from '../types';
 import { fetchGamesForDate, fetchGameDatesForMonth, fetchUpcomingGames } from '../services/gameService';
 import { fetchRacingCalendarPayload } from '../services/racingService';
 import { GameCard } from './GameCard';
@@ -34,6 +34,55 @@ const monthLabel = (value: string): string => {
   return date.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
 };
 
+const inferRacingSessionType = (sessionName: string): 'race' | 'qualifying' | 'practice' | 'other' => {
+  const normalized = String(sessionName || '').toLowerCase();
+  if (normalized.includes('race')) return 'race';
+  if (normalized.includes('qualifying') || normalized.includes('shootout')) return 'qualifying';
+  if (normalized.includes('practice') || normalized.startsWith('fp') || normalized.includes('warmup')) return 'practice';
+  return 'other';
+};
+
+const getRacingSessionStatusOrder = (status: RacingCalendarSession['status']): number => {
+  if (status === 'in_progress') return 0;
+  if (status === 'scheduled') return 1;
+  return 2;
+};
+
+const getRacingSessionTypeOrder = (name: string): number => {
+  const type = inferRacingSessionType(name);
+  if (type === 'practice') return 0;
+  if (type === 'qualifying') return 1;
+  if (type === 'race') return 2;
+  return 3;
+};
+
+const sortRacingSessionsForDisplay = (sessions: RacingCalendarSession[]): RacingCalendarSession[] => {
+  return [...sessions].sort((a, b) => {
+    const statusDiff = getRacingSessionStatusOrder(a.status) - getRacingSessionStatusOrder(b.status);
+    if (statusDiff !== 0) return statusDiff;
+    const aTime = new Date(a.date).getTime();
+    const bTime = new Date(b.date).getTime();
+    if (a.status === 'finished') {
+      if (Number.isFinite(aTime) && Number.isFinite(bTime) && aTime !== bTime) return bTime - aTime;
+    } else if (Number.isFinite(aTime) && Number.isFinite(bTime) && aTime !== bTime) {
+      return aTime - bTime;
+    }
+    const typeDiff = getRacingSessionTypeOrder(a.name) - getRacingSessionTypeOrder(b.name);
+    if (typeDiff !== 0) return typeDiff;
+    return a.name.localeCompare(b.name);
+  });
+};
+
+const sessionPillClass = (status: RacingCalendarSession['status']): string => {
+  if (status === 'in_progress') {
+    return 'border-amber-400/50 bg-amber-500/20 text-amber-200';
+  }
+  if (status === 'finished') {
+    return 'border-emerald-400/50 bg-emerald-500/20 text-emerald-200';
+  }
+  return 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/60 text-slate-600 dark:text-slate-300';
+};
+
 const toFallbackRacingGame = (sport: Sport, event: RacingCalendarEvent): Game => {
   const topA = event.topFinishers[0];
   const topB = event.topFinishers[1];
@@ -66,6 +115,15 @@ const toFallbackRacingGame = (sport: Sport, event: RacingCalendarEvent): Game =>
     isPlayoff: false,
     seasonYear: event.seasonYear,
     seasonType: event.seasonType,
+    racingSessionType: 'race',
+    racingOrderSnapshot: event.topFinishers.slice(0, 5).map((finisher) => ({
+      competitorId: finisher.competitorId,
+      name: finisher.name,
+      abbreviation: finisher.abbreviation,
+      logo: finisher.logo,
+      position: finisher.rank,
+      statusText: finisher.statusText,
+    })),
     venue: event.venue,
     location: event.location,
   };
@@ -105,7 +163,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
       try {
         const [calendarPayload, fullSchedule] = await Promise.all([
           fetchRacingCalendarPayload(sport),
-          fetchUpcomingGames(sport, true),
+          fetchUpcomingGames(sport, true, { forceLiveRefresh: true }),
         ]);
         if (cancelled) return;
         setRacingCalendar(calendarPayload);
@@ -337,7 +395,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
               onClick={() => {
                 setIsRacingLoading(true);
                 setRacingError(null);
-                Promise.all([fetchRacingCalendarPayload(sport), fetchUpcomingGames(sport, true)])
+                Promise.all([fetchRacingCalendarPayload(sport), fetchUpcomingGames(sport, true, { forceLiveRefresh: true })])
                   .then(([calendarPayload, fullSchedule]) => {
                     setRacingCalendar(calendarPayload);
                     const map = new Map<string, Game>();
@@ -386,6 +444,17 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
                               <div>
                                 <div className="text-sm font-bold text-slate-900 dark:text-white">{event.shortName}</div>
                                 <div className="text-xs text-slate-500 dark:text-slate-400 mt-1">{event.venue || 'Venue TBD'}{event.location ? `, ${event.location}` : ''}</div>
+                                {(() => {
+                                  const orderedSessions = sortRacingSessionsForDisplay(event.sessions || []);
+                                  const focus = orderedSessions[0];
+                                  if (!focus) return null;
+                                  const focusLabel = focus.status === 'in_progress' ? 'Current Session' : 'Next Session';
+                                  return (
+                                    <div className="mt-2 text-[11px] font-semibold text-slate-600 dark:text-slate-300">
+                                      {focusLabel}: {focus.name} • {formatDateTime(focus.date)}
+                                    </div>
+                                  );
+                                })()}
                               </div>
                               <div className="text-right text-xs">
                                 <div className="font-semibold text-slate-700 dark:text-slate-300">{formatDateTime(event.date)}</div>
@@ -401,8 +470,11 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
 
                             {event.sessions.length > 0 && (
                               <div className="mt-3 flex flex-wrap gap-1.5">
-                                {event.sessions.map((session) => (
-                                  <span key={`${event.eventId}-${session.id}`} className="text-[10px] uppercase tracking-wider rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/60 px-2 py-1 text-slate-600 dark:text-slate-300">
+                                {sortRacingSessionsForDisplay(event.sessions).map((session) => (
+                                  <span
+                                    key={`${event.eventId}-${session.id}`}
+                                    className={`text-[10px] uppercase tracking-wider rounded-md border px-2 py-1 ${sessionPillClass(session.status)}`}
+                                  >
                                     {session.name}
                                   </span>
                                 ))}

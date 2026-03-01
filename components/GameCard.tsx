@@ -26,22 +26,34 @@ export const GameCard: React.FC<GameCardProps> = ({ game, onSelect, isSelected, 
     !(isPreseason && contextLower.includes('preseason'));
   const hasRacingOrder = isRacing && (isLive || isFinished);
   const racingOrderRows = hasRacingOrder
-    ? [
-        {
-          key: `${game.homeTeamId || 'home'}-${game.homeScore || ''}`,
-          name: game.homeTeam,
-          logo: game.homeTeamLogo,
-          abbreviation: game.homeTeamAbbreviation,
-          position: game.homeScore || '1',
-        },
-        {
-          key: `${game.awayTeamId || 'away'}-${game.awayScore || ''}`,
-          name: game.awayTeam,
-          logo: game.awayTeamLogo,
-          abbreviation: game.awayTeamAbbreviation,
-          position: game.awayScore || '2',
-        },
-      ].filter((row, index, rows) => row.name && rows.findIndex((candidate) => candidate.name === row.name) === index)
+    ? (
+      (game.racingOrderSnapshot && game.racingOrderSnapshot.length > 0)
+        ? game.racingOrderSnapshot
+            .slice(0, 5)
+            .map((row, index) => ({
+              key: `${row.competitorId || row.name}-${row.position || index + 1}`,
+              name: row.name,
+              logo: row.logo,
+              abbreviation: row.abbreviation,
+              position: String(row.position || index + 1),
+            }))
+        : [
+            {
+              key: `${game.homeTeamId || 'home'}-${game.homeScore || ''}`,
+              name: game.homeTeam,
+              logo: game.homeTeamLogo,
+              abbreviation: game.homeTeamAbbreviation,
+              position: game.homeScore || '1',
+            },
+            {
+              key: `${game.awayTeamId || 'away'}-${game.awayScore || ''}`,
+              name: game.awayTeam,
+              logo: game.awayTeamLogo,
+              abbreviation: game.awayTeamAbbreviation,
+              position: game.awayScore || '2',
+            },
+          ]
+      ).filter((row, index, rows) => row.name && rows.findIndex((candidate) => candidate.name === row.name) === index)
     : [];
 
   const liveSeedRef = useRef<{ baseClock?: string; baseStatus?: string; startedAtMs: number }>({
@@ -212,7 +224,15 @@ export const GameCard: React.FC<GameCardProps> = ({ game, onSelect, isSelected, 
             {isRacing ? (
                 <div className="flex flex-col gap-3 mb-4">
                     <div className="rounded-xl border border-slate-200 dark:border-slate-700/60 bg-slate-50 dark:bg-slate-900/50 px-3 py-2.5">
-                        <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">Race Event</p>
+                        <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                          {game.racingSessionType === 'qualifying'
+                            ? 'Qualifying Session'
+                            : game.racingSessionType === 'practice'
+                              ? 'Practice Session'
+                              : game.racingSessionType === 'race'
+                                ? 'Race Session'
+                                : 'Racing Session'}
+                        </p>
                         <p className="text-sm sm:text-base font-semibold text-slate-900 dark:text-white mt-1">
                             {contextText || game.gameStatus || game.leagueName || 'Session'}
                         </p>
@@ -221,7 +241,7 @@ export const GameCard: React.FC<GameCardProps> = ({ game, onSelect, isSelected, 
                     {racingOrderRows.length > 0 ? (
                         <div className="rounded-xl border border-slate-200 dark:border-slate-700/60 overflow-hidden">
                             <div className="px-3 py-2 bg-slate-50 dark:bg-slate-900/60 text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                                {isFinished ? 'Final Order Snapshot' : 'Live Order Snapshot'}
+                                {isFinished ? 'Top 5 Finishers' : 'Live Top 5 Snapshot'}
                             </div>
                             <div className="divide-y divide-slate-100 dark:divide-slate-800/70">
                                 {racingOrderRows.map((row) => (

@@ -63,10 +63,44 @@ const toRacingScore = (competitor: any, state?: string): string | undefined => {
     return undefined;
 };
 
+const inferRacingSessionType = (competition: any): Game["racingSessionType"] => {
+    const text = String(
+        competition?.type?.text ||
+        competition?.type?.abbreviation ||
+        competition?.name ||
+        "",
+    ).toLowerCase();
+    if (text.includes("race")) return "race";
+    if (text.includes("qualifying") || text.includes("shootout")) return "qualifying";
+    if (text.includes("practice") || text.startsWith("fp") || text.includes("warmup")) return "practice";
+    return "other";
+};
+
 export const mapEventToGame = (event: any, sport: Sport, leagueLogo?: string): Game => {
     const competition = event.competitions?.[0];
-    const statusState = event.status?.type?.state;
+    const eventStatusState = String(event.status?.type?.state || '').toLowerCase();
+    const competitionStatusState = String(competition?.status?.type?.state || '').toLowerCase();
+    const statusState = competitionStatusState || eventStatusState;
     const isRacing = RACING_SPORTS.has(sport);
+    const racingSessionType = isRacing ? inferRacingSessionType(competition) : undefined;
+    const racingSessionName = isRacing
+        ? String(competition?.type?.text || competition?.name || event.shortName || "").trim()
+        : "";
+    const competitionStatusDetail = String(
+        competition?.status?.type?.detail ||
+        competition?.status?.type?.description ||
+        "",
+    ).trim();
+    const eventStatusDetail = String(event.status?.type?.detail || "").trim();
+    const baseStatusDetail = competitionStatusDetail || eventStatusDetail;
+    const racingStatusDetail = isRacing
+        ? (() => {
+            if (!racingSessionName) return baseStatusDetail;
+            if (!baseStatusDetail) return racingSessionName;
+            if (baseStatusDetail.toLowerCase().includes(racingSessionName.toLowerCase())) return baseStatusDetail;
+            return `${racingSessionName} - ${baseStatusDetail}`;
+        })()
+        : baseStatusDetail;
 
     let homeComp = competition?.competitors?.find((c: any) => c.homeAway === 'home');
     let awayComp = competition?.competitors?.find((c: any) => c.homeAway === 'away');
@@ -128,6 +162,28 @@ export const mapEventToGame = (event: any, sport: Sport, leagueLogo?: string): G
     const awayAbbreviation = isRacing ? toRacingAbbreviation(awayComp) : awayComp?.team?.abbreviation;
     const homeScore = isRacing ? toRacingScore(homeComp, statusState) : normalizeStat(homeComp?.score);
     const awayScore = isRacing ? toRacingScore(awayComp, statusState) : normalizeStat(awayComp?.score);
+    const racingOrderSnapshot = isRacing
+        ? coerceRacingCompetitors(competition)
+            .slice(0, 5)
+            .map((competitor: any) => ({
+                competitorId: String(competitor?.athlete?.id || competitor?.id || ""),
+                name: toRacingName(competitor),
+                abbreviation: toRacingAbbreviation(competitor),
+                logo: competitor?.athlete?.flag?.href ||
+                    competitor?.athlete?.headshot?.href ||
+                    competitor?.team?.logo ||
+                    competitor?.team?.logos?.[0]?.href,
+                position: (() => {
+                    const order = Math.trunc(extractNumber(competitor?.order));
+                    if (Number.isFinite(order) && order > 0) return order;
+                    const place = Math.trunc(extractNumber(competitor?.place));
+                    if (Number.isFinite(place) && place > 0) return place;
+                    return undefined;
+                })(),
+                statusText: String(competitor?.status?.type?.description || "").trim() || undefined,
+            }))
+            .filter((row) => row.name)
+        : undefined;
 
     return {
         id: event.id,
@@ -156,9 +212,11 @@ export const mapEventToGame = (event: any, sport: Sport, leagueLogo?: string): G
         leagueName: event.league?.name,
         leagueLogo: leagueLogo,
         context: context || (isRacing ? (competition?.type?.text || event.name || competition?.name) : undefined),
-        gameStatus: event.status?.type?.detail,
+        gameStatus: isRacing ? racingStatusDetail : event.status?.type?.detail,
         status: statusState === 'in' ? 'in_progress' : statusState === 'post' ? 'finished' : 'scheduled',
-        clock: event.status?.displayClock,
+        clock: isRacing
+            ? (competition?.status?.displayClock || event.status?.displayClock)
+            : event.status?.displayClock,
         period: event.status?.period,
         isPlayoff: isPostseason,
         seriesSummary: competition?.series?.summary,
@@ -170,6 +228,8 @@ export const mapEventToGame = (event: any, sport: Sport, leagueLogo?: string): G
         temperature: event.weather?.temperature ? `${event.weather.temperature}°` : undefined,
         seasonYear: event.season?.year,
         seasonType: seasonType,
+        racingSessionType,
+        racingOrderSnapshot,
         
         situation: sport === 'NFL' || sport === 'NCAAF' ? (event.competitions?.[0]?.situation ? {
              down: event.competitions[0].situation.down,

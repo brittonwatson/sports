@@ -90,6 +90,15 @@ export interface Game {
   temperature?: string;
   seasonYear?: number;
   seasonType?: number;
+  racingSessionType?: 'race' | 'qualifying' | 'practice' | 'other';
+  racingOrderSnapshot?: Array<{
+    competitorId?: string;
+    name: string;
+    abbreviation?: string;
+    logo?: string;
+    position?: number;
+    statusText?: string;
+  }>;
 }
 
 export interface FactorComparison {

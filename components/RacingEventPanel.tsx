@@ -38,7 +38,7 @@ const FRIENDLY_LABELS: Record<string, string> = {
   tirecompound: "Tire",
 };
 
-const PRIORITY_COLUMNS: Array<{ label: string; aliases: string[] }> = [
+const RACE_PRIORITY_COLUMNS: Array<{ label: string; aliases: string[] }> = [
   { label: "Gap", aliases: ["behindTime", "gapToLeader", "gap", "interval", "timeBehind"] },
   { label: "Laps Down", aliases: ["behindLaps", "lapsDown", "lapDown"] },
   { label: "Laps", aliases: ["lapsCompleted", "laps"] },
@@ -55,6 +55,24 @@ const PRIORITY_COLUMNS: Array<{ label: string; aliases: string[] }> = [
   { label: "Total Time", aliases: ["totalTime"] },
 ];
 
+const QUALIFYING_PRIORITY_COLUMNS: Array<{ label: string; aliases: string[] }> = [
+  { label: "Q3", aliases: ["qual3TimeMS", "q3"] },
+  { label: "Q2", aliases: ["qual2TimeMS", "q2"] },
+  { label: "Q1", aliases: ["qual1TimeMS", "q1"] },
+  { label: "Gap", aliases: ["behindTime", "gapToLeader", "gap", "interval", "timeBehind"] },
+  { label: "Fastest Lap", aliases: ["fastestLap", "bestLap", "lapTime"] },
+  { label: "Total Time", aliases: ["totalTime"] },
+];
+
+const PRACTICE_PRIORITY_COLUMNS: Array<{ label: string; aliases: string[] }> = [
+  { label: "Fastest Lap", aliases: ["fastestLap", "bestLap", "lapTime"] },
+  { label: "Gap", aliases: ["behindTime", "gapToLeader", "gap", "interval", "timeBehind"] },
+  { label: "Laps", aliases: ["lapsCompleted", "laps"] },
+  { label: "Laps Led", aliases: ["lapsLead", "lapsLed"] },
+  { label: "Total Time", aliases: ["totalTime"] },
+  { label: "Tire", aliases: ["tireStatus", "tire", "tireCompound", "compound"] },
+];
+
 const HIDDEN_COLUMN_KEYS = new Set([
   "place",
   "position",
@@ -67,6 +85,45 @@ const HIDDEN_COLUMN_KEYS = new Set([
 ]);
 
 const normalizeKey = (value: string): string => String(value || "").trim().toLowerCase();
+
+const inferSessionType = (sessionName: string): "race" | "qualifying" | "practice" | "other" => {
+  const normalized = normalizeKey(sessionName);
+  if (normalized.includes("race")) return "race";
+  if (normalized.includes("qualifying") || normalized.includes("shootout")) return "qualifying";
+  if (normalized.includes("practice") || normalized.startsWith("fp") || normalized.includes("warmup")) return "practice";
+  return "other";
+};
+
+const getSessionStatusOrder = (status: RacingSessionResult["status"]): number => {
+  if (status === "in_progress") return 0;
+  if (status === "scheduled") return 1;
+  return 2;
+};
+
+const getSessionTypeOrder = (name: string): number => {
+  const type = inferSessionType(name);
+  if (type === "practice") return 0;
+  if (type === "qualifying") return 1;
+  if (type === "race") return 2;
+  return 3;
+};
+
+const sortSessionsForDisplay = (sessions: RacingSessionResult[]): RacingSessionResult[] => {
+  return [...sessions].sort((a, b) => {
+    const statusDiff = getSessionStatusOrder(a.status) - getSessionStatusOrder(b.status);
+    if (statusDiff !== 0) return statusDiff;
+    const aTime = new Date(a.date).getTime();
+    const bTime = new Date(b.date).getTime();
+    if (a.status === "finished") {
+      if (Number.isFinite(aTime) && Number.isFinite(bTime) && aTime !== bTime) return bTime - aTime;
+    } else if (Number.isFinite(aTime) && Number.isFinite(bTime) && aTime !== bTime) {
+      return aTime - bTime;
+    }
+    const typeDiff = getSessionTypeOrder(a.name) - getSessionTypeOrder(b.name);
+    if (typeDiff !== 0) return typeDiff;
+    return a.name.localeCompare(b.name);
+  });
+};
 
 const hasMeaningfulValue = (value: string): boolean => {
   const normalized = String(value || "").trim();
@@ -119,6 +176,12 @@ const deriveLapsSincePit = (statMap: Map<string, string>): string => {
 };
 
 const chooseVisibleColumns = (session: RacingSessionResult): SessionColumn[] => {
+  const sessionType = inferSessionType(session.name);
+  const priorityColumns = sessionType === "qualifying"
+    ? QUALIFYING_PRIORITY_COLUMNS
+    : sessionType === "practice"
+      ? PRACTICE_PRIORITY_COLUMNS
+      : RACE_PRIORITY_COLUMNS;
   const present = new Map<string, { key: string; label: string }>();
 
   session.competitors.forEach((competitor) => {
@@ -139,7 +202,7 @@ const chooseVisibleColumns = (session: RacingSessionResult): SessionColumn[] => 
   const ordered: SessionColumn[] = [];
   const usedKeys = new Set<string>();
 
-  PRIORITY_COLUMNS.forEach((priorityColumn) => {
+  priorityColumns.forEach((priorityColumn) => {
     const match = priorityColumn.aliases
       .map((alias) => present.get(normalizeKey(alias)))
       .find((entry): entry is { key: string; label: string } => Boolean(entry));
@@ -200,9 +263,14 @@ export const RacingEventPanel: React.FC<RacingEventPanelProps> = ({
   onDriverClick,
 }) => {
   const sessions = useMemo(
-    () => (event?.sessions || []).slice().sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()),
+    () => sortSessionsForDisplay(event?.sessions || []),
     [event],
   );
+  const hasForecastableRace = useMemo(() => {
+    const raceSession = sessions.find((session) => inferSessionType(session.name) === "race");
+    if (raceSession) return raceSession.status !== "finished";
+    return sessions.some((session) => session.status !== "finished");
+  }, [sessions]);
 
   if (isLoading) {
     return (
@@ -237,7 +305,7 @@ export const RacingEventPanel: React.FC<RacingEventPanelProps> = ({
         </div>
       </section>
 
-      {event.prediction && event.prediction.entries.length > 0 && (
+      {hasForecastableRace && event.prediction && event.prediction.entries.length > 0 && (
         <section className="rounded-3xl border border-cyan-300/50 dark:border-cyan-700/50 bg-cyan-50/70 dark:bg-cyan-950/20 p-5">
           <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
             <div className="flex items-center gap-2">

@@ -1827,7 +1827,7 @@ export const App: React.FC = () => {
                      />
                      
                      {isSelected && (
-                         <div className="relative mt-4 ml-4 pl-6 border-l-2 border-slate-200 dark:border-slate-800 animate-fade-in">
+                        <div className="relative mt-4 pl-4 sm:pl-6 sm:ml-4 border-l-2 border-slate-200 dark:border-slate-800 animate-fade-in">
                              <div className="absolute -left-[9px] -top-4 w-4 h-8 rounded-bl-xl border-l-2 border-b-0 border-slate-200 dark:border-slate-800 bg-transparent opacity-0"></div>
                              
                              {RACING_LEAGUES.includes(game.league as Sport) ? (

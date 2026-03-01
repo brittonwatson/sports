@@ -316,6 +316,53 @@ const isSprintCompetition = (sport: Sport, competition: any): boolean => {
   return typeText.includes("sprint") && !typeText.includes("shootout");
 };
 
+const inferSessionTypeFromName = (name: string): "race" | "qualifying" | "practice" | "other" => {
+  const normalized = normalizeKey(name);
+  if (!normalized) return "other";
+  if (normalized.includes("race")) return "race";
+  if (normalized.includes("qualifying") || normalized.includes("shootout")) return "qualifying";
+  if (normalized.includes("practice") || normalized.startsWith("fp") || normalized.includes("warmup")) return "practice";
+  return "other";
+};
+
+const getSessionTypeOrder = (name: string): number => {
+  const type = inferSessionTypeFromName(name);
+  if (type === "practice") return 0;
+  if (type === "qualifying") return 1;
+  if (type === "race") return 2;
+  return 3;
+};
+
+const getSessionStatusOrder = (status: "scheduled" | "in_progress" | "finished"): number => {
+  if (status === "in_progress") return 0;
+  if (status === "scheduled") return 1;
+  return 2;
+};
+
+const sortRacingSessionsForDisplay = <T extends { status: "scheduled" | "in_progress" | "finished"; date: string; name?: string }>(
+  sessions: T[],
+): T[] => {
+  return [...sessions].sort((a, b) => {
+    const statusDiff = getSessionStatusOrder(a.status) - getSessionStatusOrder(b.status);
+    if (statusDiff !== 0) return statusDiff;
+
+    const aTime = new Date(a.date).getTime();
+    const bTime = new Date(b.date).getTime();
+    const aHasTime = Number.isFinite(aTime);
+    const bHasTime = Number.isFinite(bTime);
+
+    if (a.status === "finished") {
+      if (aHasTime && bHasTime && aTime !== bTime) return bTime - aTime;
+    } else {
+      if (aHasTime && bHasTime && aTime !== bTime) return aTime - bTime;
+    }
+
+    const typeDiff = getSessionTypeOrder(String(a.name || "")) - getSessionTypeOrder(String(b.name || ""));
+    if (typeDiff !== 0) return typeDiff;
+    return String(a.name || "").localeCompare(String(b.name || ""));
+  });
+};
+
 const getCompetitorFinish = (competitor: any): number => {
   const order = extractNumber(competitor?.order);
   if (order > 0) return order;
@@ -436,7 +483,7 @@ const scoreFromTable = (pointsTable: number[], finishPosition: number): number =
 
 const resolveSeasonYearCandidates = (): number[] => {
   const nowYear = new Date().getFullYear();
-  return [nowYear, nowYear + 1, nowYear - 1, nowYear - 2];
+  return [nowYear, nowYear - 1, nowYear + 1, nowYear - 2, nowYear + 2, nowYear - 3];
 };
 
 const fetchSeasonTypeIds = async (sport: Sport, seasonYear: number): Promise<number[]> => {
@@ -465,12 +512,49 @@ const fetchSeasonEventRefsForYear = async (sport: Sport, seasonYear: number): Pr
 };
 
 const fetchSeasonDataSnapshot = async (sport: Sport): Promise<SeasonDataSnapshot | null> => {
+  const nowMs = Date.now();
+  const nowYear = new Date().getFullYear();
   const candidates = resolveSeasonYearCandidates();
+  const snapshots: SeasonDataSnapshot[] = [];
+
+  const scoreSnapshot = (snapshot: SeasonDataSnapshot): number => {
+    const raceStates = snapshot.events.map((event: any) => {
+      const raceCompetition = extractRaceCompetition(event);
+      const state = String(raceCompetition?.status?.type?.state || "").toLowerCase();
+      const eventMs = new Date(String(event?.date || "")).getTime();
+      const hasDate = Number.isFinite(eventMs);
+      return { state, eventMs, hasDate };
+    });
+
+    const liveCount = raceStates.filter((row) => row.state === "in").length;
+    const upcomingCount = raceStates.filter((row) => row.state !== "post" && (!row.hasDate || row.eventMs >= (nowMs - (6 * 60 * 60 * 1000)))).length;
+    const completedCount = raceStates.filter((row) => row.state === "post").length;
+    const nearWindowCount = raceStates.filter((row) => row.hasDate && row.eventMs >= (nowMs - (150 * 24 * 60 * 60 * 1000)) && row.eventMs <= (nowMs + (210 * 24 * 60 * 60 * 1000))).length;
+
+    let score = 0;
+    score += Math.min(snapshot.events.length, 48);
+    score += nearWindowCount * 6;
+    score += upcomingCount * 5;
+    score += completedCount * 3;
+    score += liveCount * 35;
+
+    if (snapshot.seasonYear === nowYear) score += 24;
+    else if (snapshot.seasonYear === nowYear - 1) score += 10;
+    else if (snapshot.seasonYear === nowYear + 1) score += 6;
+    else score -= Math.abs(snapshot.seasonYear - nowYear) * 4;
+
+    if (nearWindowCount === 0 && upcomingCount === 0 && liveCount === 0) {
+      score -= 24;
+    }
+    return score;
+  };
+
   for (const seasonYear of candidates) {
     const cacheKey = `${sport}:${seasonYear}`;
     const cached = seasonDataCache.get(cacheKey);
     if (cached && (Date.now() - cached.fetchedAt) < SEASON_DATA_CACHE_TTL_MS) {
-      return cached.data;
+      snapshots.push(cached.data);
+      continue;
     }
 
     const refs = await fetchSeasonEventRefsForYear(sport, seasonYear);
@@ -513,10 +597,12 @@ const fetchSeasonDataSnapshot = async (sport: Sport): Promise<SeasonDataSnapshot
       events: validEvents,
     };
     seasonDataCache.set(cacheKey, { fetchedAt: Date.now(), data: snapshot });
-    return snapshot;
+    snapshots.push(snapshot);
   }
 
-  return null;
+  if (snapshots.length === 0) return null;
+  snapshots.sort((a, b) => scoreSnapshot(b) - scoreSnapshot(a));
+  return snapshots[0];
 };
 
 const buildEntityMapForRefs = async (refs: string[]): Promise<Map<string, EntitySummary>> => {
@@ -760,7 +846,7 @@ const buildCalendarPayloadFromSnapshot = async (snapshot: SeasonDataSnapshot): P
       seasonYear: Number(event?.season?.year) || snapshot.seasonYear,
       seasonType: Number(event?.season?.type?.type ?? event?.season?.type?.id) || undefined,
       topFinishers,
-      sessions: sessions.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()),
+      sessions: sortRacingSessionsForDisplay(sessions),
     };
   });
 
@@ -840,6 +926,15 @@ const buildEventPrediction = (
 ): RacingEventPrediction | undefined => {
   const raceSession = sessions.find((session) => normalizeKey(session.name).includes("race")) || sessions[sessions.length - 1];
   if (!raceSession) return undefined;
+  if (raceSession.status === "finished") return undefined;
+  const raceTimeMs = new Date(raceSession.date).getTime();
+  if (
+    raceSession.status === "scheduled" &&
+    Number.isFinite(raceTimeMs) &&
+    raceTimeMs < (Date.now() - (4 * 60 * 60 * 1000))
+  ) {
+    return undefined;
+  }
 
   const participants = raceSession.competitors;
   if (participants.length < 2) return undefined;
@@ -1283,8 +1378,8 @@ export const fetchRacingEventBundle = async (sport: Sport, eventId: string): Pro
       const statusRef = competition?.status?.$ref ? asHttps(String(competition.status.$ref)) : "";
       const parsedStatus = parseStatus(statusByRef.get(statusRef));
       return toSessionResult(competition, parsedStatus, entityByRef, statsByCompetitorKey);
-    })
-    .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+    });
+  const orderedSessions = sortRacingSessionsForDisplay(sessions);
 
   const venueName = event?.venues?.[0]?.fullName || event?.circuit?.shortName || undefined;
   const locationParts = [
@@ -1295,7 +1390,7 @@ export const fetchRacingEventBundle = async (sport: Sport, eventId: string): Pro
   const snapshot = await fetchSeasonDataSnapshot(sport);
   const aggregate = snapshot ? buildSeasonDriverAggregate(sport, snapshot.events) : new Map<string, DriverAggregateRow>();
   const standings = await fetchRacingStandingsPayload(sport);
-  const prediction = buildEventPrediction(sport, String(event?.id || eventId), sessions, aggregate, standings);
+  const prediction = buildEventPrediction(sport, String(event?.id || eventId), orderedSessions, aggregate, standings);
 
   const result: RacingEventBundle = {
     sport,
@@ -1306,7 +1401,7 @@ export const fetchRacingEventBundle = async (sport: Sport, eventId: string): Pro
     endDate: event?.endDate ? String(event.endDate) : undefined,
     venue: venueName,
     location: locationParts.length > 0 ? locationParts.join(", ") : undefined,
-    sessions,
+    sessions: orderedSessions,
     prediction,
   };
 
