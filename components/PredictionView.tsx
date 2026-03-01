@@ -8,6 +8,7 @@ import { GroundingSources } from './GroundingSources';
 import { fetchPlayerProfile } from '../services/playerService';
 import { getTeamColor } from '../services/uiUtils';
 import { getGameTeamAbbreviation } from '../services/teamAbbreviation';
+import { StatDetailModal } from './modals/StatDetailModal';
 
 interface PredictionViewProps {
   game: Game;
@@ -78,6 +79,15 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
   const [playerProfile, setPlayerProfile] = useState<PlayerProfile | null>(null);
   const [isPlayerLoading, setIsPlayerLoading] = useState(false);
   const [playerStatsMode, setPlayerStatsMode] = useState<'GAME' | 'SEASON'>('SEASON');
+  const [selectedStat, setSelectedStat] = useState<{
+      label: string;
+      value: string;
+      rank?: number;
+      category?: string;
+      teamId: string;
+      teamName: string;
+      initialView?: 'DETAILS' | 'LEADERBOARD';
+  } | null>(null);
 
   const displayOdds = stats.marketOdds || game.odds;
   const drawProbability = Math.max(0, Math.min(100, stats.drawProbability ?? 0));
@@ -120,6 +130,24 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
       if (!teamId) return;
       e.stopPropagation();
       onTeamClick(teamId, game.league as Sport);
+  };
+
+  const openPredictionStatModal = (
+      stat: TeamStat,
+      side: 'home' | 'away',
+      category: string,
+      viewMode: 'DETAILS' | 'LEADERBOARD' = 'DETAILS',
+  ) => {
+      const isHome = side === 'home';
+      setSelectedStat({
+          label: stat.label,
+          value: isHome ? stat.homeValue : stat.awayValue,
+          rank: isHome ? stat.homeRank : stat.awayRank,
+          category,
+          teamId: (isHome ? game.homeTeamId : game.awayTeamId) || `${side}-${game.id}`,
+          teamName: isHome ? game.homeTeam : game.awayTeam,
+          initialView: viewMode,
+      });
   };
 
   const homeAbbr = getGameTeamAbbreviation(game, 'home');
@@ -609,26 +637,46 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
                                     return (
                                         <div key={`${category}-${stat.label}-${idx}`} className="grid grid-cols-[minmax(84px,auto)_1fr_minmax(84px,auto)] items-center gap-3 rounded-lg border border-slate-200/80 dark:border-slate-800/70 bg-white/85 dark:bg-slate-900/65 px-3 py-2">
                                             <div className="text-right">
-                                                <div className={`text-base font-mono font-bold leading-none ${awayEdge ? 'text-indigo-700 dark:text-indigo-300' : 'text-slate-700 dark:text-slate-200'}`}>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => openPredictionStatModal(stat, 'away', category, 'DETAILS')}
+                                                    className={`text-base font-mono font-bold leading-none hover:underline underline-offset-2 decoration-dotted ${awayEdge ? 'text-indigo-700 dark:text-indigo-300' : 'text-slate-700 dark:text-slate-200'}`}
+                                                >
                                                     {stat.awayValue}
-                                                </div>
+                                                </button>
                                                 {typeof stat.awayRank === 'number' && stat.awayRank > 0 && (
-                                                    <div className="text-[9px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mt-1">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => openPredictionStatModal(stat, 'away', category, 'LEADERBOARD')}
+                                                        className="text-[9px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mt-1 hover:text-indigo-600 dark:hover:text-indigo-400"
+                                                    >
                                                         Lg #{stat.awayRank}
-                                                    </div>
+                                                    </button>
                                                 )}
                                             </div>
-                                            <div className="text-center text-xs font-semibold text-slate-700 dark:text-slate-200 truncate">
+                                            <button
+                                                type="button"
+                                                onClick={() => openPredictionStatModal(stat, 'home', category, 'DETAILS')}
+                                                className="text-center text-xs font-semibold text-slate-700 dark:text-slate-200 truncate hover:text-indigo-600 dark:hover:text-indigo-400"
+                                            >
                                                 {stat.label}
-                                            </div>
+                                            </button>
                                             <div className="text-left">
-                                                <div className={`text-base font-mono font-bold leading-none ${homeEdge ? 'text-indigo-700 dark:text-indigo-300' : 'text-slate-700 dark:text-slate-200'}`}>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => openPredictionStatModal(stat, 'home', category, 'DETAILS')}
+                                                    className={`text-base font-mono font-bold leading-none hover:underline underline-offset-2 decoration-dotted ${homeEdge ? 'text-indigo-700 dark:text-indigo-300' : 'text-slate-700 dark:text-slate-200'}`}
+                                                >
                                                     {stat.homeValue}
-                                                </div>
+                                                </button>
                                                 {typeof stat.homeRank === 'number' && stat.homeRank > 0 && (
-                                                    <div className="text-[9px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mt-1">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => openPredictionStatModal(stat, 'home', category, 'LEADERBOARD')}
+                                                        className="text-[9px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mt-1 hover:text-indigo-600 dark:hover:text-indigo-400"
+                                                    >
                                                         Lg #{stat.homeRank}
-                                                    </div>
+                                                    </button>
                                                 )}
                                             </div>
                                         </div>
@@ -1114,6 +1162,24 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
             </div>,
             document.body
         )}
+
+      {selectedStat && (
+            <StatDetailModal
+                isOpen={true}
+                onClose={() => setSelectedStat(null)}
+                stat={{
+                    label: selectedStat.label,
+                    value: selectedStat.value,
+                    rank: selectedStat.rank,
+                    category: selectedStat.category,
+                }}
+                teamId={selectedStat.teamId}
+                teamName={selectedStat.teamName}
+                sport={game.league as Sport}
+                initialView={selectedStat.initialView}
+                onTeamClick={onTeamClick}
+            />
+      )}
     </div>
   );
 };

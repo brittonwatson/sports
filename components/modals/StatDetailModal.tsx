@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { LeagueStatRow, Sport } from '../../types';
-import { getStatDefinition } from '../../services/probabilities/statDefinitions';
+import { getStatDefinition, getStatExplainer } from '../../services/probabilities/statDefinitions';
 import { getDistribution } from '../../services/probabilities/rankings';
 import { fetchStandings, getStoredLeagueStats } from '../../services/teamService';
 import { isInverseMetricLabel } from '../../services/statDictionary';
@@ -136,6 +136,7 @@ export const StatDetailModal: React.FC<StatDetailModalProps> = ({
     const currentTeamRowRef = useRef<HTMLDivElement | null>(null);
 
     const def = useMemo(() => getStatDefinition(stat.label), [stat.label]);
+    const explainer = useMemo(() => getStatExplainer(stat.label), [stat.label]);
     const dist = useMemo(() => getDistribution(sport, stat.label), [sport, stat.label]);
     const val = parseVal(stat.value);
 
@@ -311,8 +312,10 @@ export const StatDetailModal: React.FC<StatDetailModalProps> = ({
                                 <div className="flex gap-3">
                                     <Info className="text-indigo-600 dark:text-indigo-400 shrink-0" size={20} />
                                     <div className="space-y-1">
-                                        <h4 className="text-sm font-bold text-indigo-900 dark:text-indigo-100">Metric Definition</h4>
-                                        <p className="text-xs text-indigo-800 dark:text-indigo-300 leading-relaxed">{def.fullDesc}</p>
+                                        <h4 className="text-sm font-bold text-indigo-900 dark:text-indigo-100">Metric Explainer</h4>
+                                        <ul className="list-disc pl-4">
+                                            <li className="text-xs text-indigo-800 dark:text-indigo-300 leading-relaxed">{explainer.bullet}</li>
+                                        </ul>
                                     </div>
                                 </div>
                             </div>
@@ -351,14 +354,18 @@ export const StatDetailModal: React.FC<StatDetailModalProps> = ({
                                 </div>
                             )}
 
-                            <div className="grid grid-cols-2 gap-4">
+                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                                 <div className="p-3 bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-slate-100 dark:border-slate-800">
-                                    <div className="text-[10px] text-slate-400 uppercase font-bold mb-1">Impact</div>
-                                    <div className="text-sm font-semibold text-slate-700 dark:text-slate-300">{def.better === 'High' ? 'Higher is Better' : 'Lower is Better'}</div>
+                                    <div className="text-[10px] text-slate-400 uppercase font-bold mb-1">Impact Direction</div>
+                                    <div className="text-sm font-semibold text-slate-700 dark:text-slate-300">{explainer.impactDirection}</div>
                                 </div>
                                 <div className="p-3 bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-slate-100 dark:border-slate-800">
-                                    <div className="text-[10px] text-slate-400 uppercase font-bold mb-1">Confidence</div>
-                                    <div className="text-sm font-semibold text-slate-700 dark:text-slate-300">{dist ? 'High (Verified)' : 'Low (Estimated)'}</div>
+                                    <div className="text-[10px] text-slate-400 uppercase font-bold mb-1">Predictor Level</div>
+                                    <div className="text-sm font-semibold text-slate-700 dark:text-slate-300">{explainer.predictorLevel}</div>
+                                </div>
+                                <div className="p-3 bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-slate-100 dark:border-slate-800">
+                                    <div className="text-[10px] text-slate-400 uppercase font-bold mb-1">Signal Type</div>
+                                    <div className="text-sm font-semibold text-slate-700 dark:text-slate-300">{explainer.signalType}</div>
                                 </div>
                             </div>
                         </div>

@@ -5,6 +5,7 @@ export interface StatDefinition {
     fullDesc: string; // For the modal "What is this?" section
     better: 'High' | 'Low'; // Is a high number better?
     impact: 'Critical' | 'High' | 'Moderate' | 'Low'; // How much does this drive winning?
+    signalType?: 'Causal' | 'Reflective';
 }
 
 export const STAT_DEFINITIONS: Record<string, StatDefinition> = {
@@ -290,4 +291,78 @@ export const getStatDefinition = (label: string): StatDefinition => {
     if (key) return STAT_DEFINITIONS[key];
 
     return { ...STAT_DEFINITIONS['default'], title: label };
+};
+
+const normalizeExplainerLabel = (label: string): string =>
+    String(label || '')
+        .toLowerCase()
+        .replace(/\(.*?\)/g, ' ')
+        .replace(/[^a-z0-9%]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+const REFLECTIVE_HINTS = [
+    'differential',
+    'margin',
+    'record',
+    'wins',
+    'losses',
+    'standing',
+    'seed',
+    'rank',
+    'plus minus',
+    'pct led',
+    'percent led',
+];
+
+const inferSignalType = (label: string, def: StatDefinition): 'Mostly Causal' | 'Mostly Reflective' => {
+    if (def.signalType === 'Reflective') return 'Mostly Reflective';
+    if (def.signalType === 'Causal') return 'Mostly Causal';
+    const norm = normalizeExplainerLabel(label);
+    return REFLECTIVE_HINTS.some((token) => norm.includes(token)) ? 'Mostly Reflective' : 'Mostly Causal';
+};
+
+const getPredictorLevelText = (impact: StatDefinition['impact']): string => {
+    switch (impact) {
+        case 'Critical':
+            return 'top-tier predictor in this model';
+        case 'High':
+            return 'strong predictor in this model';
+        case 'Moderate':
+            return 'useful supporting predictor in this model';
+        default:
+            return 'contextual predictor in this model';
+    }
+};
+
+const firstSentence = (text: string): string => {
+    const clean = String(text || '').replace(/\s+/g, ' ').trim();
+    if (!clean) return '';
+    const match = clean.match(/.*?[.!?](\s|$)/);
+    return match ? match[0].trim() : clean;
+};
+
+export interface StatExplainer {
+    bullet: string;
+    impactDirection: 'Higher is usually better' | 'Lower is usually better';
+    predictorLevel: StatDefinition['impact'];
+    signalType: 'Mostly Causal' | 'Mostly Reflective';
+}
+
+export const getStatExplainer = (label: string): StatExplainer => {
+    const def = getStatDefinition(label);
+    const signalType = inferSignalType(label, def);
+    const impactDirection = def.better === 'High' ? 'Higher is usually better' : 'Lower is usually better';
+    const roleSentence = signalType === 'Mostly Reflective'
+        ? 'It is mostly reflective: it summarizes how strengths and weaknesses have shown up in results.'
+        : 'It is mostly causal: changes here usually affect possession quality or scoring chances directly.';
+    const definitionSentence = firstSentence(def.fullDesc);
+    const bullet = `${impactDirection}. Predictor level: ${def.impact} (${getPredictorLevelText(def.impact)}). ${roleSentence}${definitionSentence ? ` ${definitionSentence}` : ''}`;
+
+    return {
+        bullet,
+        impactDirection,
+        predictorLevel: def.impact,
+        signalType,
+    };
 };
