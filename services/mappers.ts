@@ -90,6 +90,38 @@ const inferRacingSessionType = (competition: any): Game["racingSessionType"] => 
     return "other";
 };
 
+const buildRacingSessionName = (sport: Sport, competition: any, event: any): string => {
+    const raw = String(
+        competition?.type?.text ||
+        competition?.type?.abbreviation ||
+        competition?.name ||
+        event?.shortName ||
+        '',
+    ).trim();
+    if (!raw) return '';
+
+    const normalized = raw.toLowerCase();
+    const sessionNumber = toPositiveInt(competition?.session);
+    if (!sessionNumber) return raw;
+
+    if (sport === 'F1' && normalized.includes('qualifying') && !/\bq\s*[123]\b/i.test(raw)) {
+        return `Q${sessionNumber}`;
+    }
+
+    if ((normalized.includes('practice') || normalized.startsWith('fp')) && !new RegExp(`\\b${sessionNumber}\\b`).test(raw)) {
+        return `Practice ${sessionNumber}`;
+    }
+
+    if ((normalized.includes('qualifying') || normalized.includes('shootout'))
+        && !/\bround\b/i.test(raw)
+        && !new RegExp(`\\b${sessionNumber}\\b`).test(raw)
+    ) {
+        return `${raw} ${sessionNumber}`;
+    }
+
+    return raw;
+};
+
 const toPositiveInt = (value: unknown): number | undefined => {
     const parsed = Math.trunc(extractNumber(value));
     if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
@@ -285,7 +317,7 @@ export const mapEventToGame = (event: any, sport: Sport, leagueLogo?: string): G
     const isRacing = RACING_SPORTS.has(sport);
     const racingSessionType = isRacing ? inferRacingSessionType(competition) : undefined;
     const racingSessionName = isRacing
-        ? String(competition?.type?.text || competition?.name || event.shortName || "").trim()
+        ? buildRacingSessionName(sport, competition, event)
         : "";
     const competitionStatusDetail = String(
         competition?.status?.type?.detail ||
@@ -425,7 +457,7 @@ export const mapEventToGame = (event: any, sport: Sport, leagueLogo?: string): G
         league: sport,
         leagueName: event.league?.name,
         leagueLogo: leagueLogo,
-        context: context || (isRacing ? (competition?.type?.text || event.name || competition?.name) : undefined),
+        context: context || (isRacing ? (racingSessionName || event.name || competition?.name) : undefined),
         gameStatus: isRacing ? racingStatusDetail : event.status?.type?.detail,
         status: statusState === 'in' ? 'in_progress' : statusState === 'post' ? 'finished' : 'scheduled',
         clock: isRacing

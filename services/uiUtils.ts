@@ -292,6 +292,36 @@ const cleanRacingSuffix = (value: string): string => {
         .trim();
 };
 
+const getRacingSessionLabel = (game: Game, detail: string, clock: string): string => {
+    const context = String(game.context || '').trim();
+    const merged = `${context} ${detail} ${clock}`.trim();
+
+    const qMatch = merged.match(/\bq\s*([1-3])\b/i) || merged.match(/\bqualifying\s*([1-3])\b/i);
+    if (qMatch) return `Q${qMatch[1]}`;
+
+    if (game.racingSessionType === 'qualifying') {
+        const roundMatch = merged.match(/\bround\s*(\d+)\b/i);
+        if (roundMatch) return `Round ${roundMatch[1]}`;
+        const groupMatch = merged.match(/\bgroup\s*([a-z0-9]+)\b/i);
+        if (groupMatch) return `Group ${groupMatch[1].toUpperCase()}`;
+        const heatMatch = merged.match(/\bheat\s*(\d+)\b/i);
+        if (heatMatch) return `Heat ${heatMatch[1]}`;
+        const duelMatch = merged.match(/\bduel\s*(\d+)\b/i);
+        if (duelMatch) return `Duel ${duelMatch[1]}`;
+        if (/shootout/i.test(merged)) return 'Shootout';
+        return 'Qualifying';
+    }
+
+    if (game.racingSessionType === 'practice') {
+        const practiceMatch = merged.match(/\bpractice\s*(\d+)\b/i) || merged.match(/\bfp\s*([1-3])\b/i);
+        if (practiceMatch) return `Practice ${practiceMatch[1]}`;
+        if (/warmup/i.test(merged)) return 'Warmup';
+        return 'Practice';
+    }
+
+    return '';
+};
+
 const applyRacingRealtimeStatus = (
     game: Game,
     baseStatus: string,
@@ -300,6 +330,7 @@ const applyRacingRealtimeStatus = (
 ): string | null => {
     const detail = String(baseStatus || '').trim();
     const clock = String(baseClock || '').trim();
+    const sessionLabel = getRacingSessionLabel(game, detail, clock);
     const lapFromStatus = parseLapFromText(detail);
     const lapFromClock = parseLapFromText(clock);
     const stageFromStatus = parseStageFromText(detail);
@@ -317,7 +348,7 @@ const applyRacingRealtimeStatus = (
         const stageLabel = game.league === 'NASCAR' && stage && stage > 0
             ? `Stage ${stage}${totalStages && totalStages > 0 ? `/${totalStages}` : ''}`
             : '';
-        const prefix = [lapLabel, stageLabel].filter(Boolean).join(' • ');
+        const prefix = [sessionLabel, lapLabel, stageLabel].filter(Boolean).join(' • ');
         const suffix = cleanRacingSuffix(normalizeStatusSuffix(detail, clock));
         return suffix ? `${prefix} - ${suffix}` : prefix;
     }
@@ -325,7 +356,8 @@ const applyRacingRealtimeStatus = (
     if (game.league === 'NASCAR' && stage && stage > 0) {
         const stageLabel = `Stage ${stage}${totalStages && totalStages > 0 ? `/${totalStages}` : ''}`;
         const suffix = cleanRacingSuffix(normalizeStatusSuffix(detail, clock));
-        return suffix ? `${stageLabel} - ${suffix}` : stageLabel;
+        const prefix = [sessionLabel, stageLabel].filter(Boolean).join(' • ');
+        return suffix ? `${prefix} - ${suffix}` : prefix;
     }
 
     const remainingMatch = detail.match(/(\d{1,3}:\d{2}(?::\d{2})?)\s*(remaining|left)/i);
@@ -333,7 +365,8 @@ const applyRacingRealtimeStatus = (
         const parsed = parseClockText(remainingMatch[1]);
         if (parsed) {
             const next = formatClockText(parsed.seconds - elapsedSeconds, parsed.format);
-            return detail.replace(remainingMatch[1], next);
+            const remaining = `${next} remaining`;
+            return sessionLabel ? `${sessionLabel} • ${remaining}` : remaining;
         }
     }
 
@@ -342,8 +375,14 @@ const applyRacingRealtimeStatus = (
     if (isTimedSession) {
         const parsed = parseClockText(baseClock);
         if (parsed) {
-            return `${formatClockText(parsed.seconds - elapsedSeconds, parsed.format)} remaining`;
+            const remaining = `${formatClockText(parsed.seconds - elapsedSeconds, parsed.format)} remaining`;
+            return sessionLabel ? `${sessionLabel} • ${remaining}` : remaining;
         }
+    }
+
+    if (sessionLabel) {
+        const suffix = cleanRacingSuffix(normalizeStatusSuffix(detail, clock));
+        return suffix ? `${sessionLabel} • ${suffix}` : sessionLabel;
     }
 
     return null;
