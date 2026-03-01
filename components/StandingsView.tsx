@@ -50,11 +50,13 @@ interface ProjectionRow {
     clinched: boolean;
 }
 
-interface GroupPlayoffMeta {
-    cutoff: number;
-    cutoffWinPct: number;
-    cutoffWins: number;
-    seasonTarget: number;
+type QualificationMode = 'global' | 'per_group';
+
+interface PlayoffFieldSettings {
+    mode: QualificationMode;
+    slots: number;
+    label: string;
+    rounds: number;
 }
 
 const SEASON_GAME_TARGET: Partial<Record<Sport, number>> = {
@@ -92,6 +94,24 @@ const CHAMPIONSHIP_ROUNDS: Partial<Record<Sport, number>> = {
     'Serie A': 1,
     'Ligue 1': 1,
 };
+
+const PLAYOFF_FIELD_OVERRIDES: Partial<Record<Sport, { mode: QualificationMode; slots: number; label: string }>> = {
+    NCAAM: { mode: 'global', slots: 64, label: 'NCAA Tournament (Top 64)' },
+    NCAAW: { mode: 'global', slots: 64, label: 'NCAA Tournament (Top 64)' },
+    NCAAF: { mode: 'global', slots: 12, label: 'CFP (Top 12)' },
+    UCL: { mode: 'global', slots: 24, label: 'Knockout Path (Top 24)' },
+};
+
+const POINTS_BASED_STANDINGS_SPORTS = new Set<Sport>([
+    'NHL',
+    'MLS',
+    'EPL',
+    'Bundesliga',
+    'La Liga',
+    'Serie A',
+    'Ligue 1',
+    'UCL',
+]);
 
 const parseLooseNumber = (value: string | number | undefined, label?: string): number | null => {
     if (value === undefined || value === null) return null;
@@ -182,17 +202,36 @@ const scoreScaleBySport = (sport: Sport): number => {
     return 6;
 };
 
-const cutoffForGroup = (
+const standingPointsPerGameForSport = (sport: Sport): number => {
+    if (sport === 'NHL') return 2;
+    if (POINTS_BASED_STANDINGS_SPORTS.has(sport)) return 3;
+    return 1;
+};
+
+const resolvePlayoffFieldSettings = (
     sport: Sport,
-    groupSize: number,
+    groups: StandingsGroup[],
     conf?: { rank: number; label: string; secondaryRank?: number; secondaryLabel?: string },
-): number => {
-    if (conf?.secondaryRank) return Math.min(groupSize, conf.secondaryRank);
-    if (conf?.rank) return Math.min(groupSize, conf.rank);
-    if (SOCCER_LEAGUES.includes(sport)) return Math.max(1, Math.round(groupSize * 0.25));
-    if (sport === 'NCAAF') return Math.min(groupSize, 12);
-    if (sport === 'NCAAM' || sport === 'NCAAW') return Math.min(groupSize, Math.max(4, Math.round(groupSize * 0.45)));
-    return Math.max(1, Math.round(groupSize * 0.5));
+): PlayoffFieldSettings => {
+    const totalTeams = groups.reduce((sum, group) => sum + group.standings.length, 0);
+    const override = PLAYOFF_FIELD_OVERRIDES[sport];
+
+    const fallbackMode: QualificationMode = groups.length > 1 ? 'per_group' : 'global';
+    const mode: QualificationMode = override?.mode || fallbackMode;
+
+    const rawSlots = override?.slots || conf?.secondaryRank || conf?.rank || Math.max(1, Math.round(totalTeams * 0.45));
+    const slots = mode === 'global'
+        ? Math.max(1, Math.min(totalTeams || 1, rawSlots))
+        : Math.max(1, rawSlots);
+
+    const label = override?.label
+        || (conf?.secondaryLabel
+            ? `${conf.secondaryLabel} / ${conf.label}`
+            : (conf?.label || (SOCCER_LEAGUES.includes(sport) ? 'Qualification' : 'Postseason')));
+
+    const rounds = CHAMPIONSHIP_ROUNDS[sport] || (SOCCER_LEAGUES.includes(sport) ? 1 : 3);
+
+    return { mode, slots, label, rounds };
 };
 
 export const StandingsView: React.FC<StandingsViewProps> = ({ groups, sport, type = 'STANDINGS', activeType = 'PLAYOFF', onTypeChange, onTeamClick, isLoading = false, useApiRankForNCAA = false }) => {
@@ -221,6 +260,19 @@ export const StandingsView: React.FC<StandingsViewProps> = ({ groups, sport, typ
             group.standings.map((standing) => ({ groupName: group.name, standing })),
         );
         if (flatTeams.length < 2) return null;
+
+        const field = resolvePlayoffFieldSettings(sport, groups, config);
+        const totalTeams = flatTeams.length;
+        const scoreScale = scoreScaleBySport(sport);
+        const isPointsLeague = POINTS_BASED_STANDINGS_SPORTS.has(sport);
+        const standingPointsPerGame = standingPointsPerGameForSport(sport);
+        const maxGamesObserved = Math.max(
+            ...flatTeams.map(({ standing }) =>
+                Number(standing.stats.wins || 0) + Number(standing.stats.losses || 0) + Number(standing.stats.ties || 0),
+            ),
+            0,
+        );
+        const defaultSeasonTarget = Math.max(SEASON_GAME_TARGET[sport] || 0, maxGamesObserved || 0);
 
         const teamIds = new Set(flatTeams.map((entry) => String(entry.standing.team.id)));
         const labelValues = new Map<string, number[]>();
@@ -257,23 +309,6 @@ export const StandingsView: React.FC<StandingsViewProps> = ({ groups, sport, typ
             distributions.set(label, { mean, stdev, inverse: isInverseMetricLabel(label) });
         });
 
-        const groupMeta = new Map<string, GroupPlayoffMeta>();
-        groups.forEach((group) => {
-            const sorted = [...group.standings].sort((a, b) => a.rank - b.rank);
-            if (sorted.length === 0) return;
-            const cutoff = cutoffForGroup(sport, sorted.length, config);
-            const cutoffTeam = sorted[Math.max(0, Math.min(sorted.length - 1, cutoff - 1))];
-            const cutoffWins = Number(cutoffTeam.stats.wins || 0);
-            const cutoffLosses = Number(cutoffTeam.stats.losses || 0);
-            const cutoffTies = Number(cutoffTeam.stats.ties || 0);
-            const cutoffWinPct = toWinPct(cutoffWins, cutoffLosses, cutoffTies);
-            const maxGamesPlayed = Math.max(
-                ...sorted.map((row) => Number(row.stats.wins || 0) + Number(row.stats.losses || 0) + Number(row.stats.ties || 0)),
-            );
-            const seasonTarget = Math.max(SEASON_GAME_TARGET[sport] || 0, maxGamesPlayed || 0);
-            groupMeta.set(group.name, { cutoff, cutoffWinPct, cutoffWins, seasonTarget });
-        });
-
         const historicalGames = getInternalHistoricalGamesBySport(sport).filter((game) => {
             if (game.status !== 'finished') return false;
             if (!game.homeTeamId || !game.awayTeamId) return false;
@@ -303,25 +338,51 @@ export const StandingsView: React.FC<StandingsViewProps> = ({ groups, sport, typ
             updateH2H(awayId, homeId, -margin, margin < 0, margin > 0, isDraw);
         });
 
-        const baseRows = flatTeams.map(({ groupName, standing }) => {
+        interface BaseRow {
+            teamId: string;
+            teamName: string;
+            teamAbbreviation: string;
+            logo?: string;
+            groupName: string;
+            rank: number;
+            wins: number;
+            losses: number;
+            ties: number;
+            winPct: number;
+            gamesPlayed: number;
+            seasonTarget: number;
+            remaining: number;
+            standingValue: number;
+            standingPointsPerGame: number;
+            pointDiffPerGame: number;
+            streakScore: number;
+            gamesBehind: number;
+            statPower: number;
+            strengthScore: number;
+            reliability: number;
+            clinchedByFlag: boolean;
+            eliminatedByFlag: boolean;
+        }
+
+        const baseRows: BaseRow[] = flatTeams.map(({ groupName, standing }) => {
             const teamId = String(standing.team.id);
             const wins = Number(standing.stats.wins || 0);
             const losses = Number(standing.stats.losses || 0);
             const ties = Number(standing.stats.ties || 0);
             const gamesPlayed = wins + losses + ties;
-            const group = groupMeta.get(groupName);
-            const seasonTarget = Math.max(group?.seasonTarget || 0, gamesPlayed);
+            const seasonTarget = Math.max(defaultSeasonTarget, gamesPlayed);
             const remaining = Math.max(0, seasonTarget - gamesPlayed);
             const winPct = toWinPct(wins, losses, ties);
             const pointDiffRaw = Number(standing.stats.pointDifferential || 0);
             const pointDiffPerGame = gamesPlayed > 0 ? pointDiffRaw / gamesPlayed : 0;
             const rank = Number(standing.rank || 0);
-            const cutoff = group?.cutoff || Math.max(1, Math.round(flatTeams.length * 0.5));
-            const cutoffWinPct = group?.cutoffWinPct || 0.5;
-            const cutoffWins = group?.cutoffWins || 0;
             const streakScore = parseStreakScore(standing.stats.streak);
             const gamesBehind = parseGamesBehind(standing.stats.gamesBehind);
             const values = teamStatValues.get(teamId) || new Map<string, number>();
+            const points = Number(standing.stats.points || 0);
+            const standingValue = isPointsLeague && Number.isFinite(points) && points > 0
+                ? points
+                : (wins + (ties * 0.5));
 
             let statPowerSum = 0;
             let statPowerCount = 0;
@@ -335,36 +396,19 @@ export const StandingsView: React.FC<StandingsViewProps> = ({ groups, sport, typ
             });
             const statPower = statPowerCount > 0 ? clamp(statPowerSum / statPowerCount, -2.5, 2.5) : 0;
             const reliability = seasonTarget > 0 ? clamp(gamesPlayed / seasonTarget, 0.1, 1) : 0.5;
+            const standingRate = gamesPlayed > 0
+                ? standingValue / Math.max(1, gamesPlayed * standingPointsPerGame)
+                : winPct;
 
             const clincherToken = String(standing.clincher || '').toLowerCase().replace(/[^a-z]/g, '');
             const eliminatedByFlag = clincherToken.includes('e');
-            const clinched = standing.isChampion || (!!clincherToken && !eliminatedByFlag);
-
-            const rankEdge = (cutoff - rank) / Math.max(1, cutoff);
-            const pctEdge = (winPct - cutoffWinPct) * 6.2;
-            const winsEdge = (wins - cutoffWins) / Math.max(1, Math.round(seasonTarget * 0.08));
-            const diffEdge = pointDiffPerGame / scoreScaleBySport(sport);
-            const gbPenalty = gamesBehind * 0.55;
-            const momentumEdge = streakScore * 0.08;
-            const strengthEdge = statPower * 0.95;
-            const maxPossibleWins = wins + remaining + (ties * 0.5);
-            const impossibleByRecord = rank > cutoff && remaining > 0 && maxPossibleWins + 0.001 < cutoffWins;
-
-            let playoffProbability = 0;
-            if (eliminatedByFlag || impossibleByRecord) {
-                playoffProbability = 0;
-            } else if (clinched) {
-                playoffProbability = 1;
-            } else if (remaining <= 0) {
-                playoffProbability = rank <= cutoff ? 1 : 0;
-            } else {
-                const rawScore = (rankEdge * 1.45) + pctEdge + winsEdge + diffEdge + strengthEdge + momentumEdge - gbPenalty;
-                const uncertaintyDamp = 0.7 + ((1 - reliability) * 0.9);
-                const base = sigmoid(rawScore / uncertaintyDamp);
-                playoffProbability = 0.5 + ((base - 0.5) * reliability);
-                if (rank <= cutoff) playoffProbability = Math.max(playoffProbability, 0.52);
-                playoffProbability = clamp(playoffProbability, 0, 0.995);
-            }
+            const clinchedByFlag = standing.isChampion || (!!clincherToken && !eliminatedByFlag);
+            const strengthScore =
+                ((standingRate - 0.5) * 5.4) +
+                ((pointDiffPerGame / scoreScale) * 1.35) +
+                (statPower * 1.25) +
+                (streakScore * 0.07) -
+                (gamesBehind * 0.18);
 
             return {
                 teamId,
@@ -377,40 +421,160 @@ export const StandingsView: React.FC<StandingsViewProps> = ({ groups, sport, typ
                 losses,
                 ties,
                 winPct,
+                gamesPlayed,
+                seasonTarget,
+                remaining,
+                standingValue,
+                standingPointsPerGame,
                 pointDiffPerGame,
                 streakScore,
+                gamesBehind,
                 statPower,
-                playoffProbability,
-                cutoff,
+                strengthScore,
+                reliability,
+                clinchedByFlag,
+                eliminatedByFlag,
             };
         });
 
-        const rowsWithElimination = baseRows.map((row) => ({
-            ...row,
-            eliminated: row.playoffProbability <= 0.0001,
-        }));
+        const sortForQualification = (a: BaseRow, b: BaseRow): number => {
+            if (field.mode === 'per_group' && a.rank > 0 && b.rank > 0 && a.rank !== b.rank) {
+                return a.rank - b.rank;
+            }
+            if (b.strengthScore !== a.strengthScore) return b.strengthScore - a.strengthScore;
+            if (b.standingValue !== a.standingValue) return b.standingValue - a.standingValue;
+            if (b.winPct !== a.winPct) return b.winPct - a.winPct;
+            if (a.rank > 0 && b.rank > 0 && a.rank !== b.rank) return a.rank - b.rank;
+            return a.teamName.localeCompare(b.teamName);
+        };
 
-        const sportRounds = CHAMPIONSHIP_ROUNDS[sport] || (SOCCER_LEAGUES.includes(sport) ? 1 : 3);
-        const scoreScale = scoreScaleBySport(sport);
+        const positionByTeam = new Map<string, number>();
+        const slotsByTeam = new Map<string, number>();
+        const cutlineStrengthByTeam = new Map<string, number>();
+        const cutlineStandingByTeam = new Map<string, number>();
+        const bubbleByTeam = new Map<string, string[]>();
+
+        if (field.mode === 'global') {
+            const sorted = [...baseRows].sort(sortForQualification);
+            const slots = Math.max(1, Math.min(field.slots, sorted.length));
+            const cutline = sorted[Math.max(0, slots - 1)];
+            const bubblePool = sorted.slice(
+                Math.max(0, slots - 6),
+                Math.min(sorted.length, slots + 6),
+            ).map((row) => row.teamId);
+            sorted.forEach((row, idx) => {
+                positionByTeam.set(row.teamId, idx + 1);
+                slotsByTeam.set(row.teamId, slots);
+                cutlineStrengthByTeam.set(row.teamId, cutline?.strengthScore ?? 0);
+                cutlineStandingByTeam.set(row.teamId, cutline?.standingValue ?? 0);
+                bubbleByTeam.set(row.teamId, bubblePool);
+            });
+        } else {
+            groups.forEach((group) => {
+                const groupRows = baseRows
+                    .filter((row) => row.groupName === group.name)
+                    .sort(sortForQualification);
+                if (groupRows.length === 0) return;
+                const slots = Math.max(1, Math.min(field.slots, groupRows.length));
+                const cutline = groupRows[Math.max(0, slots - 1)];
+                const bubblePool = groupRows.slice(
+                    Math.max(0, slots - 4),
+                    Math.min(groupRows.length, slots + 4),
+                ).map((row) => row.teamId);
+                groupRows.forEach((row, idx) => {
+                    positionByTeam.set(row.teamId, idx + 1);
+                    slotsByTeam.set(row.teamId, slots);
+                    cutlineStrengthByTeam.set(row.teamId, cutline?.strengthScore ?? 0);
+                    cutlineStandingByTeam.set(row.teamId, cutline?.standingValue ?? 0);
+                    bubbleByTeam.set(row.teamId, bubblePool);
+                });
+            });
+        }
+
+        const bubbleHeadToHeadEdge = (teamId: string, bubbleTeamIds: string[]): number => {
+            if (bubbleTeamIds.length === 0) return 0;
+            let sum = 0;
+            let samples = 0;
+            bubbleTeamIds.forEach((oppId) => {
+                if (oppId === teamId) return;
+                const h2h = h2hMap.get(`${teamId}|${oppId}`);
+                if (!h2h || h2h.games <= 0) return;
+                const recordEdge = (h2h.wins - h2h.losses) / h2h.games;
+                const marginEdge = (h2h.margin / h2h.games) / scoreScale;
+                sum += (recordEdge * 0.72) + (marginEdge * 0.44);
+                samples += 1;
+            });
+            return samples > 0 ? (sum / samples) : 0;
+        };
+
+        const qualifiedRows = baseRows.map((row) => {
+            const position = positionByTeam.get(row.teamId) || (totalTeams + 1);
+            const slots = slotsByTeam.get(row.teamId) || field.slots;
+            const cutlineStrength = cutlineStrengthByTeam.get(row.teamId) ?? 0;
+            const cutlineStanding = cutlineStandingByTeam.get(row.teamId) ?? row.standingValue;
+            const bubbleIds = bubbleByTeam.get(row.teamId) || [];
+
+            const positionGap = (slots - position) / Math.max(1, Math.min(slots, 12));
+            const strengthGap = row.strengthScore - cutlineStrength;
+            const standingGap = (row.standingValue - cutlineStanding) / Math.max(
+                1,
+                row.standingPointsPerGame * Math.max(3, Math.min(10, row.remaining || 3)),
+            );
+            const h2hBubble = bubbleHeadToHeadEdge(row.teamId, bubbleIds);
+            const uncertainty = 0.9
+                + ((row.remaining / Math.max(1, row.seasonTarget)) * 2.2)
+                + ((1 - row.reliability) * 1.05);
+
+            let playoffProbability = sigmoid(
+                ((positionGap * 3.1) + (strengthGap * 1.35) + (standingGap * 1.1) + (row.streakScore * 0.05) + (h2hBubble * 0.9) - (row.gamesBehind * 0.2)) / uncertainty,
+            );
+
+            if (position <= slots && row.remaining <= 2) playoffProbability = Math.max(playoffProbability, 0.7);
+            if (position > slots && row.remaining <= 2) playoffProbability = Math.min(playoffProbability, 0.3);
+
+            const maxPossibleStanding = row.standingValue + (row.remaining * standingPointsPerGame);
+            const impossibleByStanding =
+                row.remaining > 0 &&
+                position > slots &&
+                maxPossibleStanding + 0.0001 < cutlineStanding;
+
+            if (row.eliminatedByFlag || impossibleByStanding) playoffProbability = 0;
+            else if (row.clinchedByFlag) playoffProbability = 1;
+            else if (row.remaining <= 0) playoffProbability = position <= slots ? 1 : 0;
+            else playoffProbability = clamp(playoffProbability, 0.001, 0.999);
+
+            const eliminated = row.eliminatedByFlag || impossibleByStanding || playoffProbability <= 0.0001;
+            const clinched = row.clinchedByFlag || playoffProbability >= 0.999;
+
+            return {
+                ...row,
+                position,
+                slots,
+                playoffProbability,
+                eliminated,
+                clinched,
+            };
+        });
+
         const contenderScores = new Map<string, number>();
-        rowsWithElimination.forEach((team) => {
+        qualifiedRows.forEach((team) => {
             if (team.eliminated) {
                 contenderScores.set(team.teamId, 0);
                 return;
             }
             let matchupWeighted = 0;
             let matchupWeightTotal = 0;
-            rowsWithElimination.forEach((opponent) => {
+            qualifiedRows.forEach((opponent) => {
                 if (team.teamId === opponent.teamId || opponent.eliminated) return;
-                const powerEdge = (team.statPower - opponent.statPower) * 1.05;
-                const winEdge = (team.winPct - opponent.winPct) * 2.4;
+                const powerEdge = (team.strengthScore - opponent.strengthScore) * 1.15;
+                const winEdge = (team.winPct - opponent.winPct) * 2.1;
                 const diffEdge = (team.pointDiffPerGame - opponent.pointDiffPerGame) / scoreScale;
                 const h2h = h2hMap.get(`${team.teamId}|${opponent.teamId}`);
                 let h2hEdge = 0;
                 if (h2h && h2h.games > 0) {
                     const recordEdge = (h2h.wins - h2h.losses) / h2h.games;
                     const marginEdge = (h2h.margin / h2h.games) / scoreScale;
-                    h2hEdge = (recordEdge * 0.65) + (marginEdge * 0.5);
+                    h2hEdge = (recordEdge * 0.7) + (marginEdge * 0.5);
                 }
                 const matchupProb = sigmoid(powerEdge + winEdge + diffEdge + h2hEdge);
                 const weight = Math.max(0.02, opponent.playoffProbability);
@@ -418,45 +582,45 @@ export const StandingsView: React.FC<StandingsViewProps> = ({ groups, sport, typ
                 matchupWeightTotal += weight;
             });
             const versusField = matchupWeightTotal > 0 ? (matchupWeighted / matchupWeightTotal) : 0.5;
-            const seedEdge = (team.cutoff - team.rank + 1) / Math.max(1, team.cutoff);
-            const seedFactor = clamp(0.84 + (seedEdge * 0.24), 0.62, 1.24);
+            const seedEdge = (team.slots - team.position + 1) / Math.max(1, team.slots);
+            const seedFactor = clamp(0.86 + (seedEdge * 0.22), 0.62, 1.24);
             const momentumFactor = clamp(1 + (team.streakScore * 0.02), 0.8, 1.25);
             const playoffFactor = Math.pow(clamp(team.playoffProbability, 0, 1), 1.12);
-            const pathFactor = Math.pow(clamp(versusField, 0.2, 0.95), Math.max(1, sportRounds));
-            const statFactor = Math.exp(clamp(team.statPower, -2.5, 2.5) * 0.32);
+            const pathFactor = Math.pow(clamp(versusField, 0.2, 0.95), Math.max(1, field.rounds));
+            const statFactor = Math.exp(clamp(team.strengthScore, -3, 3) * 0.18);
             const score = playoffFactor * pathFactor * seedFactor * momentumFactor * statFactor;
             contenderScores.set(team.teamId, Number.isFinite(score) ? Math.max(0, score) : 0);
         });
 
         const scoreSum = Array.from(contenderScores.values()).reduce((sum, value) => sum + value, 0);
-        const rows: ProjectionRow[] = rowsWithElimination.map((row) => {
+        const rows: ProjectionRow[] = qualifiedRows.map((row) => {
             const championshipProbability = row.eliminated || scoreSum <= 0
                 ? 0
                 : (contenderScores.get(row.teamId) || 0) / scoreSum;
-            const clinched = row.playoffProbability >= 0.999;
             return {
                 teamId: row.teamId,
                 teamName: row.teamName,
                 teamAbbreviation: row.teamAbbreviation,
                 logo: row.logo,
                 groupName: row.groupName,
-                rank: row.rank,
+                rank: row.position,
                 playoffProbability: row.eliminated ? 0 : clamp(row.playoffProbability, 0, 1),
                 championshipProbability: row.eliminated ? 0 : clamp(championshipProbability, 0, 1),
                 eliminated: row.eliminated,
-                clinched,
+                clinched: row.clinched,
             };
         });
 
-        rows.sort((a, b) => b.championshipProbability - a.championshipProbability);
-
-        const qualificationLabel = config?.secondaryLabel
-            ? `${config.secondaryLabel} / ${config.label}`
-            : (config?.label || (SOCCER_LEAGUES.includes(sport) ? 'Qualification' : 'Postseason'));
+        rows.sort((a, b) => {
+            if (b.championshipProbability !== a.championshipProbability) {
+                return b.championshipProbability - a.championshipProbability;
+            }
+            return b.playoffProbability - a.playoffProbability;
+        });
 
         return {
             rows,
-            qualificationLabel,
+            qualificationLabel: field.label,
         };
     }, [config, groups, showPlayoffProjection, sport]);
 
@@ -624,7 +788,7 @@ export const StandingsView: React.FC<StandingsViewProps> = ({ groups, sport, typ
 
                     <div className="px-5 py-3 border-t border-slate-200 dark:border-slate-800 text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
                         Uses each team&apos;s current-season record, point differential, full internal stat profile, and direct head-to-head game outcomes to estimate
-                        postseason qualification and championship share. Eliminated teams are fixed at 0%.
+                        postseason qualification and championship share. League field sizes are applied per sport (for example CFP Top 12 and NCAA Top 64). Eliminated teams are fixed at 0%.
                     </div>
                 </div>
             )}
