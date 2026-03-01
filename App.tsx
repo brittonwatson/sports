@@ -280,6 +280,8 @@ export const App: React.FC = () => {
   const lastScrolledGameId = useRef<string | null>(null);
   const isApplyingPopState = useRef(false);
   const lastKnownUrl = useRef<string>('');
+  const loadRequestVersionRef = useRef(0);
+  const liveDetailRequestVersionRef = useRef<Map<string, number>>(new Map());
   const forceLiveRefreshOnNextLoad = useRef(false);
   const seenFinishedSnapshots = useRef<Map<string, string>>(new Map());
 
@@ -340,6 +342,16 @@ export const App: React.FC = () => {
       }
       return next;
     });
+  }, []);
+
+  const bumpLiveDetailVersion = useCallback((gameId: string): number => {
+    const next = (liveDetailRequestVersionRef.current.get(gameId) || 0) + 1;
+    liveDetailRequestVersionRef.current.set(gameId, next);
+    return next;
+  }, []);
+
+  const isLiveDetailVersionCurrent = useCallback((gameId: string, version: number): boolean => {
+    return (liveDetailRequestVersionRef.current.get(gameId) || 0) === version;
   }, []);
 
   // Initialize Theme
@@ -736,7 +748,7 @@ export const App: React.FC = () => {
           window.scrollTo({ top: 0, behavior: 'smooth' });
 
           intervalId = setInterval(() => {
-              loadTeamData(true, false);
+              loadTeamData(true, true);
           }, 30000);
       } else {
           setTeamProfile(null);
@@ -863,6 +875,7 @@ export const App: React.FC = () => {
   };
 
   const loadData = async (tab: Tab, mode: ViewMode, isBackground = false, forceLiveRefresh = false) => {
+    const requestVersion = ++loadRequestVersionRef.current;
     if (tab === 'METHODOLOGY' || selectedTeam || mode === 'CALENDAR') return;
 
     if (!isBackground) {
@@ -1015,6 +1028,7 @@ export const App: React.FC = () => {
               };
             }
       
+            if (requestVersion !== loadRequestVersionRef.current) return;
             setGames(fetchedGames);
             upsertGamesInRegistry(fetchedGames);
             if (Object.keys(leagueActivityUpdates).length > 0) {
@@ -1038,12 +1052,16 @@ export const App: React.FC = () => {
                     try {
                         if (RACING_LEAGUES.includes(liveGame.league as Sport)) {
                             const bundle = await fetchRacingEventBundle(liveGame.league as Sport, liveGame.id);
+                            if (requestVersion !== loadRequestVersionRef.current) return;
                             if (activeRequestId.current === liveGame.id) {
                                 setRacingEventBundle(bundle);
                             }
                             return;
                         }
+                        const detailVersion = bumpLiveDetailVersion(liveGame.id);
                         const details = await fetchGameDetails(liveGame.id, liveGame.league as Sport);
+                        if (requestVersion !== loadRequestVersionRef.current) return;
+                        if (!isLiveDetailVersionCurrent(liveGame.id, detailVersion)) return;
                         const { calculateWinProbability } = await loadProbabilityModule();
                         const stats = calculateWinProbability(liveGame, details, { latencyMode: 'background' });
                         
@@ -1116,14 +1134,16 @@ export const App: React.FC = () => {
     activeRequestId.current = null;
     
     // Auto-refresh logic for Live/Scores
+    const refreshIntervalMs = viewMode === 'LIVE' ? 5000 : 12000;
     const intervalId = setInterval(() => {
         if (!selectedTeam && selectedTab !== 'METHODOLOGY') {
             // Only auto-refresh if we are in a view that benefits from live updates
             if (viewMode === 'LIVE' || viewMode === 'UPCOMING') {
-                loadData(selectedTab, viewMode, true, false);
+                const shouldForceLiveRefresh = viewMode === 'LIVE' && selectedTab !== 'HOME';
+                loadData(selectedTab, viewMode, true, shouldForceLiveRefresh);
             }
         }
-    }, 15000);
+    }, refreshIntervalMs);
 
     return () => clearInterval(intervalId);
   }, [selectedTab, viewMode, favoriteLeagues, standingsType, selectedTeam]); 
@@ -1241,8 +1261,11 @@ export const App: React.FC = () => {
 
           setIsPredicting(true);
           try {
+              const detailVersion = bumpLiveDetailVersion(game.id);
               const fetchedDetails = await fetchGameDetails(game.id, game.league as Sport);
               const details = fetchedDetails || cachedDetails;
+              if (activeRequestId.current !== game.id) return;
+              if (!isLiveDetailVersionCurrent(game.id, detailVersion)) return;
               setGameDetails(details);
               
               if (details) {

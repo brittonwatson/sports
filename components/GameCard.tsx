@@ -70,7 +70,7 @@ export const GameCard: React.FC<GameCardProps> = ({ game, onSelect, isSelected, 
       startedAtMs: Date.now(),
     };
     setLiveTick(0);
-  }, [game.id, game.status, game.clock, game.gameStatus, game.homeScore, game.awayScore]);
+  }, [game.id, game.status, game.clock, game.gameStatus]);
 
   useEffect(() => {
     if (!isLive) return;

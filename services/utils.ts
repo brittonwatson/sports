@@ -6,7 +6,7 @@ import { ESPN_ENDPOINTS } from "./constants";
 export const fetchWithRetry = async (url: string, retries = 3, delay = 1000): Promise<Response> => {
   for (let i = 0; i < retries; i++) {
     try {
-      const response = await fetch(url);
+      const response = await fetch(url, { cache: 'no-store' });
       if (response.ok) return response;
       if (response.status === 429) { 
          await new Promise(res => setTimeout(res, delay * Math.pow(2, i)));

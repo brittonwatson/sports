@@ -648,6 +648,7 @@ export const fetchGameDetails = async (gameId: string, sport: Sport): Promise<Ga
     const endpoint = ESPN_ENDPOINTS[sport];
     const baseUrl = `https://site.api.espn.com/apis/site/v2/sports/${endpoint}/summary`;
     const params = new URLSearchParams({ event: gameId });
+    params.set('_ts', String(Date.now()));
     try {
         const response = await fetchWithRetry(`${baseUrl}?${params.toString()}`);
         if (!response.ok) return null;
@@ -722,8 +723,67 @@ export const fetchGameDetails = async (gameId: string, sport: Sport): Promise<Ga
             return getPlayTypeText(play);
         };
 
-        const inferScoreValue = (play: any): number => {
-            if (!play?.scoringPlay) return 0;
+        const normalizePlayText = (value: string): string =>
+            String(value || '')
+                .toLowerCase()
+                .replace(/\s+/g, ' ')
+                .trim();
+
+        const isLikelyScoringPlay = (play: any): boolean => {
+            const typeText = normalizePlayText(getPlayTypeText(play));
+            const text = normalizePlayText(getPlayText(play));
+            const combined = `${typeText} ${text}`.trim();
+
+            const hardNoScorePatterns: RegExp[] = [
+                /\btimeout\b/,
+                /\bout of bounds\b/,
+                /\bgoal kick\b/,
+                /\bthrow[-\s]?in\b/,
+                /\bsubstitution\b/,
+                /\byellow card\b/,
+                /\bred card\b/,
+                /\bcorner kick\b/,
+                /\boffside\b/,
+                /\bfoul\b/,
+                /\bno goal\b/,
+                /\bend of\b/,
+                /\bstart of\b/,
+                /\bhalftime\b/,
+                /\bkickoff\b/,
+            ];
+            if (hardNoScorePatterns.some((pattern) => pattern.test(combined))) return false;
+
+            if (play?.scoringPlay) return true;
+
+            if (isSoccer) {
+                if (/\b(goal|own goal|penalty scored)\b/.test(combined) && !/\b(goal kick|no goal|offside|saved)\b/.test(combined)) {
+                    return true;
+                }
+                return false;
+            }
+
+            if (sport === 'NFL' || sport === 'NCAAF') {
+                return /\b(touchdown|field goal (is good|good|made)|safety|extra point (is good|good|made)|two-point conversion (is good|good|successful))\b/.test(combined);
+            }
+
+            if (['NBA', 'NCAAM', 'NCAAW', 'WNBA'].includes(sport)) {
+                return /\b(makes|made|hits|hit).*(three|3-pt|3 pointer|three-pointer|jumper|layup|dunk|free throw|shot)\b/.test(combined) ||
+                    /\bfree throw\b.*\b(good|made)\b/.test(combined);
+            }
+
+            if (sport === 'NHL') {
+                return /\bgoal\b/.test(combined) && !/\b(goalie|goal kick|no goal)\b/.test(combined);
+            }
+
+            if (sport === 'MLB') {
+                return /\b(home run|homerun|grand slam|walk-off|scores?)\b/.test(combined);
+            }
+
+            return /\b(score|scores|goal|touchdown|home run|homerun|safety)\b/.test(combined);
+        };
+
+        const inferScoreValue = (play: any, isScoringEvent = Boolean(play?.scoringPlay)): number => {
+            if (!isScoringEvent) return 0;
             const typeText = getPlayTypeText(play).toLowerCase();
             const text = getPlayText(play).toLowerCase();
 
@@ -741,6 +801,56 @@ export const fetchGameDetails = async (gameId: string, sport: Sport): Promise<Ga
                 return 2;
             }
             return 1;
+        };
+
+        const dedupeScoringPlays = (items: ScoringPlay[]): ScoringPlay[] => {
+            const seenIds = new Set<string>();
+            const seenSignatures = new Set<string>();
+            return items.filter((play) => {
+                const rawId = String(play.id || '').trim();
+                if (rawId && !rawId.includes('-score-')) {
+                    if (seenIds.has(rawId)) return false;
+                    seenIds.add(rawId);
+                }
+
+                const signature = [
+                    play.period,
+                    play.clock,
+                    normalizePlayText(play.type),
+                    normalizePlayText(play.text),
+                    play.homeScore,
+                    play.awayScore,
+                    play.teamId || '',
+                ].join('|');
+                if (seenSignatures.has(signature)) return false;
+                seenSignatures.add(signature);
+                return true;
+            });
+        };
+
+        const dedupePlays = (items: Play[]): Play[] => {
+            const seenIds = new Set<string>();
+            const seenSignatures = new Set<string>();
+            return items.filter((play) => {
+                const rawId = String(play.id || '').trim();
+                if (rawId && !rawId.includes('-raw-')) {
+                    if (seenIds.has(rawId)) return false;
+                    seenIds.add(rawId);
+                }
+                const signature = [
+                    play.period,
+                    play.clock,
+                    normalizePlayText(play.type),
+                    normalizePlayText(play.text),
+                    play.homeScore,
+                    play.awayScore,
+                    play.teamId || '',
+                    play.downDistanceText || '',
+                ].join('|');
+                if (seenSignatures.has(signature)) return false;
+                seenSignatures.add(signature);
+                return true;
+            });
         };
 
         const withFallbackShape = (play: any, idx: number): any => ({
@@ -875,47 +985,25 @@ export const fetchGameDetails = async (gameId: string, sport: Sport): Promise<Ga
         // 2. Extract scoring plays with fallback
         let sourceScoringPlays = data.scoringPlays || [];
         if (sourceScoringPlays.length === 0 && isSoccer && keyEventPlays.length > 0) {
-            sourceScoringPlays = keyEventPlays.filter((p: any) => {
-                const typeText = String(p?.type?.text || '').toLowerCase();
-                const text = String(p?.text || '').toLowerCase();
-                if (typeText.includes('goal kick')) return false;
-                return (
-                    !!p?.scoringPlay ||
-                    typeText.includes('goal') ||
-                    text.includes('goal')
-                );
-            });
+            sourceScoringPlays = keyEventPlays.filter((p: any) => isLikelyScoringPlay(p));
         }
         if (sourceScoringPlays.length === 0 && rawPlays.length > 0) {
             // Fallback: Filter raw plays for scores
-            // Fixed: Only include explicit scoring plays or text matches
-            sourceScoringPlays = rawPlays.filter((p: any) => {
-                const typeText = p.type?.text?.toLowerCase() || '';
-                
-                // Exclude "Goal Kick" explicitly as it often appears in soccer feeds without score change
-                if (typeText.includes('goal kick')) return false;
-
-                const isExplicitScore = p.scoringPlay || 
-                    typeText.includes('score') || 
-                    typeText.includes('touchdown') || 
-                    typeText.includes('goal') || 
-                    typeText.includes('safety') ||
-                    typeText.includes('homerun');
-
-                return isExplicitScore;
-            });
+            sourceScoringPlays = rawPlays.filter((p: any) => isLikelyScoringPlay(p));
         }
+        sourceScoringPlays = sourceScoringPlays.filter((p: any) => isLikelyScoringPlay(p));
         const isFallback = (data.scoringPlays || []).length === 0 && sourceScoringPlays.length > 0;
 
         let runningHomeScore = 0;
         let runningAwayScore = 0;
-        const scoringPlays: ScoringPlay[] = sourceScoringPlays.map((p: any, idx: number) => {
+        let scoringPlays: ScoringPlay[] = sourceScoringPlays.map((p: any, idx: number) => {
+            const isScoringEvent = isLikelyScoringPlay(p);
             const hasExplicitScore = p?.homeScore !== undefined && p?.awayScore !== undefined;
             let homeScore = hasExplicitScore ? extractNumber(p.homeScore) : runningHomeScore;
             let awayScore = hasExplicitScore ? extractNumber(p.awayScore) : runningAwayScore;
 
-            if (!hasExplicitScore && p?.scoringPlay) {
-                const points = inferScoreValue(p);
+            if (!hasExplicitScore && isScoringEvent) {
+                const points = inferScoreValue(p, isScoringEvent);
                 let scoringTeamId = p?.team?.id;
                 if (isSoccer && p?.ownGoal) {
                     scoringTeamId = scoringTeamId === homeComp?.team?.id ? awayComp?.team?.id : homeComp?.team?.id;
@@ -939,6 +1027,7 @@ export const fetchGameDetails = async (gameId: string, sport: Sport): Promise<Ga
                 teamId: p.team?.id
             };
         });
+        scoringPlays = dedupeScoringPlays(scoringPlays);
 
         // --- HYBRID LINESCORE ENGINE ---
         // 1. Calculate Manual/Shadow Linescores from Scoring Plays (Source of Truth for "What happened")
@@ -1143,6 +1232,7 @@ export const fetchGameDetails = async (gameId: string, sport: Sport): Promise<Ga
             return source.includes('red card') || source.includes('second yellow');
         };
 
+        let plays: Play[] = [];
         let boxscore: TeamBoxScore[] = [];
         if (playerSource.length > 0) {
             boxscore = (playerSource || []).map((t: any) => ({
@@ -1239,18 +1329,32 @@ export const fetchGameDetails = async (gameId: string, sport: Sport): Promise<Ga
                 });
             });
 
-            plays.forEach((play) => {
-                const teamId = String(play.teamId || '');
+            rawPlays.forEach((rawPlay: any) => {
+                const normalizedPlay: Play = {
+                    id: String(rawPlay?.id || ''),
+                    period: getPlayPeriod(rawPlay),
+                    clock: getPlayClock(rawPlay),
+                    type: getPlayTypeText(rawPlay),
+                    text: getPlayText(rawPlay),
+                    scoringPlay: Boolean(rawPlay?.scoringPlay),
+                    homeScore: extractNumber(rawPlay?.homeScore),
+                    awayScore: extractNumber(rawPlay?.awayScore),
+                    teamId: rawPlay?.team?.id
+                        ? String(rawPlay.team.id)
+                        : inferCommentaryTeamId(getPlayText(rawPlay)),
+                    downDistanceText: rawPlay?.start?.downDistanceText,
+                };
+                const teamId = String(normalizedPlay.teamId || '');
                 if (!teamId) return;
-                const yellow = isYellowCardEvent(play);
-                const red = isRedCardEvent(play);
+                const yellow = isYellowCardEvent(normalizedPlay);
+                const red = isRedCardEvent(normalizedPlay);
                 if (!yellow && !red) return;
-                const playerName = parseSoccerPlayerName(play.text);
+                const playerName = parseSoccerPlayerName(normalizedPlay.text);
                 if (!playerName) return;
                 const player = upsertPlayer(teamId, playerName);
                 if (yellow) player.yellowCards += 1;
                 if (red) player.redCards += 1;
-                const minute = parseSoccerMinute(play.clock, play.text);
+                const minute = parseSoccerMinute(normalizedPlay.clock, normalizedPlay.text);
                 if (minute) player.minute = minute;
             });
 
@@ -1516,13 +1620,14 @@ export const fetchGameDetails = async (gameId: string, sport: Sport): Promise<Ga
 
         let runningPlayHomeScore = 0;
         let runningPlayAwayScore = 0;
-        const plays: Play[] = rawPlays.map((p: any, idx: number) => {
+        plays = rawPlays.map((p: any, idx: number) => {
+            const isScoringEvent = isLikelyScoringPlay(p);
             const hasExplicitScore = p?.homeScore !== undefined && p?.awayScore !== undefined;
             let homeScore = hasExplicitScore ? extractNumber(p.homeScore) : runningPlayHomeScore;
             let awayScore = hasExplicitScore ? extractNumber(p.awayScore) : runningPlayAwayScore;
 
-            if (!hasExplicitScore && p?.scoringPlay) {
-                const points = inferScoreValue(p);
+            if (!hasExplicitScore && isScoringEvent) {
+                const points = inferScoreValue(p, isScoringEvent);
                 let scoringTeamId = p?.team?.id;
                 if (isSoccer && p?.ownGoal) {
                     scoringTeamId = scoringTeamId === homeComp?.team?.id ? awayComp?.team?.id : homeComp?.team?.id;
@@ -1540,7 +1645,7 @@ export const fetchGameDetails = async (gameId: string, sport: Sport): Promise<Ga
                 clock: getPlayClock(p),
                 type: getPlayTypeText(p),
                 text: getPlayText(p),
-                scoringPlay: !!p.scoringPlay,
+                scoringPlay: isScoringEvent,
                 homeScore,
                 awayScore,
                 teamId: p.team?.id,
@@ -1551,6 +1656,7 @@ export const fetchGameDetails = async (gameId: string, sport: Sport): Promise<Ga
                 downDistanceText: p.start?.downDistanceText
             };
         });
+        plays = dedupePlays(plays);
 
         let situation: GameSituation | undefined;
         if (data.situation) {
