@@ -42,7 +42,7 @@ const RANKED_LEAGUES: Sport[] = ['NCAAF', 'NCAAM', 'NCAAW'];
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID?.trim() || '';
 const ENABLE_RUNTIME_SYNC = import.meta.env.VITE_ENABLE_RUNTIME_SYNC === 'true';
 const ALL_VIEW_MODES: ViewMode[] = ['LIVE', 'UPCOMING', 'SCORES', 'STANDINGS', 'BRACKET', 'RANKINGS', 'CALENDAR', 'TEAMS', 'LEAGUE_STATS'];
-const PREDICTION_MODEL_VERSION = '2026-03-01-r3';
+const PREDICTION_MODEL_VERSION = '2026-03-01-r4';
 
 const isThemeMode = (value: string | null): value is ThemeMode =>
   value === 'light' || value === 'dark' || value === 'system';

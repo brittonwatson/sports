@@ -318,17 +318,17 @@ const SOCCER_PROFILE: SportProfile = {
     matchupPairs: [
         {
             label: "Goal Creation vs Concession",
-            offenseAliases: ["goals for", "goals", "gf", "goals per game"],
-            defenseAllowAliases: ["goals against", "ga", "goals allowed"],
-            weight: 1.8,
-            scale: 0.55,
+            offenseAliases: ["points", "goals for", "goals", "gf", "goals per game"],
+            defenseAllowAliases: ["opponent points", "goals against", "ga", "goals allowed"],
+            weight: 1.25,
+            scale: 1.15,
         },
         {
             label: "Shot Quality Matchup",
             offenseAliases: ["shots on target", "shots on goal", "sot"],
             defenseAllowAliases: ["shots on target allowed", "shots allowed", "opponent shots on target"],
-            weight: 0.9,
-            scale: 1.8,
+            weight: 0.65,
+            scale: 3.0,
         },
     ],
     directAxes: [
@@ -944,9 +944,21 @@ const buildHistoryPrior = (game: Game, profile: SportProfile): TeamHistoryPrior 
             })),
             mean(h2hLogs.map((log) => log.homePoints - log.awayPoints)),
         );
-        const h2hWeight = clamp(0.12 + (h2hLogs.length * 0.035), 0.12, 0.32);
-        homeExpected = blend(homeExpected, h2hWeightedHome, h2hWeight);
-        awayExpected = blend(awayExpected, h2hWeightedAway, h2hWeight);
+        let h2hWeight = clamp(0.12 + (h2hLogs.length * 0.035), 0.12, 0.32);
+        let h2hHomeTarget = h2hWeightedHome;
+        let h2hAwayTarget = h2hWeightedAway;
+
+        // Soccer H2H can be sparse and noisy. Limit one-off blowouts from dominating team priors.
+        if (profile.family === "soccer") {
+            const maxShift = clamp(0.45 + (h2hLogs.length * 0.08), 0.45, 0.95);
+            h2hHomeTarget = clamp(h2hWeightedHome, homeExpected - maxShift, homeExpected + maxShift);
+            h2hAwayTarget = clamp(h2hWeightedAway, awayExpected - maxShift, awayExpected + maxShift);
+            h2hWeight = clamp(h2hWeight * 0.58, 0.06, 0.18);
+            h2hWeightedMargin = h2hHomeTarget - h2hAwayTarget;
+        }
+
+        homeExpected = blend(homeExpected, h2hHomeTarget, h2hWeight);
+        awayExpected = blend(awayExpected, h2hAwayTarget, h2hWeight);
     }
 
     homeExpected = clamp(homeExpected, 0, profile.maxTeamScore);
@@ -2023,6 +2035,45 @@ const computePregameModel = (
         }
         projectedTotal = projectedHome + projectedAway;
         projectedMargin = projectedHome - projectedAway;
+    }
+
+    if (profile.family === "soccer" && game.status === "scheduled" && historyPrior) {
+        const sampleDepth = Math.max(1, Math.min(historyPrior.homeGames, historyPrior.awayGames));
+        const homeRaw = (projectedTotal + projectedMargin) / 2;
+        const awayRaw = (projectedTotal - projectedMargin) / 2;
+
+        // Anchor hard to opponent-adjusted team-history rates to avoid volatile pre-game spikes.
+        const anchorWeight = clamp(0.58 + ((sampleDepth - 8) * 0.02), 0.58, 0.9);
+        const anchoredHome = blend(homeRaw, historyPrior.homeExpected, anchorWeight);
+        const anchoredAway = blend(awayRaw, historyPrior.awayExpected, anchorWeight);
+
+        const scoreBand = clamp(historyPrior.scoringVolatility * 1.7, 0.5, 1.75);
+        const homeFloor = Math.max(0, historyPrior.homeExpected - scoreBand);
+        const homeCeil = Math.min(profile.maxTeamScore, historyPrior.homeExpected + scoreBand);
+        const awayFloor = Math.max(0, historyPrior.awayExpected - scoreBand);
+        const awayCeil = Math.min(profile.maxTeamScore, historyPrior.awayExpected + scoreBand);
+        const boundedHome = clamp(anchoredHome, homeFloor, homeCeil);
+        const boundedAway = clamp(anchoredAway, awayFloor, awayCeil);
+
+        const baselineMargin = historyPrior.homeExpected - historyPrior.awayExpected;
+        const marginBand = clamp((historyPrior.marginVolatility * 1.05) + 0.3, 0.6, 1.85);
+        const boundedMargin = clamp(boundedHome - boundedAway, baselineMargin - marginBand, baselineMargin + marginBand);
+        const boundedTotal = clamp(
+            boundedHome + boundedAway,
+            Math.max(profile.minTotal, historyPrior.total * 0.7),
+            Math.min(profile.maxTotal, historyPrior.total * 1.35),
+        );
+
+        projectedTotal = boundedTotal;
+        projectedMargin = boundedMargin;
+
+        findings.push({
+            label: "Soccer Matchup Envelope",
+            value: `${boundedHome.toFixed(2)}-${boundedAway.toFixed(2)}`,
+            impact: "neutral",
+            description: "Pregame projection constrained by opponent-adjusted team history and matchup volatility",
+            magnitude: 0.56,
+        });
     }
 
     projectedTotal = clamp(projectedTotal, profile.minTotal, profile.maxTotal);
