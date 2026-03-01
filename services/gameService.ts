@@ -47,6 +47,20 @@ const sortGamesByDateTime = (games: Game[]): Game[] =>
         return aTime - bTime;
     });
 
+const hasNearSeasonActivity = (games: Game[], now: Date = new Date()): boolean => {
+    if (!Array.isArray(games) || games.length === 0) return false;
+    const nowMs = now.getTime();
+    const lookbackMs = 14 * 24 * 60 * 60 * 1000;
+    const lookaheadMs = 30 * 24 * 60 * 60 * 1000;
+
+    return games.some((game) => {
+        if (game.status === "in_progress") return true;
+        const gameMs = new Date(game.dateTime).getTime();
+        if (!Number.isFinite(gameMs)) return false;
+        return gameMs >= (nowMs - lookbackMs) && gameMs <= (nowMs + lookaheadMs);
+    });
+};
+
 const isLikelyPausedGame = (statusText?: string): boolean => {
     const normalized = (statusText || "").toLowerCase();
     return (
@@ -241,8 +255,8 @@ const fetchFreshGamesWindow = async (sport: Sport, start: Date, end: Date): Prom
 export const fetchUpcomingGames = async (sport: Sport, fullHistory = false): Promise<{ games: Game[], groundingChunks: any[], isSeasonActive: boolean }> => {
     await ensureInternalSportLoaded(sport);
     const internalGames = getInternalGamesBySport(sport);
+    const now = new Date();
     if (internalGames.length > 0) {
-        const now = new Date();
         const displayStart = new Date(now);
         const displayEnd = new Date(now);
         displayStart.setDate(displayStart.getDate() - 1);
@@ -272,8 +286,9 @@ export const fetchUpcomingGames = async (sport: Sport, fullHistory = false): Pro
             games = await backfillMissingOdds(sport, games);
         }
 
+        const internalSeasonActive = hasNearSeasonActivity(internalGames, now);
         if (games.length > 0) {
-            return { games: sortGamesByDateTime(games), groundingChunks: [], isSeasonActive: true };
+            return { games: sortGamesByDateTime(games), groundingChunks: [], isSeasonActive: internalSeasonActive || games.length > 0 };
         }
     }
 
@@ -297,14 +312,19 @@ export const fetchUpcomingGames = async (sport: Sport, fullHistory = false): Pro
         if (!fullHistory) {
             games = await backfillMissingOdds(sport, games);
         }
-        let isSeasonActive = false;
-        if (data.leagues?.[0]?.season?.startDate && data.leagues?.[0]?.season?.endDate) {
-            const now = new Date();
-            const start = new Date(data.leagues[0].season.startDate);
-            const end = new Date(new Date(data.leagues[0].season.endDate).getTime() + 86400000);
+        const leagueSeason = data.leagues?.[0]?.season;
+        const seasonTypeCode = Number(leagueSeason?.type?.type ?? leagueSeason?.type?.id);
+        const seasonTypeName = String(leagueSeason?.type?.name || leagueSeason?.type?.abbreviation || '').toLowerCase();
+        const isOffSeason = seasonTypeCode === 4 || seasonTypeName.includes('off');
+
+        let isSeasonActive = hasNearSeasonActivity(games, now);
+        if (!isSeasonActive && !isOffSeason && leagueSeason?.startDate && leagueSeason?.endDate) {
+            const start = new Date(leagueSeason.startDate);
+            const end = new Date(new Date(leagueSeason.endDate).getTime() + 86400000);
             isSeasonActive = now >= start && now <= end;
         }
-        if (games.length > 0) isSeasonActive = true;
+
+        if (games.length > 0 && !isOffSeason) isSeasonActive = true;
         return { games: sortGamesByDateTime(games), groundingChunks: [], isSeasonActive };
     } catch (e) {
         return { games: [], groundingChunks: [], isSeasonActive: false };

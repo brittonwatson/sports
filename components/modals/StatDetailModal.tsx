@@ -1,8 +1,9 @@
 
 import React, { useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Sport } from '../../types';
 import { getStatDefinition } from '../../services/probabilities/statDefinitions';
-import { getDistribution, StatDistribution } from '../../services/probabilities/rankings';
+import { getDistribution } from '../../services/probabilities/rankings';
 import { X, Info, TrendingUp, TrendingDown, Minus, Trophy, Medal, List } from 'lucide-react';
 
 interface StatDetailModalProps {
@@ -93,8 +94,10 @@ export const StatDetailModal: React.FC<StatDetailModalProps> = ({ isOpen, onClos
         return rows.sort((a,b) => a.rank - b.rank);
     }, [dist, stat.rank, teamName, val, sport]);
 
-    return (
-        <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in" onClick={onClose}>
+    if (typeof document === 'undefined') return null;
+
+    return createPortal(
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in" onClick={onClose}>
             <div className="bg-white dark:bg-slate-950 w-full max-w-md rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col max-h-[85vh]" onClick={e => e.stopPropagation()}>
                 
                 {/* Header */}
@@ -245,6 +248,7 @@ export const StatDetailModal: React.FC<StatDetailModalProps> = ({ isOpen, onClos
                     )}
                 </div>
             </div>
-        </div>
+        </div>,
+        document.body
     );
 };

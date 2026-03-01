@@ -25,6 +25,15 @@ label {
   touch-action: manipulation;
 }
 
+/* Prevent iOS input-focus zoom while keeping layout stable on small screens. */
+@media (max-width: 768px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+}
+
 /* Dark-mode readability overrides:
    The app uses many slate-500/600 utility classes that become too low-contrast
    against dark backgrounds. These rules raise the floor for text contrast. */

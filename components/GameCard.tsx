@@ -14,6 +14,7 @@ export const GameCard: React.FC<GameCardProps> = ({ game, onSelect, isSelected, 
   const isLive = game.status === 'in_progress';
   const isFinished = game.status === 'finished';
   const isSoccer = SOCCER_LEAGUES.includes(game.league as Sport);
+  const isPreseason = game.seasonType === 1;
 
   const handleTeamClick = (e: React.MouseEvent, teamId: string | undefined) => {
       e.stopPropagation();
@@ -102,6 +103,11 @@ export const GameCard: React.FC<GameCardProps> = ({ game, onSelect, isSelected, 
                 <span className="text-[10px] sm:text-xs font-bold tracking-wider text-slate-600 dark:text-slate-400 bg-slate-100 dark:bg-slate-900/80 px-2.5 py-1 rounded-md border border-slate-200 dark:border-slate-800">
                 {game.league}
                 </span>
+                {isPreseason && (
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-800/50 text-[10px] font-bold text-amber-700 dark:text-amber-300 uppercase tracking-wider">
+                    PRESEASON
+                </span>
+                )}
                 {isLive && (
                 <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-emerald-50 dark:bg-emerald-900/30 border border-emerald-200 dark:border-emerald-800/50 text-[10px] font-bold text-emerald-700 dark:text-emerald-400 uppercase tracking-wider">
                     <Radio size={12} className="text-emerald-500 animate-pulse" />
@@ -111,7 +117,7 @@ export const GameCard: React.FC<GameCardProps> = ({ game, onSelect, isSelected, 
                 {/* Show title/context if available (e.g. Playoff Series Name) */}
                 {/* Hide if it's just a duplicate of the live status (e.g. "12:34 - 1st") to prevent showing time twice */}
                 {game.context && game.context !== game.gameStatus && (
-                <span className="text-xs text-slate-600 dark:text-slate-400 font-medium px-2 py-0.5 border border-transparent bg-slate-50 dark:bg-slate-800 rounded hidden sm:inline-block">{game.context}</span>
+                <span className={`text-xs text-slate-600 dark:text-slate-400 font-medium px-2 py-0.5 border border-transparent bg-slate-50 dark:bg-slate-800 rounded ${isPreseason ? 'inline-block' : 'hidden sm:inline-block'}`}>{game.context}</span>
                 )}
             </div>
             

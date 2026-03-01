@@ -8,12 +8,18 @@ export const mapEventToGame = (event: any, sport: Sport, leagueLogo?: string): G
     const competition = event.competitions?.[0];
     const homeComp = competition?.competitors?.find((c: any) => c.homeAway === 'home');
     const awayComp = competition?.competitors?.find((c: any) => c.homeAway === 'away');
+    const rawSeasonType = event.season?.type;
+    const parsedSeasonType = typeof rawSeasonType === 'number'
+        ? rawSeasonType
+        : Number(rawSeasonType?.type ?? rawSeasonType?.id ?? rawSeasonType?.value);
+    const seasonType = Number.isFinite(parsedSeasonType) ? parsedSeasonType : undefined;
     
     const homeRank = extractNumber(homeComp?.curatedRank?.current);
     const awayRank = extractNumber(awayComp?.curatedRank?.current);
 
     const headline = competition?.notes?.[0]?.headline;
-    const isPostseason = event.season?.type === 3;
+    const isPostseason = seasonType === 3;
+    const isPreseason = seasonType === 1;
     let context = undefined;
 
     if (isPostseason) {
@@ -24,6 +30,13 @@ export const mapEventToGame = (event: any, sport: Sport, leagueLogo?: string): G
             context = event.status.type.detail;
         } else {
             context = 'Playoffs';
+        }
+    } else if (isPreseason) {
+        const weekText = event.week?.text;
+        if (typeof weekText === 'string' && weekText.toLowerCase().includes('preseason')) {
+            context = weekText;
+        } else {
+            context = 'Preseason';
         }
     }
 
@@ -79,7 +92,7 @@ export const mapEventToGame = (event: any, sport: Sport, leagueLogo?: string): G
         weather: event.weather?.displayValue,
         temperature: event.weather?.temperature ? `${event.weather.temperature}°` : undefined,
         seasonYear: event.season?.year,
-        seasonType: event.season?.type,
+        seasonType: seasonType,
         
         situation: sport === 'NFL' || sport === 'NCAAF' ? (event.competitions?.[0]?.situation ? {
              down: event.competitions[0].situation.down,
