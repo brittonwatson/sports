@@ -9,6 +9,7 @@ import { fetchPlayerProfile } from '../services/playerService';
 import { getTeamColor } from '../services/uiUtils';
 import { getGameTeamAbbreviation } from '../services/teamAbbreviation';
 import { StatDetailModal } from './modals/StatDetailModal';
+import { InjuryReport } from './InjuryReport';
 
 interface PredictionViewProps {
   game: Game;
@@ -610,6 +611,8 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
                 </div>
             </div>
         </div>
+
+        <InjuryReport game={game} injuries={gameDetails?.injuries} onTeamClick={onTeamClick} />
 
         {Object.keys(categorizedStats).length > 0 && (
             <div className="mb-8 border-t border-slate-100 dark:border-slate-800 pt-6">

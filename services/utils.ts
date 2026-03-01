@@ -75,7 +75,7 @@ export const formatTeamName = (team: any, sport: Sport): string => {
     }
 
     // For Major Pro Leagues, use Team Name (Mascot)
-    if (['NFL', 'NBA', 'NHL', 'MLB', 'WNBA', 'MLS'].includes(sport)) {
+    if (['NFL', 'NBA', 'NHL', 'MLB', 'WNBA', 'MLS', 'NASCAR', 'INDYCAR', 'F1'].includes(sport)) {
         if (team.name) return team.name;
         if (team.shortDisplayName) return team.shortDisplayName;
     }

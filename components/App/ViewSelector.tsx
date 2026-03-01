@@ -1,6 +1,6 @@
 
 import React from 'react';
-import { Sport, SOCCER_LEAGUES } from '../../types';
+import { Sport, SOCCER_LEAGUES, RACING_LEAGUES } from '../../types';
 import { Radio } from 'lucide-react';
 
 type ViewMode = 'LIVE' | 'UPCOMING' | 'SCORES' | 'STANDINGS' | 'BRACKET' | 'RANKINGS' | 'CALENDAR' | 'TEAMS' | 'LEAGUE_STATS';
@@ -15,6 +15,7 @@ const RANKED_LEAGUES: Sport[] = ['NCAAF', 'NCAAM', 'NCAAW'];
 const PLAYOFF_LEAGUES: string[] = ['NFL', 'NBA', 'NHL', 'MLB', 'NCAAF', 'NCAAM', 'NCAAW', 'MLS', 'WNBA', 'UCL'];
 
 export const ViewSelector: React.FC<ViewSelectorProps> = ({ viewMode, selectedTab, setViewMode }) => {
+  const isRacing = RACING_LEAGUES.includes(selectedTab as Sport);
   return (
     <div className={`bg-slate-100 dark:bg-slate-900/50 p-1 rounded-xl border border-slate-200 dark:border-slate-800/60 ${selectedTab === 'HOME' ? 'w-full md:w-auto grid grid-cols-3 gap-1 md:flex md:gap-0' : 'flex overflow-x-auto no-scrollbar'}`}>
       <button
@@ -66,27 +67,31 @@ export const ViewSelector: React.FC<ViewSelectorProps> = ({ viewMode, selectedTa
             {SOCCER_LEAGUES.includes(selectedTab as Sport) ? 'Table' : 'Standings'}
           </button>
 
-          <button
-            onClick={() => setViewMode('LEAGUE_STATS')}
-            className={`px-4 py-2 rounded-lg text-xs font-bold uppercase tracking-wider transition-all whitespace-nowrap flex items-center justify-center flex-1
-                ${viewMode === 'LEAGUE_STATS' 
-                    ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-sm' 
-                    : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'
-                }`}
-          >
-            Stats
-          </button>
+          {!isRacing && (
+            <button
+              onClick={() => setViewMode('LEAGUE_STATS')}
+              className={`px-4 py-2 rounded-lg text-xs font-bold uppercase tracking-wider transition-all whitespace-nowrap flex items-center justify-center flex-1
+                  ${viewMode === 'LEAGUE_STATS' 
+                      ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-sm' 
+                      : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'
+                  }`}
+            >
+              Stats
+            </button>
+          )}
           
-          <button
-            onClick={() => setViewMode('TEAMS')}
-            className={`px-4 py-2 rounded-lg text-xs font-bold uppercase tracking-wider transition-all whitespace-nowrap flex items-center justify-center flex-1
-                ${viewMode === 'TEAMS' 
-                    ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-sm' 
-                    : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'
-                }`}
-          >
-            Teams
-          </button>
+          {!isRacing && (
+            <button
+              onClick={() => setViewMode('TEAMS')}
+              className={`px-4 py-2 rounded-lg text-xs font-bold uppercase tracking-wider transition-all whitespace-nowrap flex items-center justify-center flex-1
+                  ${viewMode === 'TEAMS' 
+                      ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-sm' 
+                      : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'
+                  }`}
+            >
+              Teams
+            </button>
+          )}
           
           <button
             onClick={() => setViewMode('CALENDAR')}
@@ -99,7 +104,7 @@ export const ViewSelector: React.FC<ViewSelectorProps> = ({ viewMode, selectedTa
             Calendar
           </button>
 
-          {PLAYOFF_LEAGUES.includes(selectedTab as string) && (
+          {!isRacing && PLAYOFF_LEAGUES.includes(selectedTab as string) && (
             <button
               onClick={() => setViewMode('BRACKET')}
               className={`px-4 py-2 rounded-lg text-xs font-bold uppercase tracking-wider transition-all whitespace-nowrap flex items-center justify-center flex-1
@@ -112,7 +117,7 @@ export const ViewSelector: React.FC<ViewSelectorProps> = ({ viewMode, selectedTa
             </button>
           )}
 
-          {RANKED_LEAGUES.includes(selectedTab as Sport) && (
+          {!isRacing && RANKED_LEAGUES.includes(selectedTab as Sport) && (
             <button
               onClick={() => setViewMode('RANKINGS')}
               className={`px-4 py-2 rounded-lg text-xs font-bold uppercase tracking-wider transition-all whitespace-nowrap flex items-center justify-center flex-1

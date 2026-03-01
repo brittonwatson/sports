@@ -16,6 +16,7 @@ import { BaseballDiamond } from './live/BaseballDiamond';
 import { ActiveLineupList } from './live/ActiveLineupList';
 import { ScoreboardTable } from './live/ScoreboardTable';
 import { CurrentBoxScore } from './live/CurrentBoxScore';
+import { InjuryReport } from './InjuryReport';
 
 interface LiveGameViewProps {
   game: Game;
@@ -274,6 +275,8 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({ game, gameDetails, p
               </button>
           </div>
       </div>
+
+      <InjuryReport game={game} injuries={gameDetails?.injuries} onTeamClick={onTeamClick} />
 
       {activeTab === 'ACTION' ? (
           <div className="space-y-6 animate-fade-in">

@@ -111,7 +111,12 @@ const POINTS_BASED_STANDINGS_SPORTS = new Set<Sport>([
     'Serie A',
     'Ligue 1',
     'UCL',
+    'NASCAR',
+    'INDYCAR',
+    'F1',
 ]);
+
+const RACING_SPORTS = new Set<Sport>(['NASCAR', 'INDYCAR', 'F1']);
 
 const parseLooseNumber = (value: string | number | undefined, label?: string): number | null => {
     if (value === undefined || value === null) return null;
@@ -239,6 +244,7 @@ export const StandingsView: React.FC<StandingsViewProps> = ({ groups, sport, typ
     const isNCAA = sport.startsWith('NCAA');
     const isRankings = type === 'RANKINGS';
     const isSoccer = SOCCER_LEAGUES.includes(sport);
+    const isRacing = RACING_SPORTS.has(sport);
     
     // Check if ANY team in the current view has valid conference record data. 
     // If not, hide the column to keep it clean, UNLESS it's NCAA where we expect it even if 0-0.
@@ -871,9 +877,9 @@ export const StandingsView: React.FC<StandingsViewProps> = ({ groups, sport, typ
                                         <th className="px-6 py-3 w-16 text-center">Rk</th>
                                         <th className="px-6 py-3">Team</th>
                                         {showConf && <th className="px-6 py-3 text-right">Conf</th>}
-                                        <th className="px-6 py-3 text-right">{isNCAA ? 'Overall' : `W-D-L`}</th>
+                                        <th className="px-6 py-3 text-right">{isNCAA ? 'Overall' : isRacing ? 'Record' : `W-D-L`}</th>
                                         {(!isNCAA || isRankings) && (
-                                            <th className="px-6 py-3 text-right">{isSoccer || sport === 'NHL' || isRankings ? 'Pts' : 'Pct'}</th>
+                                            <th className="px-6 py-3 text-right">{isSoccer || sport === 'NHL' || isRankings || isRacing ? 'Pts' : 'Pct'}</th>
                                         )}
                                         <th className="px-6 py-3 text-right hidden sm:table-cell">{isRankings ? 'Trend' : 'Diff/GB'}</th>
                                         {!isRankings && <th className="px-6 py-3 text-right hidden sm:table-cell">Strk</th>}
@@ -949,6 +955,8 @@ export const StandingsView: React.FC<StandingsViewProps> = ({ groups, sport, typ
                                                     <td className="px-6 py-3 text-right font-mono text-slate-500 dark:text-slate-400 align-top pt-3.5 font-medium">
                                                         {isSoccer 
                                                             ? `${team.stats.wins || 0}-${team.stats.ties || 0}-${team.stats.losses || 0}` 
+                                                            : isRacing
+                                                                ? (team.stats.overallRecord || `${team.stats.wins || 0}-${team.stats.losses || 0}`)
                                                             : sport === 'NHL' 
                                                                 ? `${team.stats.wins || 0}-${team.stats.losses || 0}-${team.stats.ties || 0}`
                                                                 : (team.stats.overallRecord || `${team.stats.wins || 0}-${team.stats.losses || 0}${team.stats.ties !== undefined && team.stats.ties > 0 ? `-${team.stats.ties}` : ''}`)
@@ -957,7 +965,7 @@ export const StandingsView: React.FC<StandingsViewProps> = ({ groups, sport, typ
                                                     
                                                     {(!isNCAA || isRankings) && (
                                                         <td className="px-6 py-3 text-right font-mono font-bold text-slate-800 dark:text-slate-200 align-top pt-3.5">
-                                                            {isSoccer || sport === 'NHL' || isRankings 
+                                                            {isSoccer || sport === 'NHL' || isRankings || isRacing 
                                                                 ? team.stats.points 
                                                                 : team.stats.pct}
                                                         </td>

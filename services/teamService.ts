@@ -36,6 +36,7 @@ const ACTIVE_SYNCS = new Set<string>();
 const SYNC_COOLDOWN = 60 * 60 * 1000; // 1 Hour
 const ACTIVE_HISTORICAL_SEASON_SYNCS = new Set<string>();
 const NCAA_RANKED_SPORTS = new Set<Sport>(['NCAAF', 'NCAAM', 'NCAAW']);
+const RACING_SPORTS = new Set<Sport>(['NASCAR', 'INDYCAR', 'F1']);
 const NCAA_RANK_CACHE_TTL = 15 * 60 * 1000; // 15 minutes
 const NCAA_RANK_CACHE = new Map<Sport, { fetchedAt: number; rankByTeamId: Map<string, number> }>();
 
@@ -114,9 +115,24 @@ export const fetchStandings = async (sport: Sport, type: StandingsType): Promise
             if (g.standings?.entries) {
                 groups.push({
                     name: g.name || g.header || 'Standings',
-                    standings: g.standings.entries.map((e: any) => ({
-                        team: { id: e.team.id, name: formatTeamName(e.team, sport), abbreviation: e.team.abbreviation, logo: e.team.logos?.[0]?.href },
-                        stats: (e.stats || []).reduce((acc: any, curr: any) => {
+                    standings: g.standings.entries.map((e: any) => {
+                        const entryEntity = e.team || e.athlete;
+                        const entityId = String(entryEntity?.id || '');
+                        const entityName = e.team
+                            ? formatTeamName(e.team, sport)
+                            : String(entryEntity?.displayName || entryEntity?.name || 'Unknown');
+                        const entityAbbreviation = String(
+                            entryEntity?.abbreviation ||
+                            entryEntity?.shortName ||
+                            '',
+                        );
+                        const entityLogo = e.team?.logos?.[0]?.href ||
+                            entryEntity?.flag?.href ||
+                            entryEntity?.headshot?.href;
+
+                        let racingStarts = 0;
+                        let racingWins = 0;
+                        const stats = (e.stats || []).reduce((acc: any, curr: any) => {
                             const val = extractNumber(curr.value);
                             const name = curr.name || '';
                             
@@ -143,13 +159,42 @@ export const fetchStandings = async (sport: Sport, type: StandingsType): Promise
                             }
                             
                             if (name === 'overall') acc.overallRecord = normalizeStat(curr);
+
+                            if (RACING_SPORTS.has(sport) && curr?.played) {
+                                racingStarts += 1;
+                                if (String(curr?.displayValue || '').trim() === '1' || val === 1) {
+                                    racingWins += 1;
+                                }
+                            }
                             
                             return acc;
-                        }, {}),
-                        rank: extractNumber(e.stats?.find((s: any) => s.name === 'playoffSeed')?.value) || extractNumber(e.stats?.find((s: any) => s.name === 'rank')?.value) || 0,
-                        clincher: e.stats?.find((s: any) => s.name === 'clincher')?.displayValue,
-                        note: e.note?.description
-                    }))
+                        }, {});
+
+                        if (RACING_SPORTS.has(sport)) {
+                            const championshipPoints = e.stats?.find((s: any) => s.name === 'championshipPts');
+                            if (championshipPoints && stats.points === undefined) {
+                                stats.points = extractNumber(championshipPoints.value);
+                            }
+                            if (!stats.overallRecord && racingStarts > 0) {
+                                stats.overallRecord = `${racingWins}-${Math.max(0, racingStarts - racingWins)}`;
+                            }
+                            if (stats.wins === undefined && racingWins > 0) stats.wins = racingWins;
+                            if (stats.losses === undefined && racingStarts > 0) stats.losses = Math.max(0, racingStarts - racingWins);
+                        }
+
+                        return {
+                            team: {
+                                id: entityId || `entry-${(entityName || 'unknown').toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 32)}`,
+                                name: entityName,
+                                abbreviation: entityAbbreviation,
+                                logo: entityLogo,
+                            },
+                            stats,
+                            rank: extractNumber(e.stats?.find((s: any) => s.name === 'playoffSeed')?.value) || extractNumber(e.stats?.find((s: any) => s.name === 'rank')?.value) || 0,
+                            clincher: e.stats?.find((s: any) => s.name === 'clincher')?.displayValue,
+                            note: e.note?.description
+                        };
+                    })
                 });
             }
             if (g.children) g.children.forEach(process);

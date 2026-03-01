@@ -433,6 +433,23 @@ export const fetchBracketGames = async (sport: Sport): Promise<Game[]> => {
     return [];
 };
 
+const toInjuryStatus = (status: any): string => {
+    if (typeof status === 'string' && status.trim()) return status.trim();
+    if (status && typeof status === 'object') {
+        const candidate = [
+            status.type,
+            status.abbreviation,
+            status.shortDetail,
+            status.displayName,
+            status.name,
+            status.description,
+            status.detail,
+        ].find((value) => typeof value === 'string' && value.trim());
+        if (typeof candidate === 'string') return candidate.trim();
+    }
+    return 'Unavailable';
+};
+
 export const fetchGameDetails = async (gameId: string, sport: Sport): Promise<GameDetails | null> => {
     const endpoint = ESPN_ENDPOINTS[sport];
     const baseUrl = `https://site.api.espn.com/apis/site/v2/sports/${endpoint}/summary`;
@@ -442,12 +459,39 @@ export const fetchGameDetails = async (gameId: string, sport: Sport): Promise<Ga
         if (!response.ok) return null;
         const data = await response.json();
         
-        const competitors = data.header?.competitions?.[0]?.competitors || [];
-        const homeComp = competitors.find((c: any) => c.homeAway === 'home');
-        const awayComp = competitors.find((c: any) => c.homeAway === 'away');
+        const competition = data.header?.competitions?.[0];
+        const competitors = competition?.competitors || [];
+        const isRacing = sport === 'NASCAR' || sport === 'INDYCAR' || sport === 'F1';
+        const orderRank = (competitor: any): number => {
+            const order = extractNumber(competitor?.order);
+            if (order > 0) return order;
+            const curated = extractNumber(competitor?.curatedRank?.current);
+            if (curated > 0) return curated;
+            const score = extractNumber(competitor?.score);
+            if (score > 0) return score;
+            return Number.MAX_SAFE_INTEGER;
+        };
+        let homeComp = competitors.find((c: any) => c.homeAway === 'home');
+        let awayComp = competitors.find((c: any) => c.homeAway === 'away');
+        if ((!homeComp || !awayComp) && isRacing && competitors.length > 0) {
+            const ranked = [...competitors].sort((a: any, b: any) => orderRank(a) - orderRank(b));
+            homeComp = homeComp || ranked[0];
+            awayComp = awayComp || ranked[1] || ranked[0];
+        }
         const statusState = data.header?.competitions?.[0]?.status?.type?.state; // 'pre', 'in', 'post'
         const currentPeriod = data.header?.competitions?.[0]?.status?.period || 0;
         const isSoccer = ['EPL', 'Bundesliga', 'La Liga', 'Ligue 1', 'Serie A', 'MLS', 'UCL'].includes(sport);
+        const resolveCompetitorScore = (competitor: any): string | undefined => {
+            const normalized = normalizeStat(competitor?.score);
+            if (normalized && normalized !== '-') return normalized;
+            if (isRacing) {
+                const position = Math.trunc(extractNumber(competitor?.order));
+                if (Number.isFinite(position) && position > 0 && statusState !== 'pre') {
+                    return String(position);
+                }
+            }
+            return undefined;
+        };
 
         const getPlayPeriod = (play: any): number => {
             const explicit = parseInt(String(play?.period?.number ?? play?.period ?? '0'));
@@ -1293,8 +1337,23 @@ export const fetchGameDetails = async (gameId: string, sport: Sport): Promise<Ga
         return {
             gameId, linescores: parsedLinescores, stats: teamStats, seasonStats, scoringPlays, plays, leaders,
             gameInfo: { weather: data.gameInfo?.weather?.displayValue, venue: data.gameInfo?.venue?.fullName, attendance: data.gameInfo?.attendance },
-            injuries: (data.injuries || []).flatMap((t: any) => (t.injuries || []).map((i: any) => ({ athlete: { id: i.athlete.id, displayName: i.athlete.displayName, position: i.athlete.position?.abbreviation }, status: i.status, teamId: t.team.id }))),
-            boxscore, situation, clock: data.header?.competitions?.[0]?.status?.displayClock, period: data.header?.competitions?.[0]?.status?.period, homeScore: homeComp?.score, awayScore: awayComp?.score,
+            injuries: (data.injuries || []).flatMap((t: any) =>
+                (t.injuries || []).map((i: any) => ({
+                    athlete: {
+                        id: i.athlete.id,
+                        displayName: i.athlete.displayName,
+                        position: i.athlete.position?.abbreviation,
+                    },
+                    status: toInjuryStatus(i.status),
+                    teamId: t.team.id,
+                })),
+            ),
+            boxscore,
+            situation,
+            clock: data.header?.competitions?.[0]?.status?.displayClock,
+            period: data.header?.competitions?.[0]?.status?.period,
+            homeScore: resolveCompetitorScore(homeComp),
+            awayScore: resolveCompetitorScore(awayComp),
             odds: data.pickcenter?.[0] ? { spread: data.pickcenter[0].details, overUnder: data.pickcenter[0].overUnder ? `O/U ${data.pickcenter[0].overUnder}` : undefined, moneyLineAway: data.pickcenter[0].awayTeamOdds?.moneyLine !== undefined ? String(data.pickcenter[0].awayTeamOdds.moneyLine) : undefined, moneyLineHome: data.pickcenter[0].homeTeamOdds?.moneyLine !== undefined ? String(data.pickcenter[0].homeTeamOdds.moneyLine) : undefined, provider: data.pickcenter[0].provider?.name } : undefined
         };
     } catch { return null; }

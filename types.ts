@@ -392,13 +392,16 @@ export interface LeagueStatRow {
 export type StandingsType = 'PLAYOFF' | 'DIVISION';
 
 export type Sport = 
+  | 'F1'
   | 'Bundesliga' 
   | 'EPL' 
+  | 'INDYCAR'
   | 'La Liga' 
   | 'Ligue 1' 
   | 'MLB' 
   | 'MLS' 
   | 'NBA' 
+  | 'NASCAR'
   | 'NCAAF' 
   | 'NCAAM' 
   | 'NCAAW'
@@ -410,13 +413,16 @@ export type Sport =
   | 'WNBA';
 
 export const SPORTS: Sport[] = [
+  'F1',
   'Bundesliga',
   'EPL',
+  'INDYCAR',
   'La Liga',
   'Ligue 1',
   'MLB',
   'MLS',
   'NBA',
+  'NASCAR',
   'NCAAF',
   'NCAAM',
   'NCAAW',
@@ -429,3 +435,4 @@ export const SPORTS: Sport[] = [
 ];
 
 export const SOCCER_LEAGUES: Sport[] = ['Bundesliga', 'EPL', 'La Liga', 'Ligue 1', 'MLS', 'Serie A', 'UCL'];
+export const RACING_LEAGUES: Sport[] = ['F1', 'INDYCAR', 'NASCAR'];

@@ -12,9 +12,12 @@ const outputDir = path.join(repoRoot, "public", "internal-db");
 const manifestPath = path.join(outputDir, "manifest.json");
 
 const ESPN_ENDPOINTS = {
+  F1: "racing/f1",
   NBA: "basketball/nba",
   NFL: "football/nfl",
+  INDYCAR: "racing/irl",
   MLB: "baseball/mlb",
+  NASCAR: "racing/nascar-premier",
   NHL: "hockey/nhl",
   EPL: "soccer/eng.1",
   Bundesliga: "soccer/ger.1",
@@ -216,7 +219,7 @@ const formatTeamName = (team, sport) => {
   if (["NCAAF", "NCAAM", "NCAAW"].includes(sport)) {
     return team.location || team.shortDisplayName || team.displayName || "";
   }
-  if (["NFL", "NBA", "NHL", "MLB", "WNBA", "MLS"].includes(sport)) {
+  if (["NFL", "NBA", "NHL", "MLB", "WNBA", "MLS", "NASCAR", "INDYCAR", "F1"].includes(sport)) {
     if (team.name) return team.name;
     if (team.shortDisplayName) return team.shortDisplayName;
   }
@@ -227,8 +230,26 @@ const formatTeamName = (team, sport) => {
 
 const mapEventToGame = (event, sport, leagueLogo) => {
   const competition = event.competitions?.[0];
-  const homeComp = competition?.competitors?.find((c) => c.homeAway === "home");
-  const awayComp = competition?.competitors?.find((c) => c.homeAway === "away");
+  const isRacing = RACING_SPORTS.has(sport);
+  const statusState = event.status?.type?.state;
+  let homeComp = competition?.competitors?.find((c) => c.homeAway === "home");
+  let awayComp = competition?.competitors?.find((c) => c.homeAway === "away");
+  if ((!homeComp || !awayComp) && isRacing) {
+    const ranked = [...(competition?.competitors || [])].sort((a, b) => {
+      const rankValue = (entry) => {
+        const order = extractNumber(entry?.order);
+        if (order > 0) return order;
+        const curated = extractNumber(entry?.curatedRank?.current);
+        if (curated > 0) return curated;
+        const score = extractNumber(entry?.score);
+        if (score > 0) return score;
+        return Number.MAX_SAFE_INTEGER;
+      };
+      return rankValue(a) - rankValue(b);
+    });
+    homeComp = homeComp || ranked[0];
+    awayComp = awayComp || ranked[1] || ranked[0];
+  }
   const homeRank = extractNumber(homeComp?.curatedRank?.current);
   const awayRank = extractNumber(awayComp?.curatedRank?.current);
   const isPostseason = event.season?.type === 3;
@@ -254,21 +275,55 @@ const mapEventToGame = (event, sport, leagueLogo) => {
   const location = city ? (state ? `${city}, ${state}` : city) : undefined;
 
   const odds = competition?.odds?.[0];
+  const displayName = (comp) => {
+    if (!comp) return "TBD";
+    if (isRacing) return comp?.athlete?.displayName || comp?.athlete?.name || formatTeamName(comp?.team, sport);
+    return formatTeamName(comp?.team, sport);
+  };
+  const displayAbbreviation = (comp) => {
+    if (!comp) return undefined;
+    if (!isRacing) return comp?.team?.abbreviation;
+    const direct = String(comp?.athlete?.abbreviation || comp?.athlete?.shortName || "").trim();
+    if (direct) return direct.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 4);
+    const words = String(displayName(comp)).split(/\s+/).filter(Boolean);
+    if (words.length === 0) return undefined;
+    if (words.length === 1) return words[0].slice(0, 3).toUpperCase();
+    return `${words[0][0] || ""}${words[words.length - 1][0] || ""}${words[words.length - 1][1] || ""}`.toUpperCase();
+  };
+  const displayId = (comp) => {
+    if (!comp) return undefined;
+    if (isRacing) return comp?.athlete?.id || comp?.team?.id;
+    return comp?.team?.id;
+  };
+  const displayLogo = (comp) => {
+    if (!comp) return undefined;
+    if (!isRacing) return comp?.team?.logo || comp?.team?.logos?.[0]?.href;
+    return comp?.athlete?.flag?.href || comp?.athlete?.headshot?.href || comp?.team?.logo || comp?.team?.logos?.[0]?.href;
+  };
+  const displayScore = (comp) => {
+    const normalized = normalizeStat(comp?.score);
+    if (normalized && normalized !== "-") return normalized;
+    if (isRacing && statusState !== "pre") {
+      const order = Math.trunc(extractNumber(comp?.order));
+      if (Number.isFinite(order) && order > 0) return String(order);
+    }
+    return undefined;
+  };
 
   return {
     id: event.id,
-    homeTeam: formatTeamName(homeComp?.team, sport),
-    homeTeamAbbreviation: homeComp?.team?.abbreviation,
-    homeTeamId: homeComp?.team?.id,
-    homeTeamLogo: homeComp?.team?.logo || homeComp?.team?.logos?.[0]?.href,
+    homeTeam: displayName(homeComp),
+    homeTeamAbbreviation: displayAbbreviation(homeComp),
+    homeTeamId: displayId(homeComp),
+    homeTeamLogo: displayLogo(homeComp),
     homeTeamRank: homeRank > 0 && homeRank !== 99 ? homeRank : undefined,
-    homeScore: normalizeStat(homeComp?.score),
-    awayTeam: formatTeamName(awayComp?.team, sport),
-    awayTeamAbbreviation: awayComp?.team?.abbreviation,
-    awayTeamId: awayComp?.team?.id,
-    awayTeamLogo: awayComp?.team?.logo || awayComp?.team?.logos?.[0]?.href,
+    homeScore: displayScore(homeComp),
+    awayTeam: displayName(awayComp),
+    awayTeamAbbreviation: displayAbbreviation(awayComp),
+    awayTeamId: displayId(awayComp),
+    awayTeamLogo: displayLogo(awayComp),
     awayTeamRank: awayRank > 0 && awayRank !== 99 ? awayRank : undefined,
-    awayScore: normalizeStat(awayComp?.score),
+    awayScore: displayScore(awayComp),
     date: new Date(event.date).toLocaleDateString(undefined, {
       month: "short",
       day: "numeric",
@@ -281,12 +336,12 @@ const mapEventToGame = (event, sport, leagueLogo) => {
     league: sport,
     leagueName: event.league?.name,
     leagueLogo,
-    context,
+    context: context || (isRacing ? competition?.type?.text || event.name : undefined),
     gameStatus: event.status?.type?.detail,
     status:
-      event.status?.type?.state === "in"
+      statusState === "in"
         ? "in_progress"
-        : event.status?.type?.state === "post"
+        : statusState === "post"
           ? "finished"
           : "scheduled",
     clock: event.status?.displayClock,
@@ -387,6 +442,17 @@ const parseStandings = (data, sport) => {
   const process = (g) => {
     if (g.standings?.entries) {
       const standings = g.standings.entries.map((entry) => {
+        const entity = entry.team || entry.athlete;
+        const entityId = String(entity?.id || "");
+        const entityName = entry.team
+          ? formatTeamName(entry.team, sport)
+          : String(entity?.displayName || entity?.name || "Unknown");
+        const entityAbbreviation = String(entity?.abbreviation || entity?.shortName || "");
+        const entityLogo =
+          entry.team?.logos?.[0]?.href || entity?.flag?.href || entity?.headshot?.href;
+
+        let racingStarts = 0;
+        let racingWins = 0;
         const stats = (entry.stats || []).reduce((acc, curr) => {
           const val = extractNumber(curr.value);
           const name = curr.name || "";
@@ -401,20 +467,40 @@ const parseStandings = (data, sport) => {
           if (name === "gamesBehind") acc.gamesBehind = normalizeStat(curr);
           if (name === "streak") acc.streak = normalizeStat(curr);
           if (name === "pointDifferential") acc.pointDifferential = val;
+          if (RACING_SPORTS.has(sport) && curr?.played) {
+            racingStarts += 1;
+            if (String(curr?.displayValue || "").trim() === "1" || val === 1) racingWins += 1;
+          }
           return acc;
         }, {});
 
-        const teamId = entry.team?.id;
+        if (RACING_SPORTS.has(sport) && stats.points === undefined) {
+          const championshipPts = entry.stats?.find((s) => s.name === "championshipPts");
+          if (championshipPts) stats.points = extractNumber(championshipPts.value);
+          if (!stats.overallRecord && racingStarts > 0) {
+            stats.overallRecord = `${racingWins}-${Math.max(0, racingStarts - racingWins)}`;
+          }
+          if (stats.wins === undefined && racingWins > 0) stats.wins = racingWins;
+          if (stats.losses === undefined && racingStarts > 0) stats.losses = Math.max(0, racingStarts - racingWins);
+        }
+
+        const teamId = entityId;
         if (teamId) {
           teamStatsMap[`${sport}-${teamId}`] = convertStandingsToStats(stats, sport);
         }
 
+        const fallbackId = entityName
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "-")
+          .replace(/(^-|-$)/g, "")
+          .slice(0, 32);
+
         return {
           team: {
-            id: entry.team.id,
-            name: formatTeamName(entry.team, sport),
-            abbreviation: entry.team.abbreviation,
-            logo: entry.team.logos?.[0]?.href,
+            id: entityId || `entry-${fallbackId || "unknown"}`,
+            name: entityName,
+            abbreviation: entityAbbreviation,
+            logo: entityLogo,
           },
           stats,
           rank:
@@ -444,6 +530,7 @@ const BASKETBALL_SPORTS = new Set(["NBA", "WNBA", "NCAAM", "NCAAW"]);
 const FOOTBALL_SPORTS = new Set(["NFL", "NCAAF"]);
 const HOCKEY_SPORTS = new Set(["NHL"]);
 const BASEBALL_SPORTS = new Set(["MLB"]);
+const RACING_SPORTS = new Set(["F1", "INDYCAR", "NASCAR"]);
 const SOCCER_SPORTS = new Set([
   "Bundesliga",
   "EPL",

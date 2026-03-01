@@ -9,9 +9,12 @@ import { WNBA, WNBA_OVERRIDES } from './wnba';
 import { NCAA_OVERRIDES } from './ncaa';
 
 export const LOCAL_TEAMS: Record<Sport, TeamOption[]> = {
+    'F1': [],
     'NFL': NFL,
+    'INDYCAR': [],
     'NBA': NBA,
     'MLB': MLB,
+    'NASCAR': [],
     'NHL': NHL,
     'MLS': MLS,
     'WNBA': WNBA,

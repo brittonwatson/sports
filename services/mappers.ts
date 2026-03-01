@@ -4,10 +4,77 @@
 import { Game, Sport } from "../types";
 import { formatTeamName, normalizeStat, extractNumber } from "./utils";
 
+const RACING_SPORTS = new Set<Sport>(["NASCAR", "INDYCAR", "F1"]);
+
+const normalizeColor = (color: string): string | undefined => {
+    if (!color) return undefined;
+    return color.startsWith('#') ? color : `#${color}`;
+};
+
+const coerceRacingCompetitors = (competition: any): any[] => {
+    const competitors = Array.isArray(competition?.competitors) ? [...competition.competitors] : [];
+    if (competitors.length === 0) return competitors;
+
+    const rankValue = (competitor: any): number => {
+        const order = extractNumber(competitor?.order);
+        if (order > 0) return order;
+        const curated = extractNumber(competitor?.curatedRank?.current);
+        if (curated > 0) return curated;
+        const score = extractNumber(competitor?.score);
+        if (score > 0) return score;
+        return Number.MAX_SAFE_INTEGER;
+    };
+
+    return competitors.sort((a, b) => rankValue(a) - rankValue(b));
+};
+
+const toRacingName = (competitor: any): string => {
+    if (!competitor) return "TBD";
+    if (competitor?.athlete?.displayName) return String(competitor.athlete.displayName);
+    if (competitor?.athlete?.name) return String(competitor.athlete.name);
+    if (competitor?.team) return formatTeamName(competitor.team, "NASCAR");
+    return "TBD";
+};
+
+const toRacingAbbreviation = (competitor: any): string | undefined => {
+    const fromAthlete = String(
+        competitor?.athlete?.abbreviation ||
+        competitor?.athlete?.shortName ||
+        "",
+    ).trim();
+    if (fromAthlete) {
+        const cleaned = fromAthlete.toUpperCase().replace(/[^A-Z0-9]/g, "");
+        if (cleaned.length >= 2) return cleaned.slice(0, 4);
+    }
+    const display = toRacingName(competitor);
+    const words = display.split(/\s+/).filter(Boolean);
+    if (words.length === 0) return undefined;
+    if (words.length === 1) return words[0].slice(0, 3).toUpperCase();
+    return `${words[0][0] || ""}${words[words.length - 1][0] || ""}${words[words.length - 1][1] || ""}`.toUpperCase();
+};
+
+const toRacingScore = (competitor: any, state?: string): string | undefined => {
+    const normalized = normalizeStat(competitor?.score);
+    if (normalized && normalized !== "-") return normalized;
+    if (state === "in" || state === "post") {
+        const order = Math.trunc(extractNumber(competitor?.order));
+        if (Number.isFinite(order) && order > 0) return String(order);
+    }
+    return undefined;
+};
+
 export const mapEventToGame = (event: any, sport: Sport, leagueLogo?: string): Game => {
     const competition = event.competitions?.[0];
-    const homeComp = competition?.competitors?.find((c: any) => c.homeAway === 'home');
-    const awayComp = competition?.competitors?.find((c: any) => c.homeAway === 'away');
+    const statusState = event.status?.type?.state;
+    const isRacing = RACING_SPORTS.has(sport);
+
+    let homeComp = competition?.competitors?.find((c: any) => c.homeAway === 'home');
+    let awayComp = competition?.competitors?.find((c: any) => c.homeAway === 'away');
+    if ((!homeComp || !awayComp) && isRacing) {
+        const ranked = coerceRacingCompetitors(competition);
+        homeComp = homeComp || ranked[0];
+        awayComp = awayComp || ranked[1] || ranked[0];
+    }
     const rawSeasonType = event.season?.type;
     const parsedSeasonType = typeof rawSeasonType === 'number'
         ? rawSeasonType
@@ -40,11 +107,6 @@ export const mapEventToGame = (event: any, sport: Sport, leagueLogo?: string): G
         }
     }
 
-    const sanitizeColor = (color: string) => {
-        if (!color) return undefined;
-        return color.startsWith('#') ? color : `#${color}`;
-    };
-
     // Extract Venue Info
     const venue = competition?.venue;
     const venueName = venue?.fullName;
@@ -52,25 +114,40 @@ export const mapEventToGame = (event: any, sport: Sport, leagueLogo?: string): G
     const state = venue?.address?.state;
     const location = city ? (state ? `${city}, ${state}` : city) : undefined;
 
+    const homeName = isRacing ? toRacingName(homeComp) : formatTeamName(homeComp?.team, sport);
+    const awayName = isRacing ? toRacingName(awayComp) : formatTeamName(awayComp?.team, sport);
+    const homeId = isRacing ? String(homeComp?.athlete?.id || homeComp?.team?.id || '') : homeComp?.team?.id;
+    const awayId = isRacing ? String(awayComp?.athlete?.id || awayComp?.team?.id || '') : awayComp?.team?.id;
+    const homeLogo = isRacing
+        ? homeComp?.athlete?.flag?.href || homeComp?.athlete?.headshot?.href || homeComp?.team?.logo || homeComp?.team?.logos?.[0]?.href
+        : homeComp?.team?.logo || homeComp?.team?.logos?.[0]?.href;
+    const awayLogo = isRacing
+        ? awayComp?.athlete?.flag?.href || awayComp?.athlete?.headshot?.href || awayComp?.team?.logo || awayComp?.team?.logos?.[0]?.href
+        : awayComp?.team?.logo || awayComp?.team?.logos?.[0]?.href;
+    const homeAbbreviation = isRacing ? toRacingAbbreviation(homeComp) : homeComp?.team?.abbreviation;
+    const awayAbbreviation = isRacing ? toRacingAbbreviation(awayComp) : awayComp?.team?.abbreviation;
+    const homeScore = isRacing ? toRacingScore(homeComp, statusState) : normalizeStat(homeComp?.score);
+    const awayScore = isRacing ? toRacingScore(awayComp, statusState) : normalizeStat(awayComp?.score);
+
     return {
         id: event.id,
-        homeTeam: formatTeamName(homeComp?.team, sport),
-        homeTeamAbbreviation: homeComp?.team?.abbreviation,
-        homeTeamId: homeComp?.team?.id,
-        homeTeamLogo: homeComp?.team?.logo || homeComp?.team?.logos?.[0]?.href,
+        homeTeam: homeName,
+        homeTeamAbbreviation: homeAbbreviation,
+        homeTeamId: homeId,
+        homeTeamLogo: homeLogo,
         homeTeamRank: (homeRank > 0 && homeRank !== 99) ? homeRank : undefined,
-        homeTeamColor: sanitizeColor(homeComp?.team?.color),
-        homeTeamAlternateColor: sanitizeColor(homeComp?.team?.alternateColor),
-        homeScore: normalizeStat(homeComp?.score),
+        homeTeamColor: normalizeColor(homeComp?.team?.color),
+        homeTeamAlternateColor: normalizeColor(homeComp?.team?.alternateColor),
+        homeScore,
         
-        awayTeam: formatTeamName(awayComp?.team, sport),
-        awayTeamAbbreviation: awayComp?.team?.abbreviation,
-        awayTeamId: awayComp?.team?.id,
-        awayTeamLogo: awayComp?.team?.logo || awayComp?.team?.logos?.[0]?.href,
+        awayTeam: awayName,
+        awayTeamAbbreviation: awayAbbreviation,
+        awayTeamId: awayId,
+        awayTeamLogo: awayLogo,
         awayTeamRank: (awayRank > 0 && awayRank !== 99) ? awayRank : undefined,
-        awayTeamColor: sanitizeColor(awayComp?.team?.color),
-        awayTeamAlternateColor: sanitizeColor(awayComp?.team?.alternateColor),
-        awayScore: normalizeStat(awayComp?.score),
+        awayTeamColor: normalizeColor(awayComp?.team?.color),
+        awayTeamAlternateColor: normalizeColor(awayComp?.team?.alternateColor),
+        awayScore,
         
         date: new Date(event.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
         time: new Date(event.date).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }),
@@ -78,9 +155,9 @@ export const mapEventToGame = (event: any, sport: Sport, leagueLogo?: string): G
         league: sport,
         leagueName: event.league?.name,
         leagueLogo: leagueLogo,
-        context: context,
+        context: context || (isRacing ? (competition?.type?.text || event.name || competition?.name) : undefined),
         gameStatus: event.status?.type?.detail,
-        status: event.status?.type?.state === 'in' ? 'in_progress' : event.status?.type?.state === 'post' ? 'finished' : 'scheduled',
+        status: statusState === 'in' ? 'in_progress' : statusState === 'post' ? 'finished' : 'scheduled',
         clock: event.status?.displayClock,
         period: event.status?.period,
         isPlayoff: isPostseason,

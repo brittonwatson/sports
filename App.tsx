@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { SPORTS, Sport, Game, PredictionResult, GroundingChunk, StandingsGroup, GameDetails, UserProfile, TeamOption, PredictionStats, StandingsType, TeamProfile, SOCCER_LEAGUES } from './types';
+import { SPORTS, Sport, Game, PredictionResult, GroundingChunk, StandingsGroup, GameDetails, UserProfile, TeamOption, PredictionStats, StandingsType, TeamProfile, SOCCER_LEAGUES, RACING_LEAGUES } from './types';
 import { fetchUpcomingGames, fetchBracketGames, fetchGameDetails } from './services/gameService';
 import { fetchStandings, fetchRankings, fetchTeamProfile, fetchTeamSchedule, syncFullDatabase } from './services/teamService';
 import { recordCompletedGames } from './services/internalDbService';
@@ -47,6 +47,7 @@ const ENABLE_RUNTIME_SYNC = import.meta.env.VITE_ENABLE_RUNTIME_SYNC === 'true';
 const ALL_VIEW_MODES: ViewMode[] = ['LIVE', 'UPCOMING', 'SCORES', 'STANDINGS', 'BRACKET', 'RANKINGS', 'CALENDAR', 'TEAMS', 'LEAGUE_STATS'];
 const PREDICTION_MODEL_VERSION = '2026-03-01-r7';
 const GAME_RENDER_BATCH = 36;
+const RACING_VIEW_BLOCKLIST: ViewMode[] = ['BRACKET', 'RANKINGS', 'TEAMS', 'LEAGUE_STATS'];
 
 type ProbabilityModule = typeof import('./services/probabilities/index');
 let probabilityModulePromise: Promise<ProbabilityModule> | null = null;
@@ -1024,6 +1025,15 @@ export const App: React.FC = () => {
     return () => clearInterval(intervalId);
   }, [selectedTab, viewMode, favoriteLeagues, standingsType, selectedTeam]); 
 
+  useEffect(() => {
+      if (selectedTab === 'HOME' || selectedTab === 'METHODOLOGY') return;
+      if (!RACING_LEAGUES.includes(selectedTab as Sport)) return;
+      if (!RACING_VIEW_BLOCKLIST.includes(viewMode)) return;
+      setViewMode('LIVE');
+      setSelectedTeam(null);
+      setNavigatedGameId(null);
+  }, [selectedTab, viewMode]);
+
   const handleTabChange = (tab: Tab) => {
       setSelectedTab(tab);
       setViewMode('LIVE');
@@ -1176,6 +1186,7 @@ export const App: React.FC = () => {
   ]);
 
   const handleTeamClick = (teamId: string, league: Sport) => {
+      if (RACING_LEAGUES.includes(league)) return;
       setNavigatedGameId(null);
       setSelectedTeam({ id: teamId, league });
       setIsMenuOpen(false);
@@ -1838,7 +1849,7 @@ export const App: React.FC = () => {
                         sport={selectedTab as Sport} 
                         activeType={standingsType} 
                         onTypeChange={setStandingsType} 
-                        onTeamClick={handleTeamClick}
+                        onTeamClick={RACING_LEAGUES.includes(selectedTab as Sport) ? undefined : handleTeamClick}
                         useApiRankForNCAA={activeFilter === 'TOP25'}
                         isLoading={isLoading}
                      />
@@ -1847,7 +1858,7 @@ export const App: React.FC = () => {
                         groups={standings} 
                         sport={selectedTab as Sport} 
                         type="RANKINGS" 
-                        onTeamClick={handleTeamClick}
+                        onTeamClick={RACING_LEAGUES.includes(selectedTab as Sport) ? undefined : handleTeamClick}
                         isLoading={isLoading}
                      />
                  ) : viewMode === 'BRACKET' ? (

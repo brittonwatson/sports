@@ -8,10 +8,13 @@ export const API_KEY =
   '';
 
 export const ESPN_ENDPOINTS: Record<Sport, string> = {
+  'F1': 'racing/f1',
   'NBA': 'basketball/nba',
   'NFL': 'football/nfl',
+  'INDYCAR': 'racing/irl',
   'MLB': 'baseball/mlb',
   'NHL': 'hockey/nhl',
+  'NASCAR': 'racing/nascar-premier',
   'EPL': 'soccer/eng.1',
   'Bundesliga': 'soccer/ger.1',
   'La Liga': 'soccer/esp.1',
@@ -27,6 +30,9 @@ export const ESPN_ENDPOINTS: Record<Sport, string> = {
 };
 
 export const SPORT_PARAMS: Partial<Record<Sport, string>> = {
+  'F1': 'limit=200',
+  'INDYCAR': 'limit=200',
+  'NASCAR': 'limit=200',
   'NFL': 'limit=200',
   'NBA': 'limit=200',
   'NHL': 'limit=500',
@@ -37,6 +43,7 @@ export const SPORT_PARAMS: Partial<Record<Sport, string>> = {
 };
 
 export const DAILY_CALENDAR_SPORTS: Sport[] = [
+  'F1', 'INDYCAR', 'NASCAR',
   'MLB', 'NBA', 'NHL', 'NCAAM', 'NCAAW', 'WNBA',
   'Bundesliga', 'EPL', 'La Liga', 'Ligue 1', 'MLS', 'Serie A', 'UCL'
 ];
