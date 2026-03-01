@@ -6,6 +6,7 @@ import { fetchStandings, fetchRankings, fetchTeamProfile, fetchTeamSchedule, syn
 import { calculateWinProbability } from './services/probabilities/index';
 import { recordCompletedGames } from './services/internalDbService';
 import { generateAIAnalysis } from './services/aiService';
+import { getSeasonKeyForGame, listSeasonOptionsFromGames } from './services/seasonScope';
 import { GameCard } from './components/GameCard';
 import { PredictionView } from './components/PredictionView';
 import { LiveGameView } from './components/LiveGameView';
@@ -27,6 +28,7 @@ import { MenuDrawer } from './components/App/MenuDrawer';
 import { SearchModal } from './components/App/SearchModal';
 import { SettingsModal } from './components/App/SettingsModal';
 import { FollowingBar } from './components/App/FollowingBar';
+import { OnboardingModal } from './components/App/OnboardingModal';
 
 type Tab = Sport | 'HOME' | 'METHODOLOGY';
 type ViewMode = 'LIVE' | 'UPCOMING' | 'SCORES' | 'STANDINGS' | 'BRACKET' | 'RANKINGS' | 'CALENDAR' | 'TEAMS' | 'LEAGUE_STATS';
@@ -45,6 +47,20 @@ const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID?.trim() || '';
 const ENABLE_RUNTIME_SYNC = import.meta.env.VITE_ENABLE_RUNTIME_SYNC === 'true';
 const ALL_VIEW_MODES: ViewMode[] = ['LIVE', 'UPCOMING', 'SCORES', 'STANDINGS', 'BRACKET', 'RANKINGS', 'CALENDAR', 'TEAMS', 'LEAGUE_STATS'];
 const PREDICTION_MODEL_VERSION = '2026-03-01-r7';
+const GAME_RENDER_BATCH = 36;
+
+const getOnboardingStorageKey = (userSub?: string): string =>
+  userSub ? `onboarding_complete_${userSub}` : 'onboarding_complete';
+
+const readOnboardingComplete = (userSub?: string): boolean => {
+  if (typeof window === 'undefined') return true;
+  return window.localStorage.getItem(getOnboardingStorageKey(userSub)) === '1';
+};
+
+const markOnboardingComplete = (userSub?: string): void => {
+  if (typeof window === 'undefined') return;
+  window.localStorage.setItem(getOnboardingStorageKey(userSub), '1');
+};
 
 const isThemeMode = (value: string | null): value is ThemeMode =>
   value === 'light' || value === 'dark' || value === 'system';
@@ -192,10 +208,14 @@ export const App: React.FC = () => {
   const [user, setUser] = useState<UserProfile | null>(null);
   
   // Favorites State
-  const [favoriteLeagues, setFavoriteLeagues] = useState<Set<Sport>>(new Set(SPORTS));
+  const [favoriteLeagues, setFavoriteLeagues] = useState<Set<Sport>>(new Set());
   const [favoriteTeams, setFavoriteTeams] = useState<Set<string>>(new Set());
   const [followedGames, setFollowedGames] = useState<Set<string>>(new Set());
   const [isFollowingBarOpen, setIsFollowingBarOpen] = useState(true);
+  const [isOnboardingOpen, setIsOnboardingOpen] = useState(false);
+  const [onboardingLeagues, setOnboardingLeagues] = useState<Set<Sport>>(new Set());
+  const [onboardingTeams, setOnboardingTeams] = useState<Set<string>>(new Set());
+  const [onboardingTeamSearch, setOnboardingTeamSearch] = useState('');
   
   // Team Search State
   const [teamSearchTerm, setTeamSearchTerm] = useState('');
@@ -229,6 +249,7 @@ export const App: React.FC = () => {
   const [conferenceMap, setConferenceMap] = useState<Map<string, string>>(new Map());
   const [top25RankedTeamIds, setTop25RankedTeamIds] = useState<Set<string>>(new Set());
   const [isFilterDropdownOpen, setIsFilterDropdownOpen] = useState(false);
+  const [selectedLeagueSeasonKey, setSelectedLeagueSeasonKey] = useState<string | null>(null);
   
   // Menu Organization State
   const [menuSports, setMenuSports] = useState<Sport[]>(SPORTS);
@@ -238,6 +259,7 @@ export const App: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [isPredicting, setIsPredicting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [visibleGameCount, setVisibleGameCount] = useState(GAME_RENDER_BATCH);
 
   const upsertGamesInRegistry = useCallback((incoming: Game[]) => {
     if (incoming.length === 0) return;
@@ -330,11 +352,16 @@ export const App: React.FC = () => {
     const loadFavorites = () => {
         const key = currentUser ? `favorites_${currentUser.sub}` : 'favorites';
         const saved = localStorage.getItem(key);
-        if (saved) setFavoriteLeagues(parseFavoriteLeagues(saved));
-        else setFavoriteLeagues(new Set(SPORTS));
+        const parsedLeagues = saved ? parseFavoriteLeagues(saved) : new Set<Sport>();
+        const onboardingComplete = readOnboardingComplete(currentUser?.sub);
+        setFavoriteLeagues(parsedLeagues);
+        setOnboardingLeagues(new Set(parsedLeagues));
+        setIsOnboardingOpen(!onboardingComplete && parsedLeagues.size === 0);
 
         const teamKey = currentUser ? `favorite_teams_${currentUser.sub}` : 'favorite_teams';
-        setFavoriteTeams(parseFavoriteTeams(localStorage.getItem(teamKey)));
+        const parsedTeams = parseFavoriteTeams(localStorage.getItem(teamKey));
+        setFavoriteTeams(parsedTeams);
+        setOnboardingTeams(new Set(parsedTeams));
 
         const followKey = currentUser ? `followed_games_${currentUser.sub}` : 'followed_games';
         setFollowedGames(parseFollowedGames(localStorage.getItem(followKey)));
@@ -565,6 +592,7 @@ export const App: React.FC = () => {
           setConferenceMap(new Map());
       }
       setActiveFilter('ALL');
+      setSelectedLeagueSeasonKey(null);
   }, [selectedTab]);
 
   useEffect(() => {
@@ -651,25 +679,31 @@ export const App: React.FC = () => {
       if (profile) {
           setUser(profile);
           localStorage.setItem('user_session', JSON.stringify(profile));
+          const onboardingComplete = readOnboardingComplete(profile.sub);
           
           const cloudKey = `favorites_${profile.sub}`;
           const cloudFavs = localStorage.getItem(cloudKey);
+          let resolvedLeagues = new Set<Sport>();
           if (cloudFavs) {
-              setFavoriteLeagues(parseFavoriteLeagues(cloudFavs));
+              resolvedLeagues = parseFavoriteLeagues(cloudFavs);
           } else {
               const localFavs = localStorage.getItem('favorites');
-              if (localFavs) setFavoriteLeagues(parseFavoriteLeagues(localFavs));
-              else setFavoriteLeagues(new Set(SPORTS));
+              if (localFavs) resolvedLeagues = parseFavoriteLeagues(localFavs);
           }
+          setFavoriteLeagues(resolvedLeagues);
+          setOnboardingLeagues(new Set(resolvedLeagues));
 
           const teamKey = `favorite_teams_${profile.sub}`;
           const cloudTeams = localStorage.getItem(teamKey);
+          let resolvedTeams = new Set<string>();
           if (cloudTeams) {
-              setFavoriteTeams(parseFavoriteTeams(cloudTeams));
+              resolvedTeams = parseFavoriteTeams(cloudTeams);
           } else {
               const localTeams = localStorage.getItem('favorite_teams');
-              setFavoriteTeams(parseFavoriteTeams(localTeams));
+              resolvedTeams = parseFavoriteTeams(localTeams);
           }
+          setFavoriteTeams(resolvedTeams);
+          setOnboardingTeams(new Set(resolvedTeams));
 
           const followKey = `followed_games_${profile.sub}`;
           const cloudFollowed = localStorage.getItem(followKey);
@@ -681,6 +715,7 @@ export const App: React.FC = () => {
           }
 
           setIsSettingsOpen(false);
+          setIsOnboardingOpen(!onboardingComplete && resolvedLeagues.size === 0);
       }
   };
 
@@ -688,17 +723,22 @@ export const App: React.FC = () => {
       if (window.google) window.google.accounts.id.disableAutoSelect();
       setUser(null);
       localStorage.removeItem('user_session');
+      const onboardingComplete = readOnboardingComplete();
       const localFavs = localStorage.getItem('favorites');
-      if (localFavs) setFavoriteLeagues(parseFavoriteLeagues(localFavs));
-      else setFavoriteLeagues(new Set(SPORTS));
+      const resolvedLeagues = localFavs ? parseFavoriteLeagues(localFavs) : new Set<Sport>();
+      setFavoriteLeagues(resolvedLeagues);
+      setOnboardingLeagues(new Set(resolvedLeagues));
 
       const localTeams = localStorage.getItem('favorite_teams');
-      setFavoriteTeams(parseFavoriteTeams(localTeams));
+      const resolvedTeams = parseFavoriteTeams(localTeams);
+      setFavoriteTeams(resolvedTeams);
+      setOnboardingTeams(new Set(resolvedTeams));
 
       const localFollowed = localStorage.getItem('followed_games');
       setFollowedGames(parseFollowedGames(localFollowed));
 
       setIsSettingsOpen(false);
+      setIsOnboardingOpen(!onboardingComplete && resolvedLeagues.size === 0);
   };
 
   const getScoreGroupLabel = (game: Game) => {
@@ -959,6 +999,12 @@ export const App: React.FC = () => {
           setGameDetails(null);
           activeRequestId.current = null;
       } else {
+          if (!selectedTeam && selectedTab !== 'HOME' && selectedTab !== 'METHODOLOGY') {
+              const selectedGameSeason = getSeasonKeyForGame(game, selectedTab as Sport);
+              if (selectedGameSeason !== 'unknown') {
+                  setSelectedLeagueSeasonKey(selectedGameSeason);
+              }
+          }
           setNavigatedGameId(game.id);
           setSelectedGame(game);
           upsertGamesInRegistry([game]);
@@ -1191,6 +1237,89 @@ export const App: React.FC = () => {
       .filter((t): t is TeamOption => t !== null);
   }, [favoriteTeams]);
 
+  const onboardingTeamResults = useMemo(() => {
+      const query = onboardingTeamSearch.trim().toLowerCase();
+      if (!query) return [] as TeamOption[];
+      return (Array.from(allTeams.values()) as TeamOption[])
+          .filter((team) => {
+              const matchesName = team.name.toLowerCase().includes(query);
+              const matchesLeague = team.league.toLowerCase().includes(query);
+              const inSelectedLeague = onboardingLeagues.size === 0 || onboardingLeagues.has(team.league);
+              return inSelectedLeague && (matchesName || matchesLeague);
+          })
+          .slice(0, 24);
+  }, [allTeams, onboardingTeamSearch, onboardingLeagues]);
+
+  const onboardingTeamKeySet = useMemo(() => {
+      const keySet = new Set<string>();
+      (Array.from(onboardingTeams) as string[]).forEach((entry) => {
+          try {
+              const parsed = JSON.parse(entry) as TeamOption;
+              if (parsed?.id && parsed?.league) keySet.add(`${parsed.league}|${parsed.id}`);
+          } catch {
+          }
+      });
+      return keySet;
+  }, [onboardingTeams]);
+
+  const isOnboardingTeamSelected = useCallback((teamId: string, league: Sport) => {
+      return onboardingTeamKeySet.has(`${league}|${teamId}`);
+  }, [onboardingTeamKeySet]);
+
+  const toggleOnboardingLeague = useCallback((league: Sport) => {
+      setOnboardingLeagues((prev) => {
+          const next = new Set(prev);
+          if (next.has(league)) next.delete(league);
+          else next.add(league);
+          return next;
+      });
+  }, []);
+
+  const toggleOnboardingTeam = useCallback((team: TeamOption) => {
+      const teamStr = JSON.stringify({
+          id: team.id,
+          name: team.name,
+          league: team.league,
+          logo: team.logo
+      });
+      setOnboardingTeams((prev) => {
+          const next = new Set(prev);
+          let existingStr: string | null = null;
+          for (const entry of Array.from(next) as string[]) {
+              try {
+                  const parsed = JSON.parse(entry);
+                  if (parsed.id === team.id && parsed.league === team.league) {
+                      existingStr = entry;
+                      break;
+                  }
+              } catch {
+              }
+          }
+          if (existingStr) next.delete(existingStr);
+          else next.add(teamStr);
+          return next;
+      });
+  }, []);
+
+  const completeOnboarding = useCallback(() => {
+      if (onboardingLeagues.size === 0) return;
+      setFavoriteLeagues(new Set(onboardingLeagues));
+      setFavoriteTeams(new Set(onboardingTeams));
+      markOnboardingComplete(user?.sub);
+      setOnboardingTeamSearch('');
+      setIsOnboardingOpen(false);
+  }, [onboardingLeagues, onboardingTeams, user?.sub]);
+
+  const useAllLeaguesForOnboarding = useCallback(() => {
+      const all = new Set<Sport>(SPORTS);
+      setOnboardingLeagues(all);
+      setFavoriteLeagues(all);
+      setFavoriteTeams(new Set(onboardingTeams));
+      markOnboardingComplete(user?.sub);
+      setOnboardingTeamSearch('');
+      setIsOnboardingOpen(false);
+  }, [onboardingTeams, user?.sub]);
+
   const favoriteTeamKeySet = useMemo(() => {
     const keys = new Set<string>();
     parsedFavoriteTeams.forEach((team) => {
@@ -1273,6 +1402,52 @@ export const App: React.FC = () => {
     activeRequestId.current = null;
   }, []);
 
+  const leagueSeasonOptions = useMemo(() => {
+      if (selectedTab === 'HOME' || selectedTab === 'METHODOLOGY') return [];
+      return listSeasonOptionsFromGames(games, selectedTab as Sport);
+  }, [games, selectedTab]);
+
+  const effectiveLeagueSeasonKey = useMemo(() => {
+      if (selectedTab === 'HOME' || selectedTab === 'METHODOLOGY') return null;
+      if (
+          selectedLeagueSeasonKey &&
+          leagueSeasonOptions.some((option) => option.key === selectedLeagueSeasonKey)
+      ) {
+          return selectedLeagueSeasonKey;
+      }
+      return leagueSeasonOptions[0]?.key ?? null;
+  }, [selectedTab, selectedLeagueSeasonKey, leagueSeasonOptions]);
+
+  const selectedLeagueSeasonYear = useMemo(() => {
+      if (!effectiveLeagueSeasonKey) return undefined;
+      const parsed = Number(effectiveLeagueSeasonKey);
+      if (!Number.isFinite(parsed)) return undefined;
+      return Math.trunc(parsed);
+  }, [effectiveLeagueSeasonKey]);
+
+  useEffect(() => {
+      if (selectedTab === 'HOME' || selectedTab === 'METHODOLOGY') {
+          if (selectedLeagueSeasonKey !== null) setSelectedLeagueSeasonKey(null);
+          return;
+      }
+      if (leagueSeasonOptions.length === 0) {
+          if (selectedLeagueSeasonKey !== null) setSelectedLeagueSeasonKey(null);
+          return;
+      }
+      const hasSelected =
+          selectedLeagueSeasonKey &&
+          leagueSeasonOptions.some((option) => option.key === selectedLeagueSeasonKey);
+      if (!hasSelected) {
+          setSelectedLeagueSeasonKey(leagueSeasonOptions[0].key);
+      }
+  }, [selectedTab, selectedLeagueSeasonKey, leagueSeasonOptions]);
+
+  const seasonScopedGames = useMemo(() => {
+      if (selectedTab === 'HOME' || selectedTab === 'METHODOLOGY') return games;
+      if (!effectiveLeagueSeasonKey) return games;
+      return games.filter((game) => getSeasonKeyForGame(game, selectedTab as Sport) === effectiveLeagueSeasonKey);
+  }, [games, selectedTab, effectiveLeagueSeasonKey]);
+
   const availableConferencesList = useMemo(() => {
       if (!RANKED_LEAGUES.includes(selectedTab as Sport)) return [];
       
@@ -1281,76 +1456,114 @@ export const App: React.FC = () => {
       } else {
           if (conferenceMap.size === 0) return [];
           const confSet = new Set<string>();
-          games.forEach(g => {
+          seasonScopedGames.forEach(g => {
               if (g.homeTeamId && conferenceMap.has(g.homeTeamId)) confSet.add(conferenceMap.get(g.homeTeamId)!);
               if (g.awayTeamId && conferenceMap.has(g.awayTeamId)) confSet.add(conferenceMap.get(g.awayTeamId)!);
           });
           return Array.from(confSet).sort();
       }
-  }, [games, standings, conferenceMap, selectedTab, viewMode]);
+  }, [seasonScopedGames, standings, conferenceMap, selectedTab, viewMode]);
 
-  let finalDisplayGames = games;
+  const finalDisplayGames = useMemo(() => {
+      let next = seasonScopedGames;
 
-  if (viewMode === 'LIVE') {
-      finalDisplayGames = games.filter(g => g.status === 'in_progress');
-  } else if (viewMode === 'UPCOMING') {
-      finalDisplayGames = games
-        .filter(g => g.status === 'scheduled')
-        .sort((a, b) => {
-            if (a.isPlayoff !== b.isPlayoff) return a.isPlayoff ? -1 : 1;
-            return new Date(a.dateTime).getTime() - new Date(b.dateTime).getTime();
-        });
-  } else if (viewMode === 'SCORES') {
-      finalDisplayGames = games
-        .filter(g => g.status === 'finished')
-        .sort((a, b) => new Date(b.dateTime).getTime() - new Date(a.dateTime).getTime());
-  }
-
-  if (selectedTab !== 'HOME' && viewMode !== 'STANDINGS' && viewMode !== 'TEAMS' && viewMode !== 'LEAGUE_STATS') {
-      if (RANKED_LEAGUES.includes(selectedTab as Sport)) {
-          if (activeFilter === 'TOP25') {
-              if (top25RankedTeamIds.size > 0) {
-                  finalDisplayGames = finalDisplayGames.filter(g => {
-                      const homeId = g.homeTeamId ? String(g.homeTeamId) : '';
-                      const awayId = g.awayTeamId ? String(g.awayTeamId) : '';
-                      return top25RankedTeamIds.has(homeId) || top25RankedTeamIds.has(awayId);
-                  });
-              } else {
-                  finalDisplayGames = finalDisplayGames.filter(g => (g.homeTeamRank && g.homeTeamRank <= 25) || (g.awayTeamRank && g.awayTeamRank <= 25));
-              }
-          } else if (activeFilter !== 'ALL') {
-              finalDisplayGames = finalDisplayGames.filter(g => {
-                  const homeConf = g.homeTeamId ? conferenceMap.get(g.homeTeamId) : undefined;
-                  const awayConf = g.awayTeamId ? conferenceMap.get(g.awayTeamId) : undefined;
-                  return homeConf === activeFilter || awayConf === activeFilter;
+      if (viewMode === 'LIVE') {
+          next = seasonScopedGames.filter((g) => g.status === 'in_progress');
+      } else if (viewMode === 'UPCOMING') {
+          next = seasonScopedGames
+              .filter((g) => g.status === 'scheduled')
+              .sort((a, b) => {
+                  if (a.isPlayoff !== b.isPlayoff) return a.isPlayoff ? -1 : 1;
+                  return new Date(a.dateTime).getTime() - new Date(b.dateTime).getTime();
               });
+      } else if (viewMode === 'SCORES') {
+          next = seasonScopedGames
+              .filter((g) => g.status === 'finished')
+              .sort((a, b) => new Date(b.dateTime).getTime() - new Date(a.dateTime).getTime());
+      }
+
+      if (selectedTab !== 'HOME' && viewMode !== 'STANDINGS' && viewMode !== 'TEAMS' && viewMode !== 'LEAGUE_STATS') {
+          if (RANKED_LEAGUES.includes(selectedTab as Sport)) {
+              if (activeFilter === 'TOP25') {
+                  if (top25RankedTeamIds.size > 0) {
+                      next = next.filter((g) => {
+                          const homeId = g.homeTeamId ? String(g.homeTeamId) : '';
+                          const awayId = g.awayTeamId ? String(g.awayTeamId) : '';
+                          return top25RankedTeamIds.has(homeId) || top25RankedTeamIds.has(awayId);
+                      });
+                  } else {
+                      next = next.filter((g) => (g.homeTeamRank && g.homeTeamRank <= 25) || (g.awayTeamRank && g.awayTeamRank <= 25));
+                  }
+              } else if (activeFilter !== 'ALL') {
+                  next = next.filter((g) => {
+                      const homeConf = g.homeTeamId ? conferenceMap.get(g.homeTeamId) : undefined;
+                      const awayConf = g.awayTeamId ? conferenceMap.get(g.awayTeamId) : undefined;
+                      return homeConf === activeFilter || awayConf === activeFilter;
+                  });
+              }
           }
       }
-  }
 
-  let displayStandings = standings;
-  if ((viewMode === 'STANDINGS' || viewMode === 'TEAMS' || viewMode === 'LEAGUE_STATS') && RANKED_LEAGUES.includes(selectedTab as Sport) && activeFilter !== 'ALL') {
-      if (activeFilter === 'TOP25') {
-          displayStandings = standings.map(group => ({
-              ...group,
-              standings: group.standings.filter(s => {
-                  return top25RankedTeamIds.has(String(s.team.id));
-              })
-          })).filter(group => group.standings.length > 0);
-      } else {
-          displayStandings = standings.filter(group => group.name === activeFilter);
+      return next;
+  }, [seasonScopedGames, viewMode, selectedTab, activeFilter, top25RankedTeamIds, conferenceMap]);
+
+  const displayStandings = useMemo(() => {
+      let next = standings;
+      if ((viewMode === 'STANDINGS' || viewMode === 'TEAMS' || viewMode === 'LEAGUE_STATS') && RANKED_LEAGUES.includes(selectedTab as Sport) && activeFilter !== 'ALL') {
+          if (activeFilter === 'TOP25') {
+              next = standings.map((group) => ({
+                  ...group,
+                  standings: group.standings.filter((s) => top25RankedTeamIds.has(String(s.team.id))),
+              })).filter((group) => group.standings.length > 0);
+          } else {
+              next = standings.filter((group) => group.name === activeFilter);
+          }
       }
-  }
+      return next;
+  }, [standings, viewMode, selectedTab, activeFilter, top25RankedTeamIds]);
 
-  const currentLeagueLogo = selectedTab !== 'HOME' && selectedTab !== 'METHODOLOGY' 
-      ? games.find(g => g.league === selectedTab)?.leagueLogo 
-      : undefined;
+  useEffect(() => {
+      setVisibleGameCount(GAME_RENDER_BATCH);
+  }, [selectedTab, viewMode, activeFilter, selectedTeam?.id, selectedTeam?.league, effectiveLeagueSeasonKey]);
 
-  const playoffGames = finalDisplayGames.filter(g => g.isPlayoff);
-  const regularGames = finalDisplayGames.filter(g => !g.isPlayoff);
+  useEffect(() => {
+      if (!selectedGame) return;
+      const selectedIndex = finalDisplayGames.findIndex((game) => game.id === selectedGame.id);
+      if (selectedIndex >= 0 && selectedIndex + 1 > visibleGameCount) {
+          const nextBatch = Math.ceil((selectedIndex + 1) / GAME_RENDER_BATCH) * GAME_RENDER_BATCH;
+          setVisibleGameCount(nextBatch);
+      }
+  }, [selectedGame?.id, finalDisplayGames, visibleGameCount]);
+
+  const visibleGames = useMemo(
+      () => finalDisplayGames.slice(0, visibleGameCount),
+      [finalDisplayGames, visibleGameCount],
+  );
+  const hasMoreGames = visibleGames.length < finalDisplayGames.length;
+
+  const currentLeagueLogo = useMemo(
+      () => (
+          selectedTab !== 'HOME' && selectedTab !== 'METHODOLOGY'
+              ? games.find((g) => g.league === selectedTab)?.leagueLogo
+              : undefined
+      ),
+      [selectedTab, games],
+  );
+
+  const playoffGames = useMemo(() => visibleGames.filter((g) => g.isPlayoff), [visibleGames]);
+  const regularGames = useMemo(() => visibleGames.filter((g) => !g.isPlayoff), [visibleGames]);
 
   const hasPlayoffs = playoffGames.length > 0;
   const hasRegular = regularGames.length > 0;
+  const showRankedFilterBar =
+      RANKED_LEAGUES.includes(selectedTab as Sport) &&
+      selectedTab !== 'HOME' &&
+      ['LIVE', 'UPCOMING', 'SCORES', 'STANDINGS', 'LEAGUE_STATS'].includes(viewMode);
+  const showSeasonSelector =
+      selectedTab !== 'HOME' &&
+      selectedTab !== 'METHODOLOGY' &&
+      ['LIVE', 'UPCOMING', 'SCORES', 'LEAGUE_STATS'].includes(viewMode) &&
+      leagueSeasonOptions.length > 0;
 
   const renderGameList = (gamesToRender: Game[]) => (
       <div className={`grid gap-4 transition-all duration-500 ${selectedGame ? 'grid-cols-1 max-w-3xl mx-auto' : 'grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4'}`}>
@@ -1543,14 +1756,34 @@ export const App: React.FC = () => {
                      </div>
                  )}
 
-                 {RANKED_LEAGUES.includes(selectedTab as Sport) && selectedTab !== 'HOME' && ['LIVE', 'UPCOMING', 'SCORES', 'STANDINGS', 'LEAGUE_STATS'].includes(viewMode) && (
-                     <FilterBar 
-                        activeFilter={activeFilter}
-                        setActiveFilter={setActiveFilter}
-                        availableConferences={availableConferencesList}
-                        isOpen={isFilterDropdownOpen}
-                        setIsOpen={setIsFilterDropdownOpen}
-                     />
+                 {(showRankedFilterBar || showSeasonSelector) && (
+                     <div className="mb-6 flex flex-wrap items-center gap-3">
+                         {showRankedFilterBar && (
+                             <FilterBar 
+                                activeFilter={activeFilter}
+                                setActiveFilter={setActiveFilter}
+                                availableConferences={availableConferencesList}
+                                isOpen={isFilterDropdownOpen}
+                                setIsOpen={setIsFilterDropdownOpen}
+                             />
+                         )}
+                         {showSeasonSelector && (
+                             <label className="flex items-center gap-2 px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-xs font-semibold text-slate-700 dark:text-slate-300">
+                                 <span className="uppercase tracking-wider text-slate-500 dark:text-slate-400">Season</span>
+                                 <select
+                                     className="bg-transparent border-0 focus:outline-none focus:ring-0 font-bold text-slate-900 dark:text-white cursor-pointer"
+                                     value={effectiveLeagueSeasonKey ?? ''}
+                                     onChange={(e) => setSelectedLeagueSeasonKey(e.target.value || null)}
+                                 >
+                                     {leagueSeasonOptions.map((option) => (
+                                         <option key={option.key} value={option.key}>
+                                             {option.label}
+                                         </option>
+                                     ))}
+                                 </select>
+                             </label>
+                         )}
+                     </div>
                  )}
 
                  {/* CONTENT AREA */}
@@ -1664,6 +1897,7 @@ export const App: React.FC = () => {
                         groups={displayStandings}
                         sport={selectedTab as Sport}
                         onTeamClick={handleTeamClick}
+                        seasonYear={selectedLeagueSeasonYear}
                      />
                  ) : (
                      <div className="relative">
@@ -1703,6 +1937,21 @@ export const App: React.FC = () => {
                                 )}
 
                                 {hasRegular && renderGameList(regularGames)}
+
+                                {hasMoreGames && (
+                                    <div className="mt-8 flex justify-center">
+                                        <button
+                                            type="button"
+                                            onClick={() => setVisibleGameCount((count) => count + GAME_RENDER_BATCH)}
+                                            className="inline-flex items-center gap-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-4 py-2 text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+                                        >
+                                            Load More Games
+                                            <span className="text-[10px] text-slate-500 dark:text-slate-400">
+                                                ({finalDisplayGames.length - visibleGames.length} remaining)
+                                            </span>
+                                        </button>
+                                    </div>
+                                )}
                              </>
                          )}
                      </div>
@@ -1754,6 +2003,20 @@ export const App: React.FC = () => {
         setMenuSearchTerm={setMenuSearchTerm}
         theme={theme}
         setTheme={setTheme}
+      />
+
+      <OnboardingModal
+        isOpen={isOnboardingOpen}
+        leagues={SPORTS}
+        selectedLeagues={onboardingLeagues}
+        onToggleLeague={toggleOnboardingLeague}
+        teamSearch={onboardingTeamSearch}
+        onTeamSearchChange={setOnboardingTeamSearch}
+        teamResults={onboardingTeamResults}
+        isTeamSelected={isOnboardingTeamSelected}
+        onToggleTeam={toggleOnboardingTeam}
+        onComplete={completeOnboarding}
+        onUseAllLeagues={useAllLeaguesForOnboarding}
       />
     </div>
   );

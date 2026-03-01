@@ -6,11 +6,13 @@ import { Loader2, ArrowUp, ArrowDown, Activity, Database, CheckCircle2, RefreshC
 import { isInverseMetricLabel } from '../services/statDictionary';
 import { auditInternalSportData, SportIntegrityReport } from '../services/dataIntegrity';
 import { StatDetailModal } from './modals/StatDetailModal';
+import { formatSeasonLabel } from '../services/seasonScope';
 
 interface LeagueStatsViewProps {
     groups: StandingsGroup[];
     sport: Sport;
     onTeamClick: (teamId: string, league: Sport) => void;
+    seasonYear?: number;
 }
 
 const parseVal = (v: string, key?: string): number | null => {
@@ -219,7 +221,7 @@ const inferDisplayCategory = (sourceCategory: string, label: string, sport: Spor
     return 'Other';
 };
 
-export const LeagueStatsView: React.FC<LeagueStatsViewProps> = ({ groups, sport, onTeamClick }) => {
+export const LeagueStatsView: React.FC<LeagueStatsViewProps> = ({ groups, sport, onTeamClick, seasonYear }) => {
     const [statsData, setStatsData] = useState<LeagueStatRow[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const [lastUpdated, setLastUpdated] = useState<number | null>(null);
@@ -258,7 +260,8 @@ export const LeagueStatsView: React.FC<LeagueStatsViewProps> = ({ groups, sport,
             const { rows, lastUpdated: ts } = await getStoredLeagueStats(
                 sport, 
                 activeTeams.map(t => ({ id: t.id, name: t.name, logo: t.logo })),
-                fallbackMap
+                fallbackMap,
+                seasonYear,
             );
             
             if (rows.length > 0) {
@@ -328,7 +331,7 @@ export const LeagueStatsView: React.FC<LeagueStatsViewProps> = ({ groups, sport,
 
         dbEvents.addEventListener('stats_updated', handleUpdate);
         return () => dbEvents.removeEventListener('stats_updated', handleUpdate);
-    }, [activeTeams, sport]);
+    }, [activeTeams, sport, seasonYear]);
 
     // Group stats by category and surface every tracked stat column from the internal dataset.
     const categorizedColumns = useMemo<Record<string, string[]>>(() => {
@@ -473,7 +476,7 @@ export const LeagueStatsView: React.FC<LeagueStatsViewProps> = ({ groups, sport,
                 </div>
                 <h3 className="text-xl font-bold text-slate-900 dark:text-white mb-2">Data Unavailable</h3>
                 <p className="text-slate-500 dark:text-slate-400 max-w-md">
-                    Unable to load statistics for {sport} at this time. Please check your connection.
+                    Unable to load statistics for {sport} ({typeof seasonYear === 'number' ? formatSeasonLabel(sport, seasonYear) : 'current season'}) at this time. Please check your connection.
                 </p>
             </div>
         );
@@ -481,6 +484,7 @@ export const LeagueStatsView: React.FC<LeagueStatsViewProps> = ({ groups, sport,
 
     const hasDetailedStats = Object.keys(categorizedColumns).length > 1;
     const isSyncing = !hasDetailedStats || statsData.some(r => Object.keys(r.stats).length < 5);
+    const seasonLabel = typeof seasonYear === 'number' ? formatSeasonLabel(sport, seasonYear) : 'Current Season';
 
     return (
         <div ref={rootRef} className="animate-fade-in space-y-4 pb-8 scroll-mt-24">
@@ -490,6 +494,9 @@ export const LeagueStatsView: React.FC<LeagueStatsViewProps> = ({ groups, sport,
                     <h3 className="text-sm font-bold text-slate-600 dark:text-slate-300 uppercase tracking-wider">
                         Season Team Statistics
                     </h3>
+                    <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-md border bg-indigo-50 dark:bg-indigo-950/30 border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300">
+                        {seasonLabel}
+                    </span>
                 </div>
                 <div className="flex items-center gap-4">
                     {isSyncing ? (

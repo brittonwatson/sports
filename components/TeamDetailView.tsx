@@ -13,6 +13,7 @@ import { STAT_CORRELATIONS } from '../services/probabilities/correlations';
 import { findCorrelationConfig } from '../services/probabilities/utils';
 import { dbEvents } from '../services/statsDb';
 import { getRankColor } from '../services/uiUtils';
+import { formatSeasonLabel, getSeasonKeyForGame, getSeasonYearForGame, listSeasonOptionsFromGames } from '../services/seasonScope';
 
 interface TeamDetailViewProps {
   team: TeamProfile;
@@ -119,6 +120,7 @@ export const TeamDetailView: React.FC<TeamDetailViewProps> = ({
 }) => {
     const [activeTab, setActiveTab] = useState<'SCHEDULE' | 'ROSTER' | 'STATS'>('SCHEDULE');
     const [scheduleFilter, setScheduleFilter] = useState<'UPCOMING' | 'PAST'>('UPCOMING');
+    const [selectedSeasonKey, setSelectedSeasonKey] = useState<string | null>(null);
     
     // UI State
     const [selectedPlayerId, setSelectedPlayerId] = useState<string | null>(null);
@@ -193,61 +195,128 @@ export const TeamDetailView: React.FC<TeamDetailViewProps> = ({
         }
     }, [activeTab, league, team.id]);
 
+    const seasonOptions = useMemo(() => {
+        return listSeasonOptionsFromGames(schedule, league);
+    }, [schedule, league]);
+
+    const effectiveSeasonKey = useMemo(() => {
+        if (selectedSeasonKey && seasonOptions.some((option) => option.key === selectedSeasonKey)) {
+            return selectedSeasonKey;
+        }
+        return seasonOptions[0]?.key ?? null;
+    }, [selectedSeasonKey, seasonOptions]);
+
+    useEffect(() => {
+        if (seasonOptions.length === 0) {
+            if (selectedSeasonKey !== null) setSelectedSeasonKey(null);
+            return;
+        }
+        const hasSelected =
+            selectedSeasonKey &&
+            seasonOptions.some((option) => option.key === selectedSeasonKey);
+        if (!hasSelected) {
+            setSelectedSeasonKey(seasonOptions[0].key);
+        }
+    }, [selectedSeasonKey, seasonOptions]);
+
+    const selectedSeasonYear = useMemo(() => {
+        const selected = seasonOptions.find((option) => option.key === effectiveSeasonKey);
+        return selected?.seasonYear;
+    }, [seasonOptions, effectiveSeasonKey]);
+
+    const selectedSeasonLabel = useMemo(() => {
+        if (typeof selectedSeasonYear === 'number' && Number.isFinite(selectedSeasonYear)) {
+            return formatSeasonLabel(league, selectedSeasonYear);
+        }
+        return 'Current Season';
+    }, [league, selectedSeasonYear]);
+
+    const seasonScopedSchedule = useMemo(() => {
+        if (!effectiveSeasonKey) return schedule;
+        return schedule.filter((game) => getSeasonKeyForGame(game, league) === effectiveSeasonKey);
+    }, [schedule, effectiveSeasonKey, league]);
+
+    const liveStatsSeasonYear = useMemo(() => {
+        const statYears = (liveSeasonStats || [])
+            .map((stat) => Number(stat.seasonYear))
+            .filter((year) => Number.isFinite(year)) as number[];
+        if (statYears.length > 0) {
+            return Math.max(...statYears.map((year) => Math.trunc(year)));
+        }
+
+        const finishedCounts = new Map<number, number>();
+        schedule.forEach((game) => {
+            if (game.status !== 'finished') return;
+            if (typeof game.seasonType === 'number' && game.seasonType === 1) return;
+            const seasonYear = getSeasonYearForGame(game, league);
+            if (!Number.isFinite(seasonYear)) return;
+            const normalized = Math.trunc(seasonYear as number);
+            finishedCounts.set(normalized, (finishedCounts.get(normalized) || 0) + 1);
+        });
+
+        let bestYear = seasonOptions[0]?.seasonYear;
+        let bestCount = -1;
+        finishedCounts.forEach((count, seasonYear) => {
+            if (count > bestCount || (count === bestCount && (bestYear === undefined || seasonYear > bestYear))) {
+                bestYear = seasonYear;
+                bestCount = count;
+            }
+        });
+        return bestYear;
+    }, [liveSeasonStats, schedule, league, seasonOptions]);
+
+    const selectedSeasonLiveStats = useMemo(() => {
+        if (!liveSeasonStats || liveSeasonStats.length === 0) return [] as TeamStatItem[];
+        if (
+            typeof selectedSeasonYear === 'number' &&
+            typeof liveStatsSeasonYear === 'number' &&
+            selectedSeasonYear !== liveStatsSeasonYear
+        ) {
+            return [] as TeamStatItem[];
+        }
+        return liveSeasonStats;
+    }, [liveSeasonStats, selectedSeasonYear, liveStatsSeasonYear]);
+
+    const isCurrentSeasonSelection = useMemo(() => {
+        if (typeof selectedSeasonYear !== 'number' || typeof liveStatsSeasonYear !== 'number') return true;
+        return selectedSeasonYear === liveStatsSeasonYear;
+    }, [selectedSeasonYear, liveStatsSeasonYear]);
+
     const seasonStatsGamesPlayed = useMemo(() => {
-        if (!liveSeasonStats || liveSeasonStats.length === 0) return 0;
-        const gpStat = liveSeasonStats.find(stat => {
+        if (!selectedSeasonLiveStats || selectedSeasonLiveStats.length === 0) return 0;
+        const gpStat = selectedSeasonLiveStats.find(stat => {
             const label = stat.label.toLowerCase();
             return label === 'games played' || label === 'games' || label === 'gp';
         });
         if (!gpStat) return 0;
         const gp = parseFloat(String(gpStat.value).replace(/,/g, ''));
         return Number.isFinite(gp) ? gp : 0;
-    }, [liveSeasonStats]);
+    }, [selectedSeasonLiveStats]);
 
     const completedSeasonGames = useMemo(() => {
-        const completed = schedule.filter(g => {
+        return seasonScopedSchedule.filter(g => {
             if (g.status !== 'finished') return false;
             if (typeof g.seasonType === 'number' && g.seasonType === 1) return false;
             const homeScore = parseInt(String(g.homeScore ?? ''), 10);
             const awayScore = parseInt(String(g.awayScore ?? ''), 10);
             return Number.isFinite(homeScore) && Number.isFinite(awayScore);
         });
-        if (completed.length === 0) return [] as Game[];
-
-        const seasonYearCounts = new Map<number, number>();
-        completed.forEach(g => {
-            if (typeof g.seasonYear !== 'number' || !Number.isFinite(g.seasonYear)) return;
-            seasonYearCounts.set(g.seasonYear, (seasonYearCounts.get(g.seasonYear) || 0) + 1);
-        });
-
-        if (seasonYearCounts.size === 0) return completed;
-
-        let selectedSeasonYear: number | null = null;
-        let selectedCount = -1;
-        seasonYearCounts.forEach((count, seasonYear) => {
-            if (count > selectedCount || (count === selectedCount && (selectedSeasonYear === null || seasonYear > selectedSeasonYear))) {
-                selectedSeasonYear = seasonYear;
-                selectedCount = count;
-            }
-        });
-
-        if (selectedSeasonYear === null) return completed;
-        return completed.filter(g => typeof g.seasonYear !== 'number' || g.seasonYear === selectedSeasonYear);
-    }, [schedule]);
+    }, [seasonScopedSchedule]);
 
     const seasonStatsForDisplay = useMemo(() => {
-        if (!liveSeasonStats || liveSeasonStats.length === 0) return [] as TeamStatItem[];
-        if (league === 'UFC') return liveSeasonStats;
+        const baseStats = selectedSeasonLiveStats || [];
+        if (baseStats.length === 0 && completedSeasonGames.length === 0) return [] as TeamStatItem[];
+        if (league === 'UFC') return baseStats;
 
         const completed = completedSeasonGames;
-        if (completed.length === 0) return liveSeasonStats;
+        if (completed.length === 0) return baseStats;
 
         // Some leagues (notably NCAAF off-season) can return partial schedules.
         // If schedule coverage is materially below known season GP, trust season stats feed.
         const hasReliableSeasonGp = seasonStatsGamesPlayed > 0;
         const scheduleCoverageRatio = hasReliableSeasonGp ? (completed.length / seasonStatsGamesPlayed) : 1;
-        if (hasReliableSeasonGp && scheduleCoverageRatio < 0.8) {
-            return liveSeasonStats;
+        if (hasReliableSeasonGp && scheduleCoverageRatio < 0.8 && baseStats.length > 0) {
+            return baseStats;
         }
 
         let wins = 0;
@@ -273,7 +342,7 @@ export const TeamDetailView: React.FC<TeamDetailViewProps> = ({
         const oppg = gp > 0 ? pa / gp : 0;
         const avgDiff = ppg - oppg;
 
-        const next = [...liveSeasonStats];
+        const next = [...baseStats];
         const upsert = (label: string, value: string, category: string) => {
             const idx = next.findIndex(s => s.label.toLowerCase() === label.toLowerCase());
             if (idx >= 0) {
@@ -292,7 +361,7 @@ export const TeamDetailView: React.FC<TeamDetailViewProps> = ({
         upsert('Points Differential', avgDiff > 0 ? `+${avgDiff.toFixed(1)}` : avgDiff.toFixed(1), 'Differential');
 
         return next;
-    }, [liveSeasonStats, seasonStatsGamesPlayed, completedSeasonGames, league, team.id, team.name, team.displayName]);
+    }, [selectedSeasonLiveStats, seasonStatsGamesPlayed, completedSeasonGames, league, team.id, team.name, team.displayName]);
 
     const statsSourceSummary = useMemo(() => {
         const sourcePriority: TeamStatItem['source'][] = ['derived_schedule', 'internal_db', 'espn_api', 'cached', 'fallback_standings'];
@@ -490,10 +559,10 @@ export const TeamDetailView: React.FC<TeamDetailViewProps> = ({
 
     const { upcomingGames, pastGames } = useMemo(() => {
         const now = new Date();
-        const upcoming = schedule.filter(g => new Date(g.dateTime) >= now || g.status === 'in_progress').sort((a, b) => new Date(a.dateTime).getTime() - new Date(b.dateTime).getTime());
-        const past = schedule.filter(g => new Date(g.dateTime) < now && g.status !== 'in_progress').sort((a, b) => new Date(b.dateTime).getTime() - new Date(a.dateTime).getTime());
+        const upcoming = seasonScopedSchedule.filter(g => new Date(g.dateTime) >= now || g.status === 'in_progress').sort((a, b) => new Date(a.dateTime).getTime() - new Date(b.dateTime).getTime());
+        const past = seasonScopedSchedule.filter(g => new Date(g.dateTime) < now && g.status !== 'in_progress').sort((a, b) => new Date(b.dateTime).getTime() - new Date(a.dateTime).getTime());
         return { upcomingGames: upcoming, pastGames: past };
-    }, [schedule]);
+    }, [seasonScopedSchedule]);
 
     const computedStats = useMemo(() => {
         const completed = completedSeasonGames;
@@ -552,7 +621,7 @@ export const TeamDetailView: React.FC<TeamDetailViewProps> = ({
     const displayTeamName = (isNCAA && typeof team.rank === 'number' && team.rank > 0 && !hasEmbeddedRank)
         ? `#${team.rank} ${team.name}`
         : team.name;
-    const hasUCL = useMemo(() => isSoccer && schedule.some(g => (g.context?.toLowerCase() || '').includes('champions league') || (g.leagueName?.toLowerCase() || '').includes('champions league') || g.league === 'UCL'), [schedule, isSoccer]);
+    const hasUCL = useMemo(() => isSoccer && seasonScopedSchedule.some(g => (g.context?.toLowerCase() || '').includes('champions league') || (g.leagueName?.toLowerCase() || '').includes('champions league') || g.league === 'UCL'), [seasonScopedSchedule, isSoccer]);
     const rosterGroups = useMemo(() => {
         const groups: Record<string, Player[]> = {};
         team.roster.forEach(p => { const pos = p.position || 'Unknown'; if (!groups[pos]) groups[pos] = []; groups[pos].push(p); });
@@ -560,7 +629,7 @@ export const TeamDetailView: React.FC<TeamDetailViewProps> = ({
     }, [team.roster]);
     const sortedPositions = useMemo(() => Object.keys(rosterGroups).sort((a, b) => getPositionOrder(league, a) - getPositionOrder(league, b)), [rosterGroups, league]);
 
-    useEffect(() => { if (schedule.length > 0) setScheduleFilter(upcomingGames.length === 0 && pastGames.length > 0 ? 'PAST' : 'UPCOMING'); }, [schedule, upcomingGames.length, pastGames.length]);
+    useEffect(() => { if (seasonScopedSchedule.length > 0) setScheduleFilter(upcomingGames.length === 0 && pastGames.length > 0 ? 'PAST' : 'UPCOMING'); }, [seasonScopedSchedule.length, upcomingGames.length, pastGames.length]);
     const displayedGames = scheduleFilter === 'UPCOMING' ? upcomingGames : pastGames;
 
     const handlePlayerClick = async (playerId: string) => {
@@ -606,12 +675,28 @@ export const TeamDetailView: React.FC<TeamDetailViewProps> = ({
                     <button onClick={() => setActiveTab('STATS')} className={`flex-1 py-4 text-sm font-bold uppercase tracking-wider transition-all flex items-center justify-center gap-2 ${activeTab === 'STATS' ? 'text-slate-900 dark:text-white border-b-2 border-slate-900 dark:border-white bg-slate-50/50 dark:bg-slate-800/30' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}`}>Stats</button>
                     <button onClick={() => setActiveTab('ROSTER')} className={`flex-1 py-4 text-sm font-bold uppercase tracking-wider transition-all flex items-center justify-center gap-2 ${activeTab === 'ROSTER' ? 'text-slate-900 dark:text-white border-b-2 border-slate-900 dark:border-white bg-slate-50/50 dark:bg-slate-800/30' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}`}>Roster</button>
                 </div>
+                {seasonOptions.length > 0 && (
+                    <div className="border-t border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-900/50 px-4 sm:px-6 py-3 flex items-center justify-between gap-3">
+                        <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">Season</span>
+                        <select
+                            className="text-sm font-semibold rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 px-3 py-1.5"
+                            value={effectiveSeasonKey ?? ''}
+                            onChange={(e) => setSelectedSeasonKey(e.target.value || null)}
+                        >
+                            {seasonOptions.map((option) => (
+                                <option key={option.key} value={option.key}>
+                                    {option.label}
+                                </option>
+                            ))}
+                        </select>
+                    </div>
+                )}
             </div>
 
             {activeTab === 'SCHEDULE' ? (
                 <div className="space-y-6">
                     <div className="flex justify-center"><div className="flex w-full max-w-md bg-slate-100 dark:bg-slate-900/80 p-1 rounded-xl border border-slate-200 dark:border-slate-800"><button onClick={() => setScheduleFilter('UPCOMING')} className={`flex-1 flex items-center justify-center px-6 py-2 rounded-lg text-xs font-bold uppercase tracking-wider transition-all gap-2 ${scheduleFilter === 'UPCOMING' ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}`}>Upcoming <span className="opacity-60 text-[10px]">({upcomingGames.length})</span></button><button onClick={() => setScheduleFilter('PAST')} className={`flex-1 flex items-center justify-center px-6 py-2 rounded-lg text-xs font-bold uppercase tracking-wider transition-all gap-2 ${scheduleFilter === 'PAST' ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}`}>Past <span className="opacity-60 text-[10px]">({pastGames.length})</span></button></div></div>
-                    {displayedGames.length === 0 ? <div className="p-16 text-center text-slate-400 dark:text-slate-500 border border-dashed border-slate-300 dark:border-slate-800 rounded-2xl bg-slate-50/50 dark:bg-slate-900/20"><p>No {scheduleFilter.toLowerCase()} games found for this season.</p></div> : <div className="space-y-4">{displayedGames.map(game => { const isSelected = selectedGameId === game.id; const displayGame = scheduleFilter === 'PAST' ? { ...game, status: 'finished' as const } : game; return (<div key={game.id} className="transition-all duration-300"><GameCard game={displayGame} onSelect={onGameSelect} isSelected={isSelected} onTeamClick={onTeamClick} isFollowed={isGameFollowed ? isGameFollowed(displayGame as Game) : false} onToggleFollow={onToggleFollowGame} />{isSelected && <div className="relative mt-4 ml-4 pl-6 border-l-2 border-slate-200 dark:border-slate-800 animate-fade-in"><div className="absolute -left-[9px] -top-4 w-4 h-8 rounded-bl-xl border-l-2 border-b-0 border-slate-200 dark:border-slate-800 bg-transparent opacity-0"></div>{isPredicting ? <div className="bg-white dark:bg-slate-900/60 rounded-3xl p-12 border border-slate-200 dark:border-slate-800 flex flex-col items-center justify-center text-center shadow-xl"><Loader2 size={48} className="text-slate-500 animate-spin mb-6" /><h3 className="text-xl font-bold text-slate-900 dark:text-white mb-2 font-display">Loading Data</h3><p className="text-slate-500 dark:text-slate-400 max-w-xs">Retrieving game details...</p></div> : (displayGame.status === 'finished' || scheduleFilter === 'PAST') ? <LiveGameView game={displayGame} gameDetails={gameDetails || null} prediction={null} isDarkMode={!!isDarkMode} onGenerateAnalysis={onGenerateAnalysis} onTeamClick={onTeamClick} /> : prediction ? (game.status === 'scheduled' ? <PredictionView game={game} prediction={prediction} isDarkMode={!!isDarkMode} onGenerateAnalysis={onGenerateAnalysis} onTeamClick={onTeamClick} /> : <LiveGameView game={game} gameDetails={gameDetails || null} prediction={prediction} isDarkMode={!!isDarkMode} onGenerateAnalysis={onGenerateAnalysis} onTeamClick={onTeamClick} />) : <div className="bg-white dark:bg-slate-900 rounded-3xl p-8 border border-slate-200 dark:border-slate-800 text-center"><p>Unable to load data.</p></div>}</div>}</div>); })}</div>}
+                    {displayedGames.length === 0 ? <div className="p-16 text-center text-slate-400 dark:text-slate-500 border border-dashed border-slate-300 dark:border-slate-800 rounded-2xl bg-slate-50/50 dark:bg-slate-900/20"><p>No {scheduleFilter.toLowerCase()} games found for {selectedSeasonLabel}.</p></div> : <div className="space-y-4">{displayedGames.map(game => { const isSelected = selectedGameId === game.id; const displayGame = scheduleFilter === 'PAST' ? { ...game, status: 'finished' as const } : game; return (<div key={game.id} className="transition-all duration-300"><GameCard game={displayGame} onSelect={onGameSelect} isSelected={isSelected} onTeamClick={onTeamClick} isFollowed={isGameFollowed ? isGameFollowed(displayGame as Game) : false} onToggleFollow={onToggleFollowGame} />{isSelected && <div className="relative mt-4 ml-4 pl-6 border-l-2 border-slate-200 dark:border-slate-800 animate-fade-in"><div className="absolute -left-[9px] -top-4 w-4 h-8 rounded-bl-xl border-l-2 border-b-0 border-slate-200 dark:border-slate-800 bg-transparent opacity-0"></div>{isPredicting ? <div className="bg-white dark:bg-slate-900/60 rounded-3xl p-12 border border-slate-200 dark:border-slate-800 flex flex-col items-center justify-center text-center shadow-xl"><Loader2 size={48} className="text-slate-500 animate-spin mb-6" /><h3 className="text-xl font-bold text-slate-900 dark:text-white mb-2 font-display">Loading Data</h3><p className="text-slate-500 dark:text-slate-400 max-w-xs">Retrieving game details...</p></div> : (displayGame.status === 'finished' || scheduleFilter === 'PAST') ? <LiveGameView game={displayGame} gameDetails={gameDetails || null} prediction={null} isDarkMode={!!isDarkMode} onGenerateAnalysis={onGenerateAnalysis} onTeamClick={onTeamClick} /> : prediction ? (game.status === 'scheduled' ? <PredictionView game={game} prediction={prediction} isDarkMode={!!isDarkMode} onGenerateAnalysis={onGenerateAnalysis} onTeamClick={onTeamClick} /> : <LiveGameView game={game} gameDetails={gameDetails || null} prediction={prediction} isDarkMode={!!isDarkMode} onGenerateAnalysis={onGenerateAnalysis} onTeamClick={onTeamClick} />) : <div className="bg-white dark:bg-slate-900 rounded-3xl p-8 border border-slate-200 dark:border-slate-800 text-center"><p>Unable to load data.</p></div>}</div>}</div>); })}</div>}
                 </div>
             ) : activeTab === 'STATS' ? (
                 <div className="space-y-8 animate-fade-in">
@@ -622,6 +707,9 @@ export const TeamDetailView: React.FC<TeamDetailViewProps> = ({
                                 <Activity size={18} className="text-indigo-500" /> Season Statistics
                             </h3>
                             <div className="flex flex-wrap items-center gap-2">
+                                <span className="inline-flex items-center text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-md border bg-indigo-50 dark:bg-indigo-950/30 border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300">
+                                    {selectedSeasonLabel}
+                                </span>
                                 <span className="inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-md border bg-slate-100 dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300">
                                     <Database size={11} />
                                     {statsSourceSummary.label}
@@ -699,7 +787,11 @@ export const TeamDetailView: React.FC<TeamDetailViewProps> = ({
                     </div>
 
                     {/* Player Box Score Season Averages */}
-                    {isStatsLoading ? (
+                    {!isCurrentSeasonSelection ? (
+                        <div className="text-center text-sm text-slate-400 italic py-8 border border-dashed border-slate-200 dark:border-slate-800 rounded-xl">
+                            Player box score season averages are currently available for the current season only.
+                        </div>
+                    ) : isStatsLoading ? (
                         <div className="flex flex-col items-center justify-center py-12">
                             <Loader2 size={32} className="text-slate-500 animate-spin mb-3" />
                             <p className="text-xs text-slate-500 font-medium">Loading player box score averages...</p>

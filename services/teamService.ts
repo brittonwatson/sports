@@ -1310,39 +1310,96 @@ const toDetailedLeagueStats = (stats: TeamStatItem[], sport: Sport): TeamStatIte
     return normalizeDetailedStatsForDisplay(prepared, sport);
 };
 
+const normalizeSeasonYearInput = (seasonYear?: number): number | undefined => {
+    const parsed = Number(seasonYear);
+    if (!Number.isFinite(parsed)) return undefined;
+    return Math.trunc(parsed);
+};
+
+const loadHistoricalSeasonTeamStats = async (
+    sport: Sport,
+    teamId: string,
+    seasonYear: number,
+): Promise<TeamStatItem[]> => {
+    const regular = await fetchTeamSeasonStats(
+        sport,
+        teamId,
+        2,
+        seasonYear,
+        true,
+        undefined,
+        'full',
+    );
+
+    if (!PLAYOFF_MERGE_SPORTS.has(sport)) return regular;
+
+    try {
+        const postseason = await fetchTeamSeasonStats(
+            sport,
+            teamId,
+            3,
+            seasonYear,
+            true,
+            undefined,
+            'full',
+        );
+        if (!hasMeaningfulPostseasonStats(postseason, regular)) return regular;
+        return mergeSeasonStatsByCategory(regular, postseason, getDefaultSeasonGames(sport));
+    } catch {
+        return regular;
+    }
+};
+
 export const getStoredLeagueStats = async (
     sport: Sport, 
     teams: { id: string, name: string, logo?: string }[],
-    fallbackMap?: Map<string, any>
+    fallbackMap?: Map<string, any>,
+    seasonYear?: number,
 ): Promise<{ rows: LeagueStatRow[], lastUpdated: number | null }> => {
     await ensureInternalSportLoaded(sport);
 
-    let storedRecords = await getStatsBySport(sport);
-    const storedMap = new Map(storedRecords.map(r => [r.teamId, r]));
-    const internalGeneratedAtMs = Date.parse(getInternalDatabaseGeneratedAt()) || 0;
+    const targetSeasonYear = normalizeSeasonYearInput(seasonYear);
+    const storedRecords = await getStatsBySport(sport);
+    const storedMap = new Map<string, (typeof storedRecords)[number]>();
+    storedRecords.forEach((record) => {
+        const recordSeason = normalizeSeasonYearInput((record as any).seasonYear);
+        const matchesTarget =
+            targetSeasonYear === undefined
+                ? recordSeason === undefined
+                : recordSeason === targetSeasonYear;
+        if (!matchesTarget) return;
 
-    teams.forEach((team) => {
-        const internalStats = getInternalTeamStats(sport, team.id);
-        if (internalStats.length > 0) {
-            const detailedInternalStats = toDetailedLeagueStats(internalStats, sport);
-            const existing = storedMap.get(team.id);
-            const existingCount = existing?.stats?.length || 0;
-            const shouldReplace =
-                !existing ||
-                detailedInternalStats.length > existingCount ||
-                ((internalGeneratedAtMs || 0) > (existing?.timestamp || 0));
-
-            if (shouldReplace) {
-                storedMap.set(team.id, {
-                    id: `${sport}-${team.id}`,
-                    sport,
-                    teamId: team.id,
-                    stats: detailedInternalStats,
-                    timestamp: internalGeneratedAtMs || Date.now(),
-                });
-            }
+        const existing = storedMap.get(record.teamId);
+        if (!existing || (record.timestamp || 0) > (existing.timestamp || 0)) {
+            storedMap.set(record.teamId, record);
         }
     });
+    const internalGeneratedAtMs = Date.parse(getInternalDatabaseGeneratedAt()) || 0;
+
+    if (targetSeasonYear === undefined) {
+        teams.forEach((team) => {
+            const internalStats = getInternalTeamStats(sport, team.id);
+            if (internalStats.length > 0) {
+                const detailedInternalStats = toDetailedLeagueStats(internalStats, sport);
+                const existing = storedMap.get(team.id);
+                const existingCount = existing?.stats?.length || 0;
+                const shouldReplace =
+                    !existing ||
+                    detailedInternalStats.length > existingCount ||
+                    ((internalGeneratedAtMs || 0) > (existing?.timestamp || 0));
+
+                if (shouldReplace) {
+                    storedMap.set(team.id, {
+                        id: `${sport}-${team.id}`,
+                        sport,
+                        teamId: team.id,
+                        stats: detailedInternalStats,
+                        timestamp: internalGeneratedAtMs || Date.now(),
+                    });
+                }
+            }
+        });
+    }
 
     const missingIds: string[] = [];
     const rows: LeagueStatRow[] = [];
@@ -1368,29 +1425,31 @@ export const getStoredLeagueStats = async (
         
         if (!hasRealStats) {
             needsHydration = true;
-            if (fallbackMap && fallbackMap.has(team.id)) {
-                const fallbackStats = toDetailedLeagueStats(convertStandingsToStats(fallbackMap.get(team.id), sport), sport);
-                
-                if (!record) {
-                    record = { id: `${sport}-${team.id}`, sport, teamId: team.id, stats: fallbackStats, timestamp: Date.now() };
-                } else {
-                    fallbackStats.forEach(fb => {
-                        if (!record!.stats.some(s =>
-                            s.label.toLowerCase() === fb.label.toLowerCase() &&
-                            (s.category || 'General').toLowerCase() === (fb.category || 'General').toLowerCase()
-                        )) {
-                            record!.stats.push(fb);
-                        }
-                    });
+            if (targetSeasonYear === undefined) {
+                if (fallbackMap && fallbackMap.has(team.id)) {
+                    const fallbackStats = toDetailedLeagueStats(convertStandingsToStats(fallbackMap.get(team.id), sport), sport);
+                    
+                    if (!record) {
+                        record = { id: `${sport}-${team.id}`, sport, teamId: team.id, stats: fallbackStats, timestamp: Date.now() };
+                    } else {
+                        fallbackStats.forEach(fb => {
+                            if (!record!.stats.some(s =>
+                                s.label.toLowerCase() === fb.label.toLowerCase() &&
+                                (s.category || 'General').toLowerCase() === (fb.category || 'General').toLowerCase()
+                            )) {
+                                record!.stats.push(fb);
+                            }
+                        });
+                    }
+                } else if (SEEDED_STATS[`${sport}-${team.id}`]) {
+                    record = {
+                        id: `${sport}-${team.id}`,
+                        sport,
+                        teamId: team.id,
+                        stats: toDetailedLeagueStats(SEEDED_STATS[`${sport}-${team.id}`], sport),
+                        timestamp: Date.now()
+                    };
                 }
-            } else if (SEEDED_STATS[`${sport}-${team.id}`]) {
-                record = {
-                    id: `${sport}-${team.id}`,
-                    sport,
-                    teamId: team.id,
-                    stats: toDetailedLeagueStats(SEEDED_STATS[`${sport}-${team.id}`], sport),
-                    timestamp: Date.now()
-                };
             }
         }
 
@@ -1408,7 +1467,63 @@ export const getStoredLeagueStats = async (
         }
     });
 
-    if (missingIds.length > 0) {
+    if (missingIds.length > 0 && targetSeasonYear !== undefined) {
+        const CHUNK_SIZE = 4;
+        const hydratedRecords: {
+            id: string;
+            sport: Sport;
+            teamId: string;
+            seasonYear: number;
+            stats: TeamStatItem[];
+            timestamp: number;
+        }[] = [];
+
+        for (let i = 0; i < missingIds.length; i += CHUNK_SIZE) {
+            const chunk = missingIds.slice(i, i + CHUNK_SIZE);
+            const chunkResults = await Promise.all(
+                chunk.map(async (teamId) => {
+                    try {
+                        const stats = await loadHistoricalSeasonTeamStats(sport, teamId, targetSeasonYear);
+                        const detailed = toDetailedLeagueStats(stats, sport);
+                        if (detailed.length === 0) return null;
+                        return {
+                            id: `${sport}-${targetSeasonYear}-${teamId}`,
+                            sport,
+                            teamId,
+                            seasonYear: targetSeasonYear,
+                            stats: detailed,
+                            timestamp: Date.now(),
+                        };
+                    } catch {
+                        return null;
+                    }
+                }),
+            );
+
+            chunkResults.forEach((record) => {
+                if (!record) return;
+                hydratedRecords.push(record);
+                storedMap.set(record.teamId, record as any);
+            });
+        }
+
+        if (hydratedRecords.length > 0) {
+            await saveStatsBatch(hydratedRecords as any);
+        }
+
+        rows.length = 0;
+        newestTimestamp = 0;
+        teams.forEach((team) => {
+            const record = storedMap.get(team.id);
+            if (!record || !Array.isArray(record.stats) || record.stats.length === 0) return;
+            if (record.timestamp > newestTimestamp) newestTimestamp = record.timestamp;
+            const statsMap: Record<string, string> = {};
+            toDetailedLeagueStats(record.stats, sport).forEach((stat) => {
+                statsMap[`${stat.category || 'General'}|${stat.label}`] = stat.value;
+            });
+            rows.push({ team: { id: team.id, name: team.name, logo: team.logo }, stats: statsMap, ranks: {} });
+        });
+    } else if (missingIds.length > 0) {
         autoSyncLeagueStats(sport, missingIds);
     }
 
@@ -1526,9 +1641,10 @@ export const fetchTeamSchedule = async (sport: Sport, teamId: string): Promise<G
         const response = await fetchWithRetry(baseUrl);
         if (!response.ok) return [];
         const data = await response.json();
-        return (data.events || [])
+        const mapped = (data.events || [])
             .map((e: any) => mapEventToGame(e, sport))
             .filter((game: Game) => !shouldHideUndeterminedPlayoffGame(game));
+        return mapped;
     } catch { return []; }
 };
 

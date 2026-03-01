@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { Game } from '../../types';
 import { BellRing, ChevronDown, ChevronUp, Clock3, Radio, X } from 'lucide-react';
 
@@ -31,16 +31,22 @@ export const FollowingBar: React.FC<FollowingBarProps> = ({
   onGameClick,
   onCloseActiveGame,
 }) => {
-  if (games.length === 0) return null;
+  const liveCount = useMemo(
+    () => games.filter((game) => game.status === 'in_progress').length,
+    [games],
+  );
+  const orderedGames = useMemo(
+    () => [...games].sort((a, b) => {
+      if (a.id === selectedGameId) return -1;
+      if (b.id === selectedGameId) return 1;
+      if (a.status === 'in_progress' && b.status !== 'in_progress') return -1;
+      if (b.status === 'in_progress' && a.status !== 'in_progress') return 1;
+      return new Date(a.dateTime).getTime() - new Date(b.dateTime).getTime();
+    }),
+    [games, selectedGameId],
+  );
 
-  const liveCount = games.filter((game) => game.status === 'in_progress').length;
-  const orderedGames = [...games].sort((a, b) => {
-    if (a.id === selectedGameId) return -1;
-    if (b.id === selectedGameId) return 1;
-    if (a.status === 'in_progress' && b.status !== 'in_progress') return -1;
-    if (b.status === 'in_progress' && a.status !== 'in_progress') return 1;
-    return new Date(a.dateTime).getTime() - new Date(b.dateTime).getTime();
-  });
+  if (games.length === 0) return null;
 
   return (
     <section className="border-t border-slate-200 dark:border-slate-800/70">

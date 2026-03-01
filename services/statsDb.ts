@@ -9,6 +9,7 @@ interface StoredStats {
     id: string; // key: `${sport}-${teamId}`
     sport: string;
     teamId: string;
+    seasonYear?: number;
     stats: TeamStatItem[];
     timestamp: number;
 }
