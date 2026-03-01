@@ -735,6 +735,7 @@ export const App: React.FC = () => {
         } else if (mode === 'BRACKET' && tab !== 'HOME') {
             const bracketData = await fetchBracketGames(tab);
             setBracketGames(bracketData);
+            upsertGamesInRegistry(bracketData);
         } else {
             let fetchedGames: Game[] = [];
       
@@ -1214,8 +1215,14 @@ export const App: React.FC = () => {
     const ids = new Set<string>([...Array.from(followedGames), ...Array.from(autoFollowGameIds)]);
     const tracked = new Map(gameRegistry);
     if (selectedGame) tracked.set(selectedGame.id, selectedGame);
-    games.forEach((game) => tracked.set(game.id, { ...(tracked.get(game.id) || {} as Game), ...game }));
-    teamSchedule.forEach((game) => tracked.set(game.id, { ...(tracked.get(game.id) || {} as Game), ...game }));
+    games.forEach((game) => {
+      const existing = tracked.get(game.id);
+      tracked.set(game.id, existing ? { ...existing, ...game } : game);
+    });
+    teamSchedule.forEach((game) => {
+      const existing = tracked.get(game.id);
+      tracked.set(game.id, existing ? { ...existing, ...game } : game);
+    });
 
     return Array.from(ids)
       .map((id) => tracked.get(id))
@@ -1251,8 +1258,10 @@ export const App: React.FC = () => {
     setSelectedTab(targetLeague);
     setViewMode(game.status === 'in_progress' ? 'LIVE' : 'UPCOMING');
     setNavigatedGameId(game.id);
-    handleGameToggle(game);
-  }, [handleGameToggle]);
+    if (selectedGame?.id !== game.id) {
+      handleGameToggle(game);
+    }
+  }, [handleGameToggle, selectedGame?.id]);
 
   const closeActiveGameButKeepFollowing = useCallback(() => {
     setNavigatedGameId(null);

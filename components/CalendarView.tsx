@@ -10,9 +10,18 @@ interface CalendarViewProps {
   onGameSelect: (game: Game) => void;
   selectedGameId?: string;
   onTeamClick?: (teamId: string, league: Sport) => void;
+  isGameFollowed?: (game: Game) => boolean;
+  onToggleFollowGame?: (game: Game, e: React.MouseEvent<HTMLButtonElement>) => void;
 }
 
-export const CalendarView: React.FC<CalendarViewProps> = ({ sport, onGameSelect, selectedGameId, onTeamClick }) => {
+export const CalendarView: React.FC<CalendarViewProps> = ({
+  sport,
+  onGameSelect,
+  selectedGameId,
+  onTeamClick,
+  isGameFollowed,
+  onToggleFollowGame,
+}) => {
   const [currentMonth, setCurrentMonth] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [games, setGames] = useState<Game[]>([]);
@@ -210,6 +219,8 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ sport, onGameSelect,
                         onSelect={onGameSelect}
                         isSelected={selectedGameId === game.id}
                         onTeamClick={onTeamClick}
+                        isFollowed={isGameFollowed ? isGameFollowed(game) : false}
+                        onToggleFollow={onToggleFollowGame}
                     />
                 ))}
             </div>

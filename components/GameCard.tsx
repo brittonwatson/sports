@@ -1,16 +1,18 @@
 
 import React from 'react';
 import { Game, SOCCER_LEAGUES, Sport } from '../types';
-import { Calendar, Clock, ChevronDown, Radio, Tv, MapPin, CloudSun } from 'lucide-react';
+import { Calendar, Clock, ChevronDown, Radio, Tv, MapPin, CloudSun, Bell, BellRing } from 'lucide-react';
 
 interface GameCardProps {
   game: Game;
   onSelect: (game: Game) => void;
   isSelected: boolean;
   onTeamClick?: (teamId: string, league: Sport) => void;
+  isFollowed?: boolean;
+  onToggleFollow?: (game: Game, e: React.MouseEvent<HTMLButtonElement>) => void;
 }
 
-export const GameCard: React.FC<GameCardProps> = ({ game, onSelect, isSelected, onTeamClick }) => {
+export const GameCard: React.FC<GameCardProps> = ({ game, onSelect, isSelected, onTeamClick, isFollowed = false, onToggleFollow }) => {
   const isLive = game.status === 'in_progress';
   const isFinished = game.status === 'finished';
   const isSoccer = SOCCER_LEAGUES.includes(game.league as Sport);
@@ -120,13 +122,31 @@ export const GameCard: React.FC<GameCardProps> = ({ game, onSelect, isSelected, 
                 <span className={`text-xs text-slate-600 dark:text-slate-400 font-medium px-2 py-0.5 border border-transparent bg-slate-50 dark:bg-slate-800 rounded ${isPreseason ? 'inline-block' : 'hidden sm:inline-block'}`}>{game.context}</span>
                 )}
             </div>
-            
-            {/* Mobile Chevron */}
-            <div className="sm:hidden">
+
+            <div className="flex items-center gap-2">
+                {onToggleFollow && (
+                    <button
+                        type="button"
+                        onClick={(e) => onToggleFollow(game, e)}
+                        aria-label={isFollowed ? 'Following game' : 'Follow game'}
+                        title={isFollowed ? 'Following game' : 'Follow game'}
+                        className={`p-1.5 rounded-md border transition-colors ${
+                            isFollowed
+                                ? 'text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-900/40 bg-emerald-50 dark:bg-emerald-950/30'
+                                : 'text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/40 hover:text-slate-700 dark:hover:text-slate-200'
+                        }`}
+                    >
+                        {isFollowed ? <BellRing size={14} /> : <Bell size={14} />}
+                    </button>
+                )}
+
+                {/* Mobile Chevron */}
+                <div className="sm:hidden">
                 <ChevronDown 
                     size={20} 
                     className={`transition-transform duration-300 ${isSelected ? 'rotate-180 text-slate-900 dark:text-white' : 'text-slate-400 group-hover:text-slate-600 dark:group-hover:text-slate-300'}`} 
                 />
+                </div>
             </div>
         </div>
 
