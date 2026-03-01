@@ -232,7 +232,10 @@ export const TeamDetailView: React.FC<TeamDetailViewProps> = ({
 
     const seasonScopedSchedule = useMemo(() => {
         if (!effectiveSeasonKey) return schedule;
-        return schedule.filter((game) => getSeasonKeyForGame(game, league) === effectiveSeasonKey);
+        return schedule.filter((game) => {
+            if (game.status === 'in_progress') return true;
+            return getSeasonKeyForGame(game, league) === effectiveSeasonKey;
+        });
     }, [schedule, effectiveSeasonKey, league]);
 
     const liveStatsSeasonYear = useMemo(() => {

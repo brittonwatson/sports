@@ -519,6 +519,54 @@ export const App: React.FC = () => {
     });
   }, []);
 
+  const mergeTeamSchedulesPreferFresh = useCallback((base: Game[], incoming: Game[]): Game[] => {
+    if (base.length === 0) {
+      return [...incoming].sort((a, b) => new Date(a.dateTime).getTime() - new Date(b.dateTime).getTime());
+    }
+    if (incoming.length === 0) {
+      return [...base].sort((a, b) => new Date(a.dateTime).getTime() - new Date(b.dateTime).getTime());
+    }
+
+    const statusRank = (status: Game['status']): number => {
+      if (status === 'finished') return 3;
+      if (status === 'in_progress') return 2;
+      return 1;
+    };
+
+    const byId = new Map<string, Game>();
+    base.forEach((game) => byId.set(game.id, game));
+
+    incoming.forEach((game) => {
+      const existing = byId.get(game.id);
+      if (!existing) {
+        byId.set(game.id, game);
+        return;
+      }
+
+      const existingRank = statusRank(existing.status);
+      const incomingRank = statusRank(game.status);
+
+      if (incomingRank > existingRank) {
+        byId.set(game.id, { ...existing, ...game });
+        return;
+      }
+
+      if (existingRank > incomingRank) {
+        byId.set(game.id, {
+          ...game,
+          ...existing,
+          context: existing.context ?? game.context,
+          leagueLogo: game.leagueLogo || existing.leagueLogo,
+        });
+        return;
+      }
+
+      byId.set(game.id, { ...existing, ...game });
+    });
+
+    return Array.from(byId.values()).sort((a, b) => new Date(a.dateTime).getTime() - new Date(b.dateTime).getTime());
+  }, []);
+
   const bumpLiveDetailVersion = useCallback((gameId: string): number => {
     const next = (liveDetailRequestVersionRef.current.get(gameId) || 0) + 1;
     liveDetailRequestVersionRef.current.set(gameId, next);
@@ -899,14 +947,14 @@ export const App: React.FC = () => {
                   ]);
                   if (cancelled) return;
                   setTeamProfile(profile);
-                  setTeamSchedule(recentSchedule);
+                  setTeamSchedule((prev) => mergeTeamSchedulesPreferFresh(prev, recentSchedule));
                   upsertGamesInRegistry(recentSchedule);
 
                   if (!background) {
                       fetchTeamSchedule(selectedTeam.league, selectedTeam.id, { scope: 'all' })
                           .then((fullSchedule) => {
                               if (cancelled || !Array.isArray(fullSchedule) || fullSchedule.length === 0) return;
-                              setTeamSchedule((prev) => (fullSchedule.length > prev.length ? fullSchedule : prev));
+                              setTeamSchedule((prev) => mergeTeamSchedulesPreferFresh(prev, fullSchedule));
                               upsertGamesInRegistry(fullSchedule);
                           })
                           .catch(() => {});
@@ -933,7 +981,7 @@ export const App: React.FC = () => {
           cancelled = true;
           if (intervalId) clearInterval(intervalId);
       }
-  }, [selectedTeam, upsertGamesInRegistry]);
+  }, [selectedTeam, upsertGamesInRegistry, mergeTeamSchedulesPreferFresh]);
 
   useEffect(() => {
       let cancelled = false;
