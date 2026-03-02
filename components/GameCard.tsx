@@ -1,8 +1,8 @@
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useMemo } from 'react';
 import { Game, RACING_LEAGUES, SOCCER_LEAGUES, Sport } from '../types';
 import { Calendar, Clock, ChevronDown, Radio, Tv, MapPin, CloudSun, Bell, BellRing } from 'lucide-react';
-import { getRealtimeLiveStatus } from '../services/uiUtils';
+import { getLiveStatusLabel } from '../services/uiUtils';
 
 interface GameCardProps {
   game: Game;
@@ -84,36 +84,10 @@ export const GameCard: React.FC<GameCardProps> = ({ game, onSelect, isSelected, 
       ).filter((row, index, rows) => row.name && rows.findIndex((candidate) => candidate.name === row.name) === index)
     : [];
 
-  const liveSeedRef = useRef<{ baseClock?: string; baseStatus?: string; startedAtMs: number }>({
-    baseClock: game.clock,
-    baseStatus: game.gameStatus,
-    startedAtMs: Date.now(),
-  });
-  const [liveTick, setLiveTick] = useState(0);
-
-  useEffect(() => {
-    liveSeedRef.current = {
-      baseClock: game.clock,
-      baseStatus: game.gameStatus,
-      startedAtMs: Date.now(),
-    };
-    setLiveTick(0);
-  }, [game.id, game.status, game.clock, game.gameStatus]);
-
-  useEffect(() => {
-    if (!isLive) return;
-    const timerId = window.setInterval(() => {
-      setLiveTick((prev) => prev + 1);
-    }, 1000);
-    return () => window.clearInterval(timerId);
-  }, [isLive, game.id]);
-
   const liveStatusLabel = useMemo(() => {
     if (!isLive) return game.gameStatus || game.clock || 'Live';
-    const seed = liveSeedRef.current;
-    const elapsedSeconds = Math.floor((Date.now() - seed.startedAtMs) / 1000);
-    return getRealtimeLiveStatus(game, seed, elapsedSeconds);
-  }, [isLive, game, liveTick]);
+    return getLiveStatusLabel(game);
+  }, [isLive, game]);
 
   const handleTeamClick = (e: React.MouseEvent, teamId: string | undefined) => {
       e.stopPropagation();

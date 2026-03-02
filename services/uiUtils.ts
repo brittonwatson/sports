@@ -160,10 +160,6 @@ interface ParsedClock {
     format: 'mm:ss' | 'hh:mm:ss';
 }
 
-export interface LiveStatusSeed {
-    baseClock?: string;
-    baseStatus?: string;
-}
 
 const CLOCK_PATTERN = /^\s*(\d{1,3}):(\d{2})(?::(\d{2}))?\s*$/;
 const SOCCER_MINUTE_PATTERN = /^\s*(\d{1,3})(?:\+(\d{1,2}))?\s*['’]?\s*$/;
@@ -327,7 +323,6 @@ const applyRacingRealtimeStatus = (
     game: Game,
     baseStatus: string,
     baseClock: string,
-    elapsedSeconds: number,
 ): string | null => {
     const detail = String(baseStatus || '').trim();
     const clock = String(baseClock || '').trim();
@@ -366,22 +361,14 @@ const applyRacingRealtimeStatus = (
 
     const remainingMatch = detail.match(/(\d{1,3}:\d{2}(?::\d{2})?)\s*(remaining|left)/i);
     if (remainingMatch) {
-        const parsed = parseClockText(remainingMatch[1]);
-        if (parsed) {
-            const next = formatClockText(parsed.seconds - elapsedSeconds, parsed.format);
-            const remaining = `${next} remaining`;
-            return sessionLabel ? `${sessionLabel} • ${remaining}` : remaining;
-        }
+        const remaining = `${remainingMatch[1]} remaining`;
+        return sessionLabel ? `${sessionLabel} • ${remaining}` : remaining;
     }
 
     const combinedContext = `${detail} ${String(baseClock || '')}`.toLowerCase();
     const isTimedSession = combinedContext.includes('practice') || combinedContext.includes('qualifying') || combinedContext.includes('shootout');
     if (isTimedSession) {
-        const parsed = parseClockText(baseClock);
-        if (parsed) {
-            const remaining = `${formatClockText(parsed.seconds - elapsedSeconds, parsed.format)} remaining`;
-            return sessionLabel ? `${sessionLabel} • ${remaining}` : remaining;
-        }
+        if (clock) return sessionLabel ? `${sessionLabel} • ${clock}` : clock;
     }
 
     if (sessionLabel) {
@@ -392,38 +379,21 @@ const applyRacingRealtimeStatus = (
     return null;
 };
 
-export const getRealtimeLiveStatus = (
-    game: Game,
-    seed: LiveStatusSeed,
-    elapsedSeconds: number,
-): string => {
-    const baseClock = String(seed.baseClock ?? game.clock ?? '').trim();
-    const baseStatus = String(seed.baseStatus ?? game.gameStatus ?? '').trim();
-    const elapsed = Math.max(0, Math.floor(elapsedSeconds));
+export const getLiveStatusLabel = (game: Game): string => {
+    const baseClock = String(game.clock ?? '').trim();
+    const baseStatus = String(game.gameStatus ?? '').trim();
 
     if (RACING_LEAGUES.includes(game.league as Sport)) {
-        const racingStatus = applyRacingRealtimeStatus(game, baseStatus, baseClock, elapsed);
+        const racingStatus = applyRacingRealtimeStatus(game, baseStatus, baseClock);
         if (racingStatus) return racingStatus;
     }
 
-    const isSoccer = SOCCER_LEAGUES.includes(game.league as Sport);
-    const clockText = baseClock || (baseStatus.match(/(\d{1,3}:\d{2}(?::\d{2})?|\d{1,3}(?:\+\d{1,2})?\s*['’]?)/)?.[1] || '');
+    const clockText = baseClock || (baseStatus.match(/(\d{1,3}:\d{2}(?::\d{2})?|\d{1,3}(?:\+\d{1,2})?\s*['\u2018\u2019]?)/)?.[1] || '');
 
     if (clockText) {
-        const parsedClock = parseClockText(clockText);
-        const parsedSoccerMinute = parseSoccerMinute(clockText);
-        let dynamicClock = clockText;
-
-        if (parsedSoccerMinute !== null && (isSoccer || isLikelySoccerClock(clockText))) {
-            dynamicClock = formatSoccerMinute(parsedSoccerMinute + (elapsed / 60));
-        } else if (parsedClock) {
-            const nextSeconds = isSoccer ? (parsedClock.seconds + elapsed) : (parsedClock.seconds - elapsed);
-            dynamicClock = formatClockText(nextSeconds, parsedClock.format);
-        }
-
         const suffix = normalizeStatusSuffix(baseStatus, clockText);
-        if (suffix) return `${dynamicClock} - ${suffix}`;
-        return dynamicClock;
+        if (suffix) return `${clockText} - ${suffix}`;
+        return clockText;
     }
 
     return baseStatus || 'Live';
