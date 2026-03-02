@@ -1538,16 +1538,25 @@ const buildEventPrediction = (
   }
   const hasLivePositions = livePositionByDriver.size > 0;
 
+  // Build secondary aggregate lookup by athlete ref ID for robust matching.
+  const aggregateByRefId = new Map<string, DriverAggregateRow>();
+  aggregate.forEach((row) => {
+    const refMatch = row.ref.match(/athletes\/(\d+)/);
+    if (refMatch) aggregateByRefId.set(refMatch[1], row);
+  });
+  const lookupAggregate = (id: string): DriverAggregateRow | undefined =>
+    aggregate.get(id) || aggregateByRefId.get(id);
+
   // --- Bayesian finish-distribution model for each driver ---
   // Base pace comes from actual race finishes (cross-season aggregate).
   // Qualifying, practice, and live running order adjust the estimate.
-  const PRIOR_STRENGTH = 3;
+  const PRIOR_STRENGTH = 1.5;
   const priorMean = starterCount * 0.5;
   const priorStdDev = starterCount * 0.28;
   const MIN_EMPIRICAL_STD_DEV = 1.5;
 
   const featureRows = participants.map((participant) => {
-    const aggregateRow = aggregate.get(participant.competitorId);
+    const aggregateRow = lookupAggregate(participant.competitorId);
     const finishes = aggregateRow?.recentFinishes || [];
     const starts = aggregateRow?.starts || 0;
     const qualifyingRank = qualifyingRankByDriver.get(participant.competitorId);
@@ -1574,8 +1583,10 @@ const buildEventPrediction = (
       const shrinkage = PRIOR_STRENGTH / (PRIOR_STRENGTH + totalWeight);
       baseStdDev = shrinkage * priorStdDev + (1 - shrinkage) * Math.max(empiricalStdDev, MIN_EMPIRICAL_STD_DEV);
     } else {
-      basePace = priorMean;
-      baseStdDev = priorStdDev;
+      // No historical finish data: use back-of-field prior.
+      // Drivers with no race history should not be mid-field by default.
+      basePace = starterCount * 0.75;
+      baseStdDev = starterCount * 0.22;
     }
 
     // Blend in this-weekend session data when available.
@@ -1690,7 +1701,7 @@ const buildEventPrediction = (
       if (row.seasonRank && row.seasonRank <= 5) bullets.push(`season rank #${row.seasonRank}`);
       if (row.recentAvgFinish && row.recentAvgFinish <= 7) bullets.push(`recent avg finish ${row.recentAvgFinish.toFixed(1)}`);
       if (!row.livePosition && row.startPosition && row.startPosition <= 10) bullets.push(`starting P${row.startPosition}`);
-      const aggRow = aggregate.get(row.participant.competitorId);
+      const aggRow = lookupAggregate(row.participant.competitorId);
       if (aggRow && aggRow.recentFinishes.length > aggRow.starts) bullets.push("prior season form factored in");
 
       const explanation = bullets.length > 0
@@ -1726,7 +1737,7 @@ const buildEventPrediction = (
   const separation = Math.max(0, topWin - secondWin);
   const hasQualifying = qualifyingSession !== undefined;
   const hasPractice = practiceSessions.length > 0;
-  const totalFinishes = featureRows.reduce((sum, row) => sum + (aggregate.get(row.participant.competitorId)?.recentFinishes.length || 0), 0);
+  const totalFinishes = featureRows.reduce((sum, row) => sum + (lookupAggregate(row.participant.competitorId)?.recentFinishes.length || 0), 0);
   const avgFinishesPerDriver = totalFinishes / Math.max(1, featureRows.length);
   const sampleCoverage = Math.min(1, (
     (hasLivePositions ? 0.40 : 0) +
@@ -1956,15 +1967,30 @@ const computeRacingChampionshipProbabilities = (
   // --- Bayesian finish-position model ---
   // Each driver's future race performance is estimated from their actual
   // finish positions (current season + previous season backfill).
-  // We use Bayesian shrinkage toward a mid-field prior so that drivers with
-  // limited data get wider uncertainty instead of extreme confidence.
-  const PRIOR_STRENGTH = 3;
+  // PRIOR_STRENGTH is kept low (1.5) so that empirical data dominates quickly.
+  // For drivers with NO finish data (new to the series), we use a pessimistic
+  // back-of-field prior instead of mid-field to avoid over-rating unknowns.
+  const PRIOR_STRENGTH = 1.5;
   const priorMean = starterCount * 0.5;
   const priorStdDev = starterCount * 0.28;
   const MIN_EMPIRICAL_STD_DEV = 1.5;
 
+  // Build a secondary aggregate lookup by the athlete ID extracted from
+  // the ref URL. The aggregate is keyed by getCompetitorId() which may
+  // use competitor.id, while standings entries use the resolved entity.id
+  // (athlete ID). These CAN be different ID spaces, so we index both ways.
+  const aggregateByRefId = new Map<string, DriverAggregateRow>();
+  aggregate.forEach((row) => {
+    const refMatch = row.ref.match(/athletes\/(\d+)/);
+    if (refMatch) aggregateByRefId.set(refMatch[1], row);
+  });
+
+  const lookupAggregate = (competitorId: string): DriverAggregateRow | undefined => {
+    return aggregate.get(competitorId) || aggregateByRefId.get(competitorId);
+  };
+
   const driverProfiles = primaryDriverTable.entries.map((entry) => {
-    const aggRow = aggregate.get(String(entry.competitorId));
+    const aggRow = lookupAggregate(String(entry.competitorId));
     const finishes = aggRow?.recentFinishes || [];
     const currentPoints = Math.max(
       0,
@@ -1987,8 +2013,8 @@ const computeRacingChampionshipProbabilities = (
       const empiricalMean = finishes.reduce((s, f, i) => s + f * weights[i], 0) / totalWeight;
 
       // Bayesian shrinkage: blend empirical mean toward the prior.
-      // With 0 observations we get the prior; with many observations
-      // the empirical mean dominates.
+      // With PRIOR_STRENGTH=1.5 and 4 finishes (totalWeight~3.25),
+      // empirical data has ~68% weight, keeping top drivers near their pace.
       expectedFinish = (PRIOR_STRENGTH * priorMean + totalWeight * empiricalMean) / (PRIOR_STRENGTH + totalWeight);
 
       // Individual consistency from weighted variance of actual finishes.
@@ -1999,9 +2025,23 @@ const computeRacingChampionshipProbabilities = (
       const shrinkage = PRIOR_STRENGTH / (PRIOR_STRENGTH + totalWeight);
       finishStdDev = shrinkage * priorStdDev + (1 - shrinkage) * Math.max(empiricalStdDev, MIN_EMPIRICAL_STD_DEV);
     } else {
-      // No finish data at all: fall back to uninformative prior.
-      expectedFinish = priorMean;
-      finishStdDev = priorStdDev;
+      // No finish data: use standings rank as a signal when available.
+      // The pre-season standings rank reflects at least some ordering
+      // (e.g., 2025 final championship positions for returning drivers).
+      // For completely unknown drivers (new to series), expect near back.
+      const rankInStandings = entry.rank > 0 && entry.rank <= starterCount ? entry.rank : 0;
+
+      if (rankInStandings > 0) {
+        // Scale rank → expected finish: rank 1 → ~P3, rank 10 → ~P12, rank 20 → ~P18
+        // This provides a mild differentiation based on their standing.
+        expectedFinish = 1.5 + (rankInStandings / starterCount) * (starterCount * 0.85);
+      } else {
+        // Completely unknown: back-of-field prior.
+        expectedFinish = starterCount * 0.80;
+      }
+      // Wide variance for no-data drivers, but capped lower than before
+      // so unknowns can't randomly dominate the simulations.
+      finishStdDev = starterCount * 0.22;
     }
 
     return {
