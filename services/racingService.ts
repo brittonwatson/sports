@@ -890,7 +890,11 @@ const scoreFromTable = (pointsTable: number[], finishPosition: number): number =
 
 const resolveSeasonYearCandidates = (): number[] => {
   const nowYear = new Date().getFullYear();
-  return [nowYear, nowYear - 1, nowYear + 1, nowYear - 2, nowYear + 2, nowYear - 3];
+  const nowMonth = new Date().getMonth(); // 0-indexed
+  // Early in the year (Jan-Feb), the previous season might still be relevant.
+  // Limit to 3 candidates to avoid excessive API calls.
+  if (nowMonth <= 1) return [nowYear, nowYear - 1, nowYear + 1];
+  return [nowYear, nowYear + 1, nowYear - 1];
 };
 
 const fetchSeasonTypeIds = async (sport: Sport, seasonYear: number): Promise<number[]> => {
@@ -1095,11 +1099,20 @@ const buildSeasonDriverAggregate = (
     return aTime - bTime;
   });
 
+  const thirtyDaysAgoMs = Date.now() - (30 * 24 * 60 * 60 * 1000);
+
   sortedEvents.forEach((event) => {
+    const eventDateMs = new Date(String(event?.date || "")).getTime();
+    const isOldEvent = Number.isFinite(eventDateMs) && eventDateMs < thirtyDaysAgoMs;
     const competitions = Array.isArray(event?.competitions) ? event.competitions : [];
     competitions.forEach((competition: any) => {
       const statusState = String(competition?.status?.type?.state || "").toLowerCase();
-      if (statusState !== "post") return;
+      // For old events where status $ref resolution may have failed,
+      // infer completion from competitor data having valid finish order.
+      const competitors = Array.isArray(competition?.competitors) ? competition.competitors : [];
+      const hasCompetitorResults = isOldEvent && competitors.length > 2
+        && competitors.some((c: any) => extractNumber(c?.order) > 0 && Boolean(c?.winner));
+      if (statusState !== "post" && !hasCompetitorResults) return;
 
       const typeText = normalizeCompetitionType(competition);
       const useSprintPoints = isSprintCompetition(sport, competition);
@@ -1110,7 +1123,6 @@ const buildSeasonDriverAggregate = (
 
       if (!includeInPoints) return;
 
-      const competitors = Array.isArray(competition?.competitors) ? competition.competitors : [];
       competitors.forEach((competitor: any) => {
         const athleteRef = getCompetitorAthleteRef(competitor);
         const competitorId = getCompetitorId(competitor);
@@ -1865,6 +1877,8 @@ interface RacingChampionshipProbabilityModel {
   driverProbabilities: Map<string, number>;
   teamProbabilitiesById: Map<string, number>;
   teamProbabilitiesByName: Map<string, number>;
+  driverNumbers: Map<string, string>;
+  driverTeamKeys: Map<string, string>;
   simulations: number;
   remainingRaces: number;
   remainingSprints: number;
@@ -1951,6 +1965,7 @@ const countRemainingChampionshipSessions = (
 const computeRacingChampionshipProbabilities = (
   sport: Sport,
   snapshot: SeasonDataSnapshot,
+  prevSnapshot: SeasonDataSnapshot | null,
   aggregate: Map<string, DriverAggregateRow>,
   tables: RacingStandingsTable[],
 ): RacingChampionshipProbabilityModel | null => {
@@ -1960,7 +1975,18 @@ const computeRacingChampionshipProbabilities = (
   const primaryDriverTable = choosePrimaryTable(tables, ["driver"]);
   if (!primaryDriverTable || primaryDriverTable.entries.length < 2) return null;
 
+  // Build driver metadata (team key, vehicle number) from snapshot events.
+  // If current season has no competitor data (pre-season), also check prev.
   const { teamKeyByDriverId, numberByDriverId } = buildDriverMetadataFromSnapshot(snapshot);
+  if (prevSnapshot) {
+    const prevMeta = buildDriverMetadataFromSnapshot(prevSnapshot);
+    prevMeta.teamKeyByDriverId.forEach((value, key) => {
+      if (!teamKeyByDriverId.has(key)) teamKeyByDriverId.set(key, value);
+    });
+    prevMeta.numberByDriverId.forEach((value, key) => {
+      if (!numberByDriverId.has(key)) numberByDriverId.set(key, value);
+    });
+  }
 
   const starterCount = Math.max(2, primaryDriverTable.entries.length);
 
@@ -2149,12 +2175,23 @@ const computeRacingChampionshipProbabilities = (
     const teamWins = new Array(teamProfiles.length).fill(0);
 
     const runSession = (pointsTable: number[], includeFastestLapBonus: boolean): void => {
+      // Fisher-Yates shuffle of indices to eliminate PRNG positional bias.
+      // Without this, drivers at fixed array positions get correlated random
+      // sequences, producing skewed results when distributions are similar.
+      const shuffledIndices = driverProfiles.map((_, i) => i);
+      for (let i = shuffledIndices.length - 1; i > 0; i -= 1) {
+        const j = Math.floor(random() * (i + 1));
+        const tmp = shuffledIndices[i];
+        shuffledIndices[i] = shuffledIndices[j];
+        shuffledIndices[j] = tmp;
+      }
+
       // Sample each driver's finish from their individual distribution,
       // then rank the samples to determine finishing order.
-      const sampledOrder = driverProfiles
-        .map((driver, index) => ({
-          index,
-          value: sampleNormal(driver.expectedFinish, driver.finishStdDev),
+      const sampledOrder = shuffledIndices
+        .map((driverIndex) => ({
+          index: driverIndex,
+          value: sampleNormal(driverProfiles[driverIndex].expectedFinish, driverProfiles[driverIndex].finishStdDev),
         }))
         .sort((a, b) => a.value - b.value)
         .map((row) => row.index);
@@ -2245,10 +2282,20 @@ const computeRacingChampionshipProbabilities = (
     if (team.nameKey) teamProbabilitiesByName.set(team.nameKey, probability);
   });
 
+  // Expose vehicle numbers and team keys for standings enrichment.
+  const driverNumbersMap = new Map<string, string>();
+  const driverTeamKeysMap = new Map<string, string>();
+  driverProfiles.forEach((driver) => {
+    if (driver.number) driverNumbersMap.set(driver.id, driver.number);
+    if (driver.teamKey) driverTeamKeysMap.set(driver.id, driver.teamKey);
+  });
+
   return {
     driverProbabilities,
     teamProbabilitiesById,
     teamProbabilitiesByName,
+    driverNumbers: driverNumbersMap,
+    driverTeamKeys: driverTeamKeysMap,
     simulations,
     remainingRaces,
     remainingSprints,
@@ -2263,9 +2310,22 @@ const applyRacingChampionshipProbabilities = (
   return tables.map((table) => {
     if (table.category === "driver") {
       const entries = table.entries.map((entry) => {
-        const probability = model.driverProbabilities.get(String(entry.competitorId));
-        if (probability === undefined) return entry;
-        return upsertEntryStat(entry, {
+        const cid = String(entry.competitorId);
+        const probability = model.driverProbabilities.get(cid);
+
+        // Inject missing vehicle number and team name from previous-season metadata.
+        let patched = entry;
+        const modelNumber = model.driverNumbers.get(cid);
+        const modelTeam = model.driverTeamKeys.get(cid);
+        if ((!patched.vehicleNumber || patched.vehicleNumber === "0") && modelNumber) {
+          patched = { ...patched, vehicleNumber: modelNumber };
+        }
+        if (!patched.teamName && modelTeam) {
+          patched = { ...patched, teamName: modelTeam };
+        }
+
+        if (probability === undefined) return patched;
+        return upsertEntryStat(patched, {
           key: "championshipProbability",
           label: "Championship Probability",
           abbreviation: "TITLE %",
@@ -2598,7 +2658,22 @@ export const fetchRacingStandingsPayload = async (sport: Sport): Promise<RacingS
     const prevAggregate = prevSnapshot ? buildSeasonDriverAggregate(sport, prevSnapshot.events) : null;
     const completedStoreFinishes = extractFinishDataFromCompletedStore(sport);
     const crossSeasonAggregate = buildCrossSeasonDriverAggregate(currentAggregate, prevAggregate, completedStoreFinishes);
-    championshipModel = computeRacingChampionshipProbabilities(sport, snapshot, crossSeasonAggregate, mergedTables);
+
+    /* diagnostic: track cross-season data availability */
+    if (typeof console !== "undefined") {
+      const curSize = currentAggregate.size;
+      const prevSize = prevAggregate?.size ?? 0;
+      const crossSize = crossSeasonAggregate.size;
+      const storeCount = completedStoreFinishes.size;
+      const prevEvents = prevSnapshot?.events?.length ?? 0;
+      console.warn(
+        `[racing] ${sport} standings pipeline: snapshot yr=${snapshot.seasonYear}, `
+        + `prevSnapshot yr=${prevSnapshot?.seasonYear ?? "none"} events=${prevEvents}, `
+        + `currentAgg=${curSize} prevAgg=${prevSize} crossAgg=${crossSize} storeFinishes=${storeCount}`,
+      );
+    }
+
+    championshipModel = computeRacingChampionshipProbabilities(sport, snapshot, prevSnapshot, crossSeasonAggregate, mergedTables);
     if (championshipModel) {
       mergedTables = applyRacingChampionshipProbabilities(sport, mergedTables, championshipModel);
     }
