@@ -115,7 +115,7 @@ const SERIES_SCORING_RULES: Record<Sport, SeriesScoringRule | null> = {
   INDYCAR: {
     displayName: "INDYCAR",
     racePoints: [50, 40, 35, 32, 30, 28, 26, 24, 22, 20, 19, 18, 17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 5, 5, 5, 5, 5, 5, 5, 5],
-    notes: "Race finish points with common INDYCAR base schedule (special bonus points may vary by event).",
+    notes: "Race finish points + bonus: 1 for pole, 1 for leading a lap, 2 for most laps led.",
   },
   NASCAR: {
     displayName: "NASCAR Cup",
@@ -1149,6 +1149,8 @@ const buildSeasonDriverAggregate = (
         if (sport === "INDYCAR" && isRaceCompetition(competition)) {
           const start = getCompetitorStart(competitor);
           if (start === 1) bonus += 1;
+          const lapsLed = extractNumber(competitor?.lapsLead);
+          if (lapsLed > 0) bonus += 1;
         }
         if (sport === "NASCAR" && isRaceCompetition(competition)) {
           const stagePoints = extractNumber(competitor?.stagePoints);
@@ -1162,6 +1164,25 @@ const buildSeasonDriverAggregate = (
         current.points += (basePoints + bonus);
         aggregate.set(competitorId, current);
       });
+
+      // INDYCAR: +2 bonus for the driver who led the most laps in a race.
+      if (sport === "INDYCAR" && isRaceCompetition(competition)) {
+        let mostLapsLedId: string | null = null;
+        let mostLapsLedCount = 0;
+        competitors.forEach((competitor: any) => {
+          const cId = getCompetitorId(competitor);
+          if (!cId) return;
+          const ll = extractNumber(competitor?.lapsLead);
+          if (ll > mostLapsLedCount) {
+            mostLapsLedCount = ll;
+            mostLapsLedId = cId;
+          }
+        });
+        if (mostLapsLedId && mostLapsLedCount > 0) {
+          const row = aggregate.get(mostLapsLedId);
+          if (row) row.points += 2;
+        }
+      }
 
       if (sport === "F1" && isSprintCompetition(sport, competition) && !typeText.includes("shootout")) {
         // Sprint sessions are already scored above.
