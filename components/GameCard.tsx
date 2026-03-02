@@ -13,7 +13,7 @@ interface GameCardProps {
   onToggleFollow?: (game: Game, e: React.MouseEvent<HTMLButtonElement>) => void;
 }
 
-export const GameCard: React.FC<GameCardProps> = ({ game, onSelect, isSelected, onTeamClick, isFollowed = false, onToggleFollow }) => {
+export const GameCard: React.FC<GameCardProps> = React.memo(({ game, onSelect, isSelected, onTeamClick, isFollowed = false, onToggleFollow }) => {
   const isLive = game.status === 'in_progress';
   const isFinished = game.status === 'finished';
   const isSoccer = SOCCER_LEAGUES.includes(game.league as Sport);
@@ -352,4 +352,4 @@ export const GameCard: React.FC<GameCardProps> = ({ game, onSelect, isSelected, 
       </div>
     </div>
   );
-};
+});

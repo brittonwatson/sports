@@ -23,7 +23,7 @@ const compactTeamLabel = (name: string, abbreviation?: string) => {
   return words.map((word) => word[0]).join('').slice(0, 4).toUpperCase();
 };
 
-export const FollowingBar: React.FC<FollowingBarProps> = ({
+export const FollowingBar: React.FC<FollowingBarProps> = React.memo(({
   games,
   isOpen,
   selectedGameId,
@@ -211,4 +211,4 @@ export const FollowingBar: React.FC<FollowingBarProps> = ({
       </div>
     </section>
   );
-};
+});

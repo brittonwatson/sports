@@ -419,6 +419,35 @@ const recordCompletedEventBundle = (bundle: RacingEventBundle): void => {
   persistCompletedEventStore();
 };
 
+const extractFinishDataFromCompletedStore = (
+  sport: Sport,
+  afterDateIso?: string,
+): Map<string, number[]> => {
+  loadCompletedEventStore();
+  const result = new Map<string, number[]>();
+  const afterMs = afterDateIso ? new Date(afterDateIso).getTime() : 0;
+
+  completedEventStore.forEach((bundle) => {
+    if (bundle.sport !== sport) return;
+    const eventDateMs = new Date(bundle.date).getTime();
+    if (!Number.isFinite(eventDateMs) || eventDateMs < afterMs) return;
+
+    const raceSession = bundle.sessions.find((s) =>
+      normalizeKey(s.name).includes('race') && s.status === 'finished',
+    );
+    if (!raceSession) return;
+
+    raceSession.competitors.forEach((comp) => {
+      if (!comp.competitorId || !comp.finishPosition) return;
+      const existing = result.get(comp.competitorId) || [];
+      existing.push(comp.finishPosition);
+      result.set(comp.competitorId, existing);
+    });
+  });
+
+  return result;
+};
+
 const dedupeStats = (stats: RacingStatValue[]): RacingStatValue[] => {
   const map = new Map<string, RacingStatValue>();
   stats.forEach((stat) => {
@@ -983,6 +1012,55 @@ const fetchSeasonDataSnapshot = async (sport: Sport): Promise<SeasonDataSnapshot
   return snapshots[0];
 };
 
+const fetchPreviousSeasonSnapshot = async (
+  sport: Sport,
+  currentSeasonYear: number,
+): Promise<SeasonDataSnapshot | null> => {
+  const prevYear = currentSeasonYear - 1;
+  const cacheKey = `${sport}:${prevYear}`;
+  const cached = seasonDataCache.get(cacheKey);
+  if (cached && (Date.now() - cached.fetchedAt) < SEASON_DATA_CACHE_TTL_MS) {
+    return cached.data;
+  }
+
+  const refs = await fetchSeasonEventRefsForYear(sport, prevYear);
+  if (refs.length === 0) return null;
+
+  const events = await mapWithConcurrency(refs, 4, async (ref) => fetchCoreRef(ref));
+  const validEvents = events.filter(Boolean);
+  if (validEvents.length === 0) return null;
+
+  const statusRefs = new Set<string>();
+  validEvents.forEach((event: any) => {
+    const competitions = Array.isArray(event?.competitions) ? event.competitions : [];
+    competitions.forEach((competition: any) => {
+      const ref = competition?.status?.$ref ? asHttps(String(competition.status.$ref)) : "";
+      if (ref) statusRefs.add(ref);
+    });
+  });
+  if (statusRefs.size > 0) {
+    const statusPayloads = await mapWithConcurrency(Array.from(statusRefs), 10, async (ref) => ({ ref, payload: await fetchCoreRef(ref) }));
+    const statusByRef = new Map<string, any>();
+    statusPayloads.forEach((entry) => {
+      if (entry.payload) statusByRef.set(entry.ref, entry.payload);
+    });
+    validEvents.forEach((event: any) => {
+      const competitions = Array.isArray(event?.competitions) ? event.competitions : [];
+      competitions.forEach((competition: any) => {
+        if (competition?.status?.type?.state) return;
+        const ref = competition?.status?.$ref ? asHttps(String(competition.status.$ref)) : "";
+        if (!ref) return;
+        const status = statusByRef.get(ref);
+        if (status) competition.status = status;
+      });
+    });
+  }
+
+  const snapshot: SeasonDataSnapshot = { sport, seasonYear: prevYear, eventRefs: refs, events: validEvents };
+  seasonDataCache.set(cacheKey, { fetchedAt: Date.now(), data: snapshot });
+  return snapshot;
+};
+
 const buildEntityMapForRefs = async (refs: string[]): Promise<Map<string, EntitySummary>> => {
   const uniqueRefs = Array.from(new Set(refs.filter(Boolean)));
   if (uniqueRefs.length === 0) return new Map<string, EntitySummary>();
@@ -1092,6 +1170,69 @@ const buildSeasonDriverAggregate = (
   });
 
   return aggregate;
+};
+
+const buildCrossSeasonDriverAggregate = (
+  currentAggregate: Map<string, DriverAggregateRow>,
+  previousAggregate: Map<string, DriverAggregateRow> | null,
+  completedStoreFinishes: Map<string, number[]>,
+): Map<string, DriverAggregateRow> => {
+  const merged = new Map<string, DriverAggregateRow>();
+
+  currentAggregate.forEach((row, id) => merged.set(id, { ...row, recentFinishes: [...row.recentFinishes] }));
+
+  const BACKFILL_TARGET = 4;
+
+  merged.forEach((row, id) => {
+    if (row.recentFinishes.length >= BACKFILL_TARGET) return;
+
+    const needed = BACKFILL_TARGET - row.recentFinishes.length;
+    const backfill: number[] = [];
+
+    if (previousAggregate) {
+      const prev = previousAggregate.get(id);
+      if (prev && prev.recentFinishes.length > 0) {
+        const prevSlice = prev.recentFinishes.slice(-needed);
+        backfill.push(...prevSlice);
+      }
+    }
+
+    if (backfill.length < needed) {
+      const storeFinishes = completedStoreFinishes.get(id);
+      if (storeFinishes && storeFinishes.length > 0) {
+        const still = needed - backfill.length;
+        const storeSlice = storeFinishes.slice(-still);
+        storeSlice.forEach((f) => {
+          if (!backfill.includes(f) || backfill.length < still) backfill.push(f);
+        });
+      }
+    }
+
+    if (backfill.length > 0) {
+      row.recentFinishes = [...backfill.slice(0, needed), ...row.recentFinishes];
+    }
+  });
+
+  if (previousAggregate) {
+    previousAggregate.forEach((prevRow, id) => {
+      if (merged.has(id)) return;
+      merged.set(id, {
+        competitorId: prevRow.competitorId,
+        ref: prevRow.ref,
+        starts: 0,
+        wins: 0,
+        podiums: 0,
+        top5: 0,
+        top10: 0,
+        finishSum: 0,
+        points: 0,
+        recentFinishes: prevRow.recentFinishes.slice(-BACKFILL_TARGET),
+        lastFinish: undefined,
+      });
+    });
+  }
+
+  return merged;
 };
 
 const buildDerivedStandingsTable = async (
@@ -1416,7 +1557,12 @@ const buildEventPrediction = (
       ((hasPractice ? practiceScore : 0.5) * 0.05)
     );
 
-    const variance = 0.8 + (hasQualifying ? 0 : 0.2) + (hasPractice ? 0 : 0.12) + Math.max(0, 0.4 - (row.starts / 20));
+    const aggregateRow = aggregate.get(row.participant.competitorId);
+    const hasPriorData = aggregateRow ? aggregateRow.recentFinishes.length > aggregateRow.starts : false;
+    const lowStartsPenalty = hasPriorData
+      ? Math.max(0, 0.2 - (row.starts / 20))
+      : Math.max(0, 0.4 - (row.starts / 20));
+    const variance = 0.8 + (hasQualifying ? 0 : 0.2) + (hasPractice ? 0 : 0.12) + lowStartsPenalty;
 
     return {
       ...row,
@@ -1479,6 +1625,8 @@ const buildEventPrediction = (
       if (row.seasonRank && row.seasonRank <= 5) bullets.push(`season rank #${row.seasonRank}`);
       if (row.recentAvgFinish && row.recentAvgFinish <= 7) bullets.push(`recent avg finish ${row.recentAvgFinish.toFixed(1)}`);
       if (row.startPosition && row.startPosition <= 5) bullets.push(`starting P${row.startPosition}`);
+      const aggRow = aggregate.get(row.participant.competitorId);
+      if (aggRow && aggRow.recentFinishes.length > aggRow.starts) bullets.push("prior season form factored in");
 
       const explanation = bullets.length > 0
         ? `${bullets.slice(0, 3).join(", ")} drive this projection.`
@@ -1524,7 +1672,7 @@ const buildEventPrediction = (
     simulations,
     confidence,
     updatedAt: new Date().toISOString(),
-    model: "Racing Pace Blend v1 (qualifying + practice + season form)",
+    model: "Racing Pace Blend v2 (qualifying + practice + cross-season form)",
     entries: predictionEntries,
   };
 };
@@ -1800,7 +1948,11 @@ const computeRacingChampionshipProbabilities = (
     const recentFinishScore = normalizeInverseRank(profile.recentAvgFinish, starterCount * 0.6);
     const winRateScore = Math.max(0, Math.min(1, profile.currentWins / Math.max(1, profile.starts)));
     const top5RateScore = Math.max(0, Math.min(1, profile.top5Count / Math.max(1, profile.starts)));
-    const continuityPenalty = Math.max(0, 0.35 - (profile.starts / 20));
+    const aggRow = aggregate.get(profile.id);
+    const hasPriorData = aggRow ? aggRow.recentFinishes.length > aggRow.starts : false;
+    const continuityPenalty = hasPriorData
+      ? Math.max(0, 0.18 - (profile.starts / 20))
+      : Math.max(0, 0.35 - (profile.starts / 20));
 
     const skill = (
       (pointsScore * 0.34) +
@@ -2242,7 +2394,11 @@ export const fetchRacingEventBundle = async (sport: Sport, eventId: string): Pro
   const venueMeta = buildRacingVenueAndLocation(event, raceCompetition);
 
   const snapshot = await fetchSeasonDataSnapshot(sport);
-  const aggregate = snapshot ? buildSeasonDriverAggregate(sport, snapshot.events) : new Map<string, DriverAggregateRow>();
+  const currentAggregate = snapshot ? buildSeasonDriverAggregate(sport, snapshot.events) : new Map<string, DriverAggregateRow>();
+  const prevSnapshot = snapshot ? await fetchPreviousSeasonSnapshot(sport, snapshot.seasonYear) : null;
+  const prevAggregate = prevSnapshot ? buildSeasonDriverAggregate(sport, prevSnapshot.events) : null;
+  const completedStoreFinishes = extractFinishDataFromCompletedStore(sport);
+  const aggregate = buildCrossSeasonDriverAggregate(currentAggregate, prevAggregate, completedStoreFinishes);
   const standings = await fetchRacingStandingsPayload(sport);
   const prediction = buildEventPrediction(sport, String(event?.id || eventId), orderedSessions, aggregate, standings);
 
@@ -2332,13 +2488,17 @@ export const fetchRacingStandingsPayload = async (sport: Sport): Promise<RacingS
     .filter((table) => table.entries.length > 0);
 
   const snapshot = await fetchSeasonDataSnapshot(sport);
-  const aggregate = snapshot ? buildSeasonDriverAggregate(sport, snapshot.events) : new Map<string, DriverAggregateRow>();
-  const derivedTable = await buildDerivedStandingsTable(sport, aggregate);
+  const currentAggregate = snapshot ? buildSeasonDriverAggregate(sport, snapshot.events) : new Map<string, DriverAggregateRow>();
+  const derivedTable = await buildDerivedStandingsTable(sport, currentAggregate);
   const includeDerivedTable = derivedTable.entries.length > 0;
   let mergedTables = includeDerivedTable ? [derivedTable, ...officialTables] : officialTables;
   let championshipModel: RacingChampionshipProbabilityModel | null = null;
   if (snapshot) {
-    championshipModel = computeRacingChampionshipProbabilities(sport, snapshot, aggregate, mergedTables);
+    const prevSnapshot = await fetchPreviousSeasonSnapshot(sport, snapshot.seasonYear);
+    const prevAggregate = prevSnapshot ? buildSeasonDriverAggregate(sport, prevSnapshot.events) : null;
+    const completedStoreFinishes = extractFinishDataFromCompletedStore(sport);
+    const crossSeasonAggregate = buildCrossSeasonDriverAggregate(currentAggregate, prevAggregate, completedStoreFinishes);
+    championshipModel = computeRacingChampionshipProbabilities(sport, snapshot, crossSeasonAggregate, mergedTables);
     if (championshipModel) {
       mergedTables = applyRacingChampionshipProbabilities(sport, mergedTables, championshipModel);
     }

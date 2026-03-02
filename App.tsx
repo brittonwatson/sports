@@ -55,9 +55,9 @@ const RANKED_LEAGUES: Sport[] = ['NCAAF', 'NCAAM', 'NCAAW'];
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID?.trim() || '';
 const ENABLE_RUNTIME_SYNC = import.meta.env.VITE_ENABLE_RUNTIME_SYNC === 'true';
 const ALL_VIEW_MODES: ViewMode[] = ['LIVE', 'UPCOMING', 'SCORES', 'STANDINGS', 'BRACKET', 'RANKINGS', 'CALENDAR', 'TEAMS', 'LEAGUE_STATS'];
-const PREDICTION_MODEL_VERSION = '2026-03-01-r7';
+const PREDICTION_MODEL_VERSION = '2026-03-01-r8';
 const GAME_RENDER_BATCH = 36;
-const RACING_VIEW_BLOCKLIST: ViewMode[] = ['BRACKET', 'RANKINGS', 'TEAMS', 'LEAGUE_STATS'];
+const RACING_VIEW_BLOCKLIST: ViewMode[] = ['BRACKET', 'RANKINGS', 'TEAMS'];
 
 type ProbabilityModule = typeof import('./services/probabilities/index');
 let probabilityModulePromise: Promise<ProbabilityModule> | null = null;
@@ -451,6 +451,12 @@ export const App: React.FC = () => {
     modelVersion?: string;
   }>>(new Map());
   const activeRequestId = useRef<string | null>(null);
+  const selectedGameRef = useRef(selectedGame);
+  selectedGameRef.current = selectedGame;
+  const selectedTeamRef = useRef(selectedTeam);
+  selectedTeamRef.current = selectedTeam;
+  const selectedTabRef = useRef(selectedTab);
+  selectedTabRef.current = selectedTab;
   const isTabSwitch = useRef(true);
   const lastScrolledGameId = useRef<string | null>(null);
   const isApplyingPopState = useRef(false);
@@ -458,6 +464,8 @@ export const App: React.FC = () => {
   const loadRequestVersionRef = useRef(0);
   const liveDetailRequestVersionRef = useRef<Map<string, number>>(new Map());
   const forceLiveRefreshOnNextLoad = useRef(false);
+  const isBackgroundFetchInFlight = useRef(false);
+  const conferenceMapCache = useRef<Map<string, Map<string, string>>>(new Map());
   const seenFinishedSnapshots = useRef<Map<string, string>>(new Map());
 
   // Filter State
@@ -495,10 +503,12 @@ export const App: React.FC = () => {
     }
 
     if (seenFinishedSnapshots.current.size > 6000) {
-      const keys = Array.from(seenFinishedSnapshots.current.keys());
-      keys.slice(0, seenFinishedSnapshots.current.size - 4000).forEach((key) => {
+      let toRemove = seenFinishedSnapshots.current.size - 4000;
+      for (const key of seenFinishedSnapshots.current.keys()) {
+        if (toRemove <= 0) break;
         seenFinishedSnapshots.current.delete(key);
-      });
+        toRemove--;
+      }
     }
 
     setGameRegistry((prev) => {
@@ -867,21 +877,27 @@ export const App: React.FC = () => {
 
   useEffect(() => {
       if (RANKED_LEAGUES.includes(selectedTab as Sport)) {
-          const loadConferences = async () => {
-              try {
-                  const groups = await fetchStandings(selectedTab as Sport, 'DIVISION');
-                  const map = new Map<string, string>();
-                  groups.forEach(group => {
-                      group.standings.forEach(team => {
-                          map.set(team.team.id, group.name);
+          const cached = conferenceMapCache.current.get(selectedTab);
+          if (cached) {
+              setConferenceMap(cached);
+          } else {
+              const loadConferences = async () => {
+                  try {
+                      const groups = await fetchStandings(selectedTab as Sport, 'DIVISION');
+                      const map = new Map<string, string>();
+                      groups.forEach(group => {
+                          group.standings.forEach(team => {
+                              map.set(team.team.id, group.name);
+                          });
                       });
-                  });
-                  setConferenceMap(map);
-              } catch (e) {
-                  console.error("Failed to load conference map", e);
-              }
-          };
-          loadConferences();
+                      conferenceMapCache.current.set(selectedTab, map);
+                      setConferenceMap(map);
+                  } catch (e) {
+                      console.error("Failed to load conference map", e);
+                  }
+              };
+              loadConferences();
+          }
       } else {
           setConferenceMap(new Map());
       }
@@ -1099,12 +1115,14 @@ export const App: React.FC = () => {
   const loadData = async (tab: Tab, mode: ViewMode, isBackground = false, forceLiveRefresh = false) => {
     const requestVersion = ++loadRequestVersionRef.current;
     if (tab === 'METHODOLOGY' || selectedTeam || mode === 'CALENDAR') return;
+    if (isBackground && isBackgroundFetchInFlight.current) return;
 
+    if (isBackground) isBackgroundFetchInFlight.current = true;
     if (!isBackground) {
         setIsLoading(true);
         setError(null);
         if (mode === 'STANDINGS' || mode === 'RANKINGS' || mode === 'TEAMS' || mode === 'LEAGUE_STATS') setStandings([]);
-        if (mode !== 'STANDINGS' || tab === 'HOME' || !RACING_LEAGUES.includes(tab as Sport)) setRacingStandings(null);
+        if ((mode !== 'STANDINGS' && mode !== 'LEAGUE_STATS') || tab === 'HOME' || !RACING_LEAGUES.includes(tab as Sport)) setRacingStandings(null);
         if (mode === 'BRACKET') setBracketGames([]);
         if (mode !== 'LIVE' && mode !== 'UPCOMING' && mode !== 'SCORES') setGames([]);
     }
@@ -1120,6 +1138,9 @@ export const App: React.FC = () => {
                 setStandings(standingsData);
                 setRacingStandings(null);
             }
+        } else if (mode === 'LEAGUE_STATS' && tab !== 'HOME' && RACING_LEAGUES.includes(tab as Sport)) {
+            const racingData = await fetchRacingStandingsPayload(tab as Sport);
+            setRacingStandings(racingData);
         } else if ((mode === 'TEAMS' || mode === 'LEAGUE_STATS') && tab !== 'HOME') {
             const standingsData = await fetchStandings(tab, 'DIVISION');
             setStandings(standingsData);
@@ -1342,6 +1363,7 @@ export const App: React.FC = () => {
          setError("Failed to connect to sports database. This may be due to network restrictions or ad blockers.");
       }
     } finally {
+      if (isBackground) isBackgroundFetchInFlight.current = false;
       if (!isBackground) {
         setIsLoading(false);
       }
@@ -1422,8 +1444,8 @@ export const App: React.FC = () => {
       });
   }, []);
 
-  const handleGameToggle = async (game: Game) => {
-      if (selectedGame?.id === game.id) {
+  const handleGameToggle = useCallback(async (game: Game) => {
+      if (selectedGameRef.current?.id === game.id) {
           setNavigatedGameId(null);
           setSelectedGame(null);
           setPrediction(null);
@@ -1432,8 +1454,8 @@ export const App: React.FC = () => {
           activeRequestId.current = null;
       } else {
           const isRacingGame = RACING_LEAGUES.includes(game.league as Sport);
-          if (!selectedTeam && selectedTab !== 'HOME' && selectedTab !== 'METHODOLOGY') {
-              const selectedGameSeason = getSeasonKeyForGame(game, selectedTab as Sport);
+          if (!selectedTeamRef.current && selectedTabRef.current !== 'HOME' && selectedTabRef.current !== 'METHODOLOGY') {
+              const selectedGameSeason = getSeasonKeyForGame(game, selectedTabRef.current as Sport);
               if (selectedGameSeason !== 'unknown') {
                   setSelectedLeagueSeasonKey(selectedGameSeason);
               }
@@ -1558,6 +1580,12 @@ export const App: React.FC = () => {
                       });
                   }
               }
+              if (predictionCache.current.size > 200) {
+                  const iter = predictionCache.current.keys();
+                  for (let i = predictionCache.current.size - 150; i > 0; i--) {
+                      predictionCache.current.delete(iter.next().value!);
+                  }
+              }
           } catch (e) {
               console.error(e);
               if (activeRequestId.current === game.id && cachedDetails) {
@@ -1569,7 +1597,7 @@ export const App: React.FC = () => {
               }
           }
       }
-  };
+  }, [upsertGamesInRegistry]);
 
   useEffect(() => {
       if (!navigatedGameId || selectedTab === 'METHODOLOGY') return;
@@ -1598,12 +1626,12 @@ export const App: React.FC = () => {
       selectedGame?.id,
   ]);
 
-  const handleTeamClick = (teamId: string, league: Sport) => {
+  const handleTeamClick = useCallback((teamId: string, league: Sport) => {
       if (RACING_LEAGUES.includes(league)) return;
       setNavigatedGameId(null);
       setSelectedTeam({ id: teamId, league });
       setIsMenuOpen(false);
-  };
+  }, []);
 
   const handleGenerateAnalysis = async () => {
     if (!selectedGame || !prediction) return;
@@ -2413,7 +2441,7 @@ export const App: React.FC = () => {
                              <p className="text-sm text-slate-500 dark:text-slate-400 font-medium">
                                  {selectedTab === 'HOME' ? 'Live & Upcoming Action' : 
                                   viewMode === 'STANDINGS' && SOCCER_LEAGUES.includes(selectedTab as Sport) ? 'League Table' :
-                                  viewMode === 'LEAGUE_STATS' ? 'Season Statistics' :
+                                  viewMode === 'LEAGUE_STATS' ? (RACING_LEAGUES.includes(selectedTab as Sport) ? 'Driver Statistics' : 'Season Statistics') :
                                   `${viewMode === 'LIVE' ? 'Live Games' : viewMode === 'UPCOMING' ? (RACING_LEAGUES.includes(selectedTab as Sport) ? 'Upcoming Events' : 'Scheduled Matchups') : viewMode === 'SCORES' ? (RACING_LEAGUES.includes(selectedTab as Sport) ? 'Results' : 'Final Scores') : viewMode === 'CALENDAR' ? 'Season Calendar' : viewMode === 'TEAMS' ? 'Team Directory' : viewMode.charAt(0) + viewMode.slice(1).toLowerCase()}`}
                              </p>
                          </div>
@@ -2602,12 +2630,22 @@ export const App: React.FC = () => {
                         isLoading={isLoading}
                      />
                  ) : viewMode === 'LEAGUE_STATS' ? (
-                     <LeagueStatsView 
+                     RACING_LEAGUES.includes(selectedTab as Sport) ? (
+                         <RacingStandingsView
+                            sport={selectedTab as Sport}
+                            standings={racingStandings}
+                            isLoading={isLoading}
+                            selectedDriverId={selectedRacingDriver?.driverId || null}
+                            onDriverClick={handleRacingDriverClick}
+                         />
+                     ) : (
+                     <LeagueStatsView
                         groups={displayStandings}
                         sport={selectedTab as Sport}
                         onTeamClick={handleTeamClick}
                         seasonYear={selectedLeagueSeasonYear}
                      />
+                     )
                  ) : (
                      <div className="relative">
                          {isLoading ? (
