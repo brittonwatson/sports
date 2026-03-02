@@ -115,7 +115,7 @@ const SERIES_SCORING_RULES: Record<Sport, SeriesScoringRule | null> = {
   INDYCAR: {
     displayName: "INDYCAR",
     racePoints: [50, 40, 35, 32, 30, 28, 26, 24, 22, 20, 19, 18, 17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 5, 5, 5, 5, 5, 5, 5, 5],
-    notes: "Race finish points + bonus: 1 for pole, 1 for leading a lap, 2 for most laps led.",
+    notes: "Race finish points + bonus: 1 for pole, 1 for leading a lap, 2 for most laps led. Model table may undercount lap-led bonuses.",
   },
   NASCAR: {
     displayName: "NASCAR Cup",
@@ -1149,6 +1149,10 @@ const buildSeasonDriverAggregate = (
         if (sport === "INDYCAR" && isRaceCompetition(competition)) {
           const start = getCompetitorStart(competitor);
           if (start === 1) bonus += 1;
+          // Lap-led bonuses (+1 led any lap, +2 most laps led) are
+          // awarded below in a second pass when lapsLead data is available.
+          // The core API season snapshot does NOT include lapsLead on
+          // competitors, so these bonuses only fire for full event bundles.
           const lapsLed = extractNumber(competitor?.lapsLead);
           if (lapsLed > 0) bonus += 1;
         }
@@ -1521,10 +1525,22 @@ const buildEventPrediction = (
   });
 
   const starterCount = participants.length;
+  const isLiveRace = raceSession.status === "in_progress";
+
+  // Build map of current running positions during a live race.
+  const livePositionByDriver = new Map<string, number>();
+  if (isLiveRace) {
+    participants.forEach((p) => {
+      if (p.finishPosition && p.finishPosition > 0) {
+        livePositionByDriver.set(p.competitorId, p.finishPosition);
+      }
+    });
+  }
+  const hasLivePositions = livePositionByDriver.size > 0;
 
   // --- Bayesian finish-distribution model for each driver ---
   // Base pace comes from actual race finishes (cross-season aggregate).
-  // Qualifying and practice adjust the estimate for THIS specific race.
+  // Qualifying, practice, and live running order adjust the estimate.
   const PRIOR_STRENGTH = 3;
   const priorMean = starterCount * 0.5;
   const priorStdDev = starterCount * 0.28;
@@ -1539,6 +1555,7 @@ const buildEventPrediction = (
     const startPosition = participant.startPosition;
     const seasonRank = seasonRankByDriver.get(participant.competitorId) || starterCount;
     const seasonPoints = pointsByDriver.get(participant.competitorId) || aggregateRow?.points || 0;
+    const livePosition = livePositionByDriver.get(participant.competitorId);
 
     // Estimate expected finish from historical race results.
     let basePace: number;
@@ -1562,12 +1579,22 @@ const buildEventPrediction = (
     }
 
     // Blend in this-weekend session data when available.
-    // Qualifying is the strongest this-race signal; practice is weaker.
+    // Qualifying is the strongest pre-race signal; practice is weaker.
+    // During a live race, current running order is the dominant signal.
     const hasQualifying = qualifyingRank !== undefined;
     const hasPractice = practiceRank !== undefined;
+    const hasLivePos = livePosition !== undefined && livePosition > 0;
 
     let expectedFinish = basePace;
-    if (hasQualifying && hasPractice) {
+    if (hasLivePos) {
+      // Live race: current running order is the strongest signal.
+      // Blend: 50% live position, 20% qualifying, 30% historical pace
+      if (hasQualifying) {
+        expectedFinish = livePosition! * 0.50 + qualifyingRank! * 0.20 + basePace * 0.30;
+      } else {
+        expectedFinish = livePosition! * 0.55 + basePace * 0.45;
+      }
+    } else if (hasQualifying && hasPractice) {
       // Qualifying (30%) + practice (10%) + historical pace (60%)
       expectedFinish = basePace * 0.60 + qualifyingRank! * 0.30 + practiceRank! * 0.10;
     } else if (hasQualifying) {
@@ -1583,8 +1610,10 @@ const buildEventPrediction = (
 
     // Reduce variance when we have this-race data (qualifying/practice
     // tell us how competitive the driver is THIS weekend).
+    // Live race data reduces variance the most — positions are partially settled.
     let finishStdDev = baseStdDev;
-    if (hasQualifying) finishStdDev *= 0.85;
+    if (hasLivePos) finishStdDev *= 0.60;
+    else if (hasQualifying) finishStdDev *= 0.85;
     if (hasPractice) finishStdDev *= 0.92;
 
     const recentAvgFinish = finishes.length > 0
@@ -1602,6 +1631,7 @@ const buildEventPrediction = (
       qualifyingRank,
       practiceRank,
       startPosition,
+      livePosition,
     };
   });
 
@@ -1654,16 +1684,17 @@ const buildEventPrediction = (
       const top5 = top5Counts.get(row.participant.competitorId) || 0;
 
       const bullets: string[] = [];
-      if (row.qualifyingRank && row.qualifyingRank <= 5) bullets.push(`qualifying P${row.qualifyingRank}`);
-      if (row.practiceRank && row.practiceRank <= 5) bullets.push(`practice avg P${row.practiceRank.toFixed(1)}`);
+      if (row.livePosition && row.livePosition > 0) bullets.push(`running P${row.livePosition}`);
+      if (row.qualifyingRank) bullets.push(`qualified P${row.qualifyingRank}`);
+      if (row.practiceRank && row.practiceRank <= 10) bullets.push(`practice avg P${row.practiceRank.toFixed(1)}`);
       if (row.seasonRank && row.seasonRank <= 5) bullets.push(`season rank #${row.seasonRank}`);
       if (row.recentAvgFinish && row.recentAvgFinish <= 7) bullets.push(`recent avg finish ${row.recentAvgFinish.toFixed(1)}`);
-      if (row.startPosition && row.startPosition <= 5) bullets.push(`starting P${row.startPosition}`);
+      if (!row.livePosition && row.startPosition && row.startPosition <= 10) bullets.push(`starting P${row.startPosition}`);
       const aggRow = aggregate.get(row.participant.competitorId);
       if (aggRow && aggRow.recentFinishes.length > aggRow.starts) bullets.push("prior season form factored in");
 
       const explanation = bullets.length > 0
-        ? `${bullets.slice(0, 3).join(", ")} drive this projection.`
+        ? `${bullets.slice(0, 4).join(", ")} drive this projection.`
         : "Projection is driven mostly by season form and current-session data.";
 
       return {
@@ -1698,9 +1729,10 @@ const buildEventPrediction = (
   const totalFinishes = featureRows.reduce((sum, row) => sum + (aggregate.get(row.participant.competitorId)?.recentFinishes.length || 0), 0);
   const avgFinishesPerDriver = totalFinishes / Math.max(1, featureRows.length);
   const sampleCoverage = Math.min(1, (
-    (hasQualifying ? 0.36 : 0) +
-    (hasPractice ? 0.22 : 0) +
-    (Math.min(1, avgFinishesPerDriver / 8) * 0.42)
+    (hasLivePositions ? 0.40 : 0) +
+    (hasQualifying ? 0.28 : 0) +
+    (hasPractice ? 0.12 : 0) +
+    (Math.min(1, avgFinishesPerDriver / 8) * 0.20)
   ));
   const confidence = Math.max(0.2, Math.min(0.97, (sampleCoverage * 0.65) + (Math.min(1, separation / 12) * 0.35)));
 
@@ -1710,7 +1742,7 @@ const buildEventPrediction = (
     simulations,
     confidence,
     updatedAt: new Date().toISOString(),
-    model: "Racing Pace Blend v3 (finish-distribution + qualifying + practice)",
+    model: "Racing Pace Blend v4 (finish-distribution + live-position + qualifying + practice)",
     entries: predictionEntries,
   };
 };
