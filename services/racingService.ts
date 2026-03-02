@@ -1500,80 +1500,93 @@ const buildEventPrediction = (
   });
 
   const starterCount = participants.length;
+
+  // --- Bayesian finish-distribution model for each driver ---
+  // Base pace comes from actual race finishes (cross-season aggregate).
+  // Qualifying and practice adjust the estimate for THIS specific race.
+  const PRIOR_STRENGTH = 3;
+  const priorMean = starterCount * 0.5;
+  const priorStdDev = starterCount * 0.28;
+  const MIN_EMPIRICAL_STD_DEV = 1.5;
+
   const featureRows = participants.map((participant) => {
     const aggregateRow = aggregate.get(participant.competitorId);
-    const starts = Math.max(1, aggregateRow?.starts || 0);
-    const avgFinish = aggregateRow && aggregateRow.starts > 0
-      ? aggregateRow.finishSum / aggregateRow.starts
-      : starterCount / 2;
-    const recentAvgFinish = aggregateRow && aggregateRow.recentFinishes.length > 0
-      ? aggregateRow.recentFinishes.slice(-5).reduce((sum, value) => sum + value, 0) / Math.min(5, aggregateRow.recentFinishes.length)
-      : avgFinish;
+    const finishes = aggregateRow?.recentFinishes || [];
+    const starts = aggregateRow?.starts || 0;
+    const qualifyingRank = qualifyingRankByDriver.get(participant.competitorId);
+    const practiceRank = practiceRankByDriver.get(participant.competitorId);
+    const startPosition = participant.startPosition;
+    const seasonRank = seasonRankByDriver.get(participant.competitorId) || starterCount;
+    const seasonPoints = pointsByDriver.get(participant.competitorId) || aggregateRow?.points || 0;
+
+    // Estimate expected finish from historical race results.
+    let basePace: number;
+    let baseStdDev: number;
+
+    if (finishes.length > 0) {
+      const weights = finishes.map((_, i) => 0.5 + 0.5 * ((i + 1) / finishes.length));
+      const totalWeight = weights.reduce((s, w) => s + w, 0);
+      const empiricalMean = finishes.reduce((s, f, i) => s + f * weights[i], 0) / totalWeight;
+
+      basePace = (PRIOR_STRENGTH * priorMean + totalWeight * empiricalMean) / (PRIOR_STRENGTH + totalWeight);
+
+      const empiricalVar = finishes.reduce((s, f, i) => s + weights[i] * (f - empiricalMean) ** 2, 0) / totalWeight;
+      const empiricalStdDev = Math.sqrt(Math.max(empiricalVar, 0));
+
+      const shrinkage = PRIOR_STRENGTH / (PRIOR_STRENGTH + totalWeight);
+      baseStdDev = shrinkage * priorStdDev + (1 - shrinkage) * Math.max(empiricalStdDev, MIN_EMPIRICAL_STD_DEV);
+    } else {
+      basePace = priorMean;
+      baseStdDev = priorStdDev;
+    }
+
+    // Blend in this-weekend session data when available.
+    // Qualifying is the strongest this-race signal; practice is weaker.
+    const hasQualifying = qualifyingRank !== undefined;
+    const hasPractice = practiceRank !== undefined;
+
+    let expectedFinish = basePace;
+    if (hasQualifying && hasPractice) {
+      // Qualifying (30%) + practice (10%) + historical pace (60%)
+      expectedFinish = basePace * 0.60 + qualifyingRank! * 0.30 + practiceRank! * 0.10;
+    } else if (hasQualifying) {
+      // Qualifying (35%) + historical pace (65%)
+      expectedFinish = basePace * 0.65 + qualifyingRank! * 0.35;
+    } else if (hasPractice) {
+      // Practice (15%) + historical pace (85%)
+      expectedFinish = basePace * 0.85 + practiceRank! * 0.15;
+    } else if (startPosition && startPosition > 0) {
+      // Grid position as weak fallback (20%)
+      expectedFinish = basePace * 0.80 + startPosition * 0.20;
+    }
+
+    // Reduce variance when we have this-race data (qualifying/practice
+    // tell us how competitive the driver is THIS weekend).
+    let finishStdDev = baseStdDev;
+    if (hasQualifying) finishStdDev *= 0.85;
+    if (hasPractice) finishStdDev *= 0.92;
+
+    const recentAvgFinish = finishes.length > 0
+      ? finishes.slice(-5).reduce((s, f) => s + f, 0) / Math.min(5, finishes.length)
+      : basePace;
 
     return {
       participant,
-      seasonRank: seasonRankByDriver.get(participant.competitorId) || starterCount,
-      seasonPoints: pointsByDriver.get(participant.competitorId) || aggregateRow?.points || 0,
+      expectedFinish,
+      finishStdDev,
+      seasonRank,
+      seasonPoints,
       starts,
-      avgFinish,
       recentAvgFinish,
-      winRate: aggregateRow && starts > 0 ? aggregateRow.wins / starts : 0,
-      top5Rate: aggregateRow && starts > 0 ? aggregateRow.top5 / starts : 0,
-      qualifyingRank: qualifyingRankByDriver.get(participant.competitorId),
-      practiceRank: practiceRankByDriver.get(participant.competitorId),
-      startPosition: participant.startPosition,
-    };
-  });
-
-  const normalizeInverseRank = (value: number | undefined, fallback: number): number => {
-    const safe = value && Number.isFinite(value) && value > 0 ? value : fallback;
-    return (starterCount + 1 - Math.min(starterCount, safe)) / starterCount;
-  };
-
-  const pointsMax = Math.max(...featureRows.map((row) => row.seasonPoints), 1);
-
-  const scored = featureRows.map((row) => {
-    const seasonRankScore = normalizeInverseRank(row.seasonRank, starterCount / 2);
-    const qualifyingScore = normalizeInverseRank(row.qualifyingRank, starterCount * 0.65);
-    const practiceScore = normalizeInverseRank(row.practiceRank, starterCount * 0.65);
-    const startScore = normalizeInverseRank(row.startPosition, starterCount * 0.7);
-    const avgFinishScore = normalizeInverseRank(row.avgFinish, starterCount * 0.55);
-    const recentScore = normalizeInverseRank(row.recentAvgFinish, starterCount * 0.55);
-    const pointsScore = Math.max(0, Math.min(1, row.seasonPoints / pointsMax));
-    const winRateScore = Math.max(0, Math.min(1, row.winRate));
-    const top5RateScore = Math.max(0, Math.min(1, row.top5Rate));
-
-    const hasQualifying = row.qualifyingRank !== undefined;
-    const hasPractice = row.practiceRank !== undefined;
-
-    const composite = (
-      (seasonRankScore * 0.18) +
-      (pointsScore * 0.15) +
-      (avgFinishScore * 0.16) +
-      (recentScore * 0.17) +
-      (winRateScore * 0.10) +
-      (top5RateScore * 0.08) +
-      ((hasQualifying ? qualifyingScore : startScore) * 0.11) +
-      ((hasPractice ? practiceScore : 0.5) * 0.05)
-    );
-
-    const aggregateRow = aggregate.get(row.participant.competitorId);
-    const hasPriorData = aggregateRow ? aggregateRow.recentFinishes.length > aggregateRow.starts : false;
-    const lowStartsPenalty = hasPriorData
-      ? Math.max(0, 0.2 - (row.starts / 20))
-      : Math.max(0, 0.4 - (row.starts / 20));
-    const variance = 0.8 + (hasQualifying ? 0 : 0.2) + (hasPractice ? 0 : 0.12) + lowStartsPenalty;
-
-    return {
-      ...row,
-      composite,
-      variance,
+      qualifyingRank,
+      practiceRank,
+      startPosition,
     };
   });
 
   const simulations = 10000;
-  const seed = scored
-    .map((row) => `${row.participant.competitorId}:${row.composite.toFixed(6)}:${row.variance.toFixed(6)}`)
+  const seed = featureRows
+    .map((row) => `${row.participant.competitorId}:${row.expectedFinish.toFixed(4)}:${row.finishStdDev.toFixed(4)}`)
     .join("|")
     .split("")
     .reduce((acc, char) => ((acc * 31) + char.charCodeAt(0)) >>> 0, 2166136261);
@@ -1598,10 +1611,10 @@ const buildEventPrediction = (
   const top5Counts = new Map<string, number>();
 
   for (let sim = 0; sim < simulations; sim += 1) {
-    const sampled = scored
+    const sampled = featureRows
       .map((row) => ({
         id: row.participant.competitorId,
-        value: sampleNormal(-row.composite, row.variance),
+        value: sampleNormal(row.expectedFinish, row.finishStdDev),
       }))
       .sort((a, b) => a.value - b.value);
 
@@ -1613,7 +1626,7 @@ const buildEventPrediction = (
     });
   }
 
-  const predictionEntries: RacingEventPredictionEntry[] = scored
+  const predictionEntries: RacingEventPredictionEntry[] = featureRows
     .map((row) => {
       const wins = winCounts.get(row.participant.competitorId) || 0;
       const podiums = podiumCounts.get(row.participant.competitorId) || 0;
@@ -1649,7 +1662,7 @@ const buildEventPrediction = (
         winProbability: (wins / simulations) * 100,
         podiumProbability: (podiums / simulations) * 100,
         top5Probability: (top5 / simulations) * 100,
-        compositeRating: row.composite,
+        compositeRating: row.expectedFinish,
         explanation,
       };
     })
@@ -1659,10 +1672,14 @@ const buildEventPrediction = (
   const topWin = predictionEntries[0]?.winProbability || 0;
   const secondWin = predictionEntries[1]?.winProbability || 0;
   const separation = Math.max(0, topWin - secondWin);
+  const hasQualifying = qualifyingSession !== undefined;
+  const hasPractice = practiceSessions.length > 0;
+  const totalFinishes = featureRows.reduce((sum, row) => sum + (aggregate.get(row.participant.competitorId)?.recentFinishes.length || 0), 0);
+  const avgFinishesPerDriver = totalFinishes / Math.max(1, featureRows.length);
   const sampleCoverage = Math.min(1, (
-    (qualifyingSession ? 0.36 : 0) +
-    (practiceSessions.length > 0 ? 0.22 : 0) +
-    (Math.min(1, featureRows.reduce((sum, row) => sum + row.starts, 0) / (featureRows.length * 12)) * 0.42)
+    (hasQualifying ? 0.36 : 0) +
+    (hasPractice ? 0.22 : 0) +
+    (Math.min(1, avgFinishesPerDriver / 8) * 0.42)
   ));
   const confidence = Math.max(0.2, Math.min(0.97, (sampleCoverage * 0.65) + (Math.min(1, separation / 12) * 0.35)));
 
@@ -1672,7 +1689,7 @@ const buildEventPrediction = (
     simulations,
     confidence,
     updatedAt: new Date().toISOString(),
-    model: "Racing Pace Blend v2 (qualifying + practice + cross-season form)",
+    model: "Racing Pace Blend v3 (finish-distribution + qualifying + practice)",
     entries: predictionEntries,
   };
 };
@@ -1882,42 +1899,64 @@ const computeRacingChampionshipProbabilities = (
   const { teamKeyByDriverId, numberByDriverId } = buildDriverMetadataFromSnapshot(snapshot);
 
   const starterCount = Math.max(2, primaryDriverTable.entries.length);
+
+  // --- Bayesian finish-position model ---
+  // Each driver's future race performance is estimated from their actual
+  // finish positions (current season + previous season backfill).
+  // We use Bayesian shrinkage toward a mid-field prior so that drivers with
+  // limited data get wider uncertainty instead of extreme confidence.
+  const PRIOR_STRENGTH = 3;
+  const priorMean = starterCount * 0.5;
+  const priorStdDev = starterCount * 0.28;
+  const MIN_EMPIRICAL_STD_DEV = 1.5;
+
   const driverProfiles = primaryDriverTable.entries.map((entry) => {
-    const aggregateRow = aggregate.get(String(entry.competitorId));
-    const starts = Math.max(
-      1,
-      getNumericStatFromEntry(entry, ["starts", "races", "events", "gp"]) ?? aggregateRow?.starts ?? 0,
-    );
+    const aggRow = aggregate.get(String(entry.competitorId));
+    const finishes = aggRow?.recentFinishes || [];
     const currentPoints = Math.max(
       0,
-      getNumericStatFromEntry(entry, ["points", "championshipPts", "pts"]) ?? aggregateRow?.points ?? 0,
+      getNumericStatFromEntry(entry, ["points", "championshipPts", "pts"]) ?? aggRow?.points ?? 0,
     );
     const currentWins = Math.max(
       0,
-      getNumericStatFromEntry(entry, ["wins", "win"]) ?? aggregateRow?.wins ?? 0,
+      getNumericStatFromEntry(entry, ["wins", "win"]) ?? aggRow?.wins ?? 0,
     );
-    const top5Count = Math.max(
-      0,
-      getNumericStatFromEntry(entry, ["top5", "top 5"]) ?? aggregateRow?.top5 ?? 0,
-    );
-    const avgFinish = (
-      getNumericStatFromEntry(entry, ["avgFinish", "averageFinish", "avg"]) ??
-      (aggregateRow && aggregateRow.starts > 0 ? aggregateRow.finishSum / aggregateRow.starts : starterCount / 2)
-    );
-    const recentAvgFinish = aggregateRow && aggregateRow.recentFinishes.length > 0
-      ? aggregateRow.recentFinishes.slice(-5).reduce((sum, value) => sum + value, 0) / Math.min(5, aggregateRow.recentFinishes.length)
-      : avgFinish;
     const teamKey = normalizeNameKey(entry.teamName || entry.manufacturer || "") || teamKeyByDriverId.get(String(entry.competitorId)) || "";
+
+    let expectedFinish: number;
+    let finishStdDev: number;
+
+    if (finishes.length > 0) {
+      // Recency-weighted: later entries in the array are more recent and
+      // get higher weight (linear ramp from 0.5 to 1.0).
+      const weights = finishes.map((_, i) => 0.5 + 0.5 * ((i + 1) / finishes.length));
+      const totalWeight = weights.reduce((s, w) => s + w, 0);
+      const empiricalMean = finishes.reduce((s, f, i) => s + f * weights[i], 0) / totalWeight;
+
+      // Bayesian shrinkage: blend empirical mean toward the prior.
+      // With 0 observations we get the prior; with many observations
+      // the empirical mean dominates.
+      expectedFinish = (PRIOR_STRENGTH * priorMean + totalWeight * empiricalMean) / (PRIOR_STRENGTH + totalWeight);
+
+      // Individual consistency from weighted variance of actual finishes.
+      const empiricalVar = finishes.reduce((s, f, i) => s + weights[i] * (f - empiricalMean) ** 2, 0) / totalWeight;
+      const empiricalStdDev = Math.sqrt(Math.max(empiricalVar, 0));
+
+      // Blend variance with prior: more data -> trust empirical more.
+      const shrinkage = PRIOR_STRENGTH / (PRIOR_STRENGTH + totalWeight);
+      finishStdDev = shrinkage * priorStdDev + (1 - shrinkage) * Math.max(empiricalStdDev, MIN_EMPIRICAL_STD_DEV);
+    } else {
+      // No finish data at all: fall back to uninformative prior.
+      expectedFinish = priorMean;
+      finishStdDev = priorStdDev;
+    }
 
     return {
       id: String(entry.competitorId),
       currentPoints,
       currentWins,
-      starts,
-      top5Count,
-      seasonRank: Math.max(1, Number(entry.rank) || starterCount),
-      avgFinish,
-      recentAvgFinish,
+      expectedFinish,
+      finishStdDev,
       teamKey,
       number: entry.vehicleNumber || numberByDriverId.get(String(entry.competitorId)) || "",
     };
@@ -1928,48 +1967,7 @@ const computeRacingChampionshipProbabilities = (
   const { remainingRaces, remainingSprints } = countRemainingChampionshipSessions(sport, snapshot);
   const totalRemainingSessions = remainingRaces + remainingSprints;
 
-  const pointsValues = driverProfiles.map((profile) => profile.currentPoints);
-  const minPoints = Math.min(...pointsValues);
-  const maxPoints = Math.max(...pointsValues);
-  const normalizeRange = (value: number, min: number, max: number): number => {
-    if (!Number.isFinite(value)) return 0;
-    if (!Number.isFinite(min) || !Number.isFinite(max) || Math.abs(max - min) < 1e-9) return 0.5;
-    return Math.max(0, Math.min(1, (value - min) / (max - min)));
-  };
-  const normalizeInverseRank = (value: number, fallback: number): number => {
-    const safe = Number.isFinite(value) && value > 0 ? value : fallback;
-    return (starterCount + 1 - Math.min(starterCount, safe)) / starterCount;
-  };
-
-  const scoredDrivers = driverProfiles.map((profile) => {
-    const pointsScore = normalizeRange(profile.currentPoints, minPoints, maxPoints);
-    const rankScore = normalizeInverseRank(profile.seasonRank, starterCount * 0.65);
-    const avgFinishScore = normalizeInverseRank(profile.avgFinish, starterCount * 0.6);
-    const recentFinishScore = normalizeInverseRank(profile.recentAvgFinish, starterCount * 0.6);
-    const winRateScore = Math.max(0, Math.min(1, profile.currentWins / Math.max(1, profile.starts)));
-    const top5RateScore = Math.max(0, Math.min(1, profile.top5Count / Math.max(1, profile.starts)));
-    const aggRow = aggregate.get(profile.id);
-    const hasPriorData = aggRow ? aggRow.recentFinishes.length > aggRow.starts : false;
-    const continuityPenalty = hasPriorData
-      ? Math.max(0, 0.18 - (profile.starts / 20))
-      : Math.max(0, 0.35 - (profile.starts / 20));
-
-    const skill = (
-      (pointsScore * 0.34) +
-      (rankScore * 0.16) +
-      (avgFinishScore * 0.15) +
-      (recentFinishScore * 0.20) +
-      (winRateScore * 0.10) +
-      (top5RateScore * 0.05)
-    );
-
-    return {
-      ...profile,
-      skill,
-      variance: 0.82 + continuityPenalty,
-    };
-  });
-
+  // --- Team setup (F1 constructors) ---
   let teamProfiles: Array<{ id: string; nameKey: string; currentPoints: number }> = [];
   let teamIndexByNameKey = new Map<string, number>();
   if (sport === "F1") {
@@ -1989,11 +1987,12 @@ const computeRacingChampionshipProbabilities = (
     }
   }
 
-  const driverTeamIndices = scoredDrivers.map((driver) => {
+  const driverTeamIndices = driverProfiles.map((driver) => {
     if (!driver.teamKey) return -1;
     return teamIndexByNameKey.has(driver.teamKey) ? (teamIndexByNameKey.get(driver.teamKey) as number) : -1;
   });
 
+  // --- Monte Carlo simulation ---
   const remainingForSimulation = Math.max(0, totalRemainingSessions);
   const simulations = remainingForSimulation <= 4
     ? 10000
@@ -2001,13 +2000,14 @@ const computeRacingChampionshipProbabilities = (
       ? 7000
       : 5000;
 
+  // Deterministic seeded PRNG for reproducible results.
   const seedBasis = [
     sport,
     snapshot.seasonYear,
     remainingRaces,
     remainingSprints,
-    ...scoredDrivers.map((driver) => `${driver.id}:${driver.currentPoints}:${driver.currentWins}:${driver.skill.toFixed(6)}:${driver.number}`),
-    ...teamProfiles.map((team) => `${team.id}:${team.currentPoints}`),
+    ...driverProfiles.map((d) => `${d.id}:${d.currentPoints}:${d.currentWins}:${d.expectedFinish.toFixed(4)}:${d.finishStdDev.toFixed(4)}:${d.number}`),
+    ...teamProfiles.map((t) => `${t.id}:${t.currentPoints}`),
   ].join("|");
   let randomSeed = seedBasis
     .split("")
@@ -2027,13 +2027,15 @@ const computeRacingChampionshipProbabilities = (
     return mean + (z * stdev);
   };
 
+  // F1 fastest-lap bonus: weighted pick from top-10 finishers.
+  // Better-paced drivers (lower expectedFinish) are more likely.
   const weightedPick = (indices: number[]): number => {
     if (indices.length === 0) return -1;
-    const weights = indices.map((driverIndex) => {
-      const skill = scoredDrivers[driverIndex]?.skill ?? 0.5;
-      return Math.max(0.1, 0.35 + skill);
+    const weights = indices.map((idx) => {
+      const ef = driverProfiles[idx]?.expectedFinish ?? starterCount / 2;
+      return Math.max(0.1, (starterCount + 1 - ef) / starterCount);
     });
-    const total = weights.reduce((sum, value) => sum + value, 0);
+    const total = weights.reduce((s, w) => s + w, 0);
     if (!Number.isFinite(total) || total <= 0) return indices[0];
     let marker = random() * total;
     for (let i = 0; i < indices.length; i += 1) {
@@ -2043,20 +2045,23 @@ const computeRacingChampionshipProbabilities = (
     return indices[indices.length - 1];
   };
 
-  const driverChampionCounts = new Array(scoredDrivers.length).fill(0);
+  const driverChampionCounts = new Array(driverProfiles.length).fill(0);
   const teamChampionCounts = new Array(teamProfiles.length).fill(0);
 
   for (let sim = 0; sim < simulations; sim += 1) {
-    const points = scoredDrivers.map((driver) => driver.currentPoints);
-    const wins = scoredDrivers.map((driver) => driver.currentWins);
-    const teamPoints = teamProfiles.map((team) => team.currentPoints);
+    // Start each simulation from actual current points & wins.
+    const points = driverProfiles.map((d) => d.currentPoints);
+    const wins = driverProfiles.map((d) => d.currentWins);
+    const teamPoints = teamProfiles.map((t) => t.currentPoints);
     const teamWins = new Array(teamProfiles.length).fill(0);
 
     const runSession = (pointsTable: number[], includeFastestLapBonus: boolean): void => {
-      const sampledOrder = scoredDrivers
+      // Sample each driver's finish from their individual distribution,
+      // then rank the samples to determine finishing order.
+      const sampledOrder = driverProfiles
         .map((driver, index) => ({
           index,
-          value: sampleNormal(-driver.skill, driver.variance),
+          value: sampleNormal(driver.expectedFinish, driver.finishStdDev),
         }))
         .sort((a, b) => a.value - b.value)
         .map((row) => row.index);
@@ -2101,6 +2106,7 @@ const computeRacingChampionshipProbabilities = (
       runSession(sprintPointTable, false);
     }
 
+    // Driver champion: highest points, tiebreak by wins.
     const topDriverPoints = Math.max(...points);
     let driverLeaderIndices = points
       .map((value, index) => ({ value, index }))
@@ -2115,6 +2121,7 @@ const computeRacingChampionshipProbabilities = (
       driverChampionCounts[index] += driverShare;
     });
 
+    // Team champion (F1 constructors): highest points, tiebreak by wins.
     if (teamProfiles.length > 0) {
       const topTeamPoints = Math.max(...teamPoints);
       let teamLeaderIndices = teamPoints
@@ -2133,7 +2140,7 @@ const computeRacingChampionshipProbabilities = (
   }
 
   const driverProbabilities = new Map<string, number>();
-  scoredDrivers.forEach((driver, index) => {
+  driverProfiles.forEach((driver, index) => {
     driverProbabilities.set(driver.id, (driverChampionCounts[index] || 0) / simulations);
   });
 
