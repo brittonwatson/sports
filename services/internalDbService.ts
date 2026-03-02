@@ -423,6 +423,12 @@ export const getInternalRacingEventBundle = (
   return events[String(eventId)] || null;
 };
 
+export const getInternalRacingEventsMap = (
+  sport: Sport,
+): Record<string, RacingEventBundle> | null => {
+  return runtimeDb.racingEventsBySport[sport] || null;
+};
+
 export const getInternalRacingDriverSeason = (
   sport: Sport,
   driverId: string,

@@ -22,6 +22,7 @@ import {
   getInternalRacingCalendar,
   getInternalRacingDriverSeason,
   getInternalRacingEventBundle,
+  getInternalRacingEventsMap,
   getInternalRacingStandings,
 } from "./internalDbService";
 import { extractNumber, fetchWithRetry } from "./utils";
@@ -700,7 +701,7 @@ const isPracticeCompetition = (competition: any): boolean => {
 
 const isQualifyingCompetition = (competition: any): boolean => {
   const typeText = normalizeCompetitionType(competition);
-  return typeText.includes("qualifying") || typeText.includes("shootout");
+  return typeText.includes("qualifying") || typeText.includes("shootout") || typeText === "qual";
 };
 
 const isSprintCompetition = (sport: Sport, competition: any): boolean => {
@@ -925,6 +926,35 @@ const fetchSeasonEventRefsForYear = async (sport: Sport, seasonYear: number): Pr
 const fetchSeasonDataSnapshot = async (sport: Sport): Promise<SeasonDataSnapshot | null> => {
   const nowMs = Date.now();
   const nowYear = new Date().getFullYear();
+
+  // --- Try internal DB first (avoids hundreds of ESPN API calls) ---
+  await ensureInternalSportLoaded(sport);
+  const internalEventsMap = getInternalRacingEventsMap(sport);
+  if (internalEventsMap && Object.keys(internalEventsMap).length > 0) {
+    const internalCalendar = getInternalRacingCalendar(sport);
+    const byYear = partitionInternalBundlesBySeason(internalEventsMap);
+    const internalCandidates = resolveSeasonYearCandidates();
+    for (const year of internalCandidates) {
+      const yearBundles = byYear.get(year);
+      if (!yearBundles || Object.keys(yearBundles).length === 0) continue;
+      const cacheKey = `${sport}:${year}`;
+      const cached = seasonDataCache.get(cacheKey);
+      if (cached && (Date.now() - cached.fetchedAt) < SEASON_DATA_CACHE_TTL_MS) {
+        return cached.data;
+      }
+      const snapshot = buildSeasonSnapshotFromInternalBundles(
+        sport, yearBundles,
+        year === internalCalendar?.seasonYear ? internalCalendar : null,
+      );
+      if (snapshot && snapshot.events.length > 0) {
+        snapshot.seasonYear = year;
+        seasonDataCache.set(cacheKey, { fetchedAt: Date.now(), data: snapshot });
+        return snapshot;
+      }
+    }
+  }
+
+  // --- Fall through to ESPN Core API ---
   const candidates = resolveSeasonYearCandidates();
   const snapshots: SeasonDataSnapshot[] = [];
 
@@ -1027,6 +1057,23 @@ const fetchPreviousSeasonSnapshot = async (
     return cached.data;
   }
 
+  // --- Try internal DB for previous season ---
+  await ensureInternalSportLoaded(sport);
+  const internalEventsMap = getInternalRacingEventsMap(sport);
+  if (internalEventsMap) {
+    const byYear = partitionInternalBundlesBySeason(internalEventsMap);
+    const prevBundles = byYear.get(prevYear);
+    if (prevBundles && Object.keys(prevBundles).length > 0) {
+      const snapshot = buildSeasonSnapshotFromInternalBundles(sport, prevBundles, null);
+      if (snapshot && snapshot.events.length > 0) {
+        snapshot.seasonYear = prevYear;
+        seasonDataCache.set(cacheKey, { fetchedAt: Date.now(), data: snapshot });
+        return snapshot;
+      }
+    }
+  }
+
+  // --- Fall through to ESPN Core API ---
   const refs = await fetchSeasonEventRefsForYear(sport, prevYear);
   if (refs.length === 0) return null;
 
@@ -1078,6 +1125,91 @@ const buildEntityMapForRefs = async (refs: string[]): Promise<Map<string, Entity
     map.set(entry.ref, entry.entity);
   });
   return map;
+};
+
+// ---------------------------------------------------------------------------
+// Bridge: convert internal RacingEventBundle objects into ESPN-like events
+// that buildSeasonDriverAggregate, buildDriverMetadataFromSnapshot,
+// computeRacingChampionshipProbabilities, and countRemainingChampionshipSessions
+// all expect.
+// ---------------------------------------------------------------------------
+
+const internalStatusToEspnState = (status: string): string => {
+  if (status === "finished") return "post";
+  if (status === "in_progress") return "in";
+  return "pre";
+};
+
+const buildSyntheticCompetitor = (c: RacingCompetitorResult, sport: Sport): any => ({
+  id: c.competitorId,
+  athlete: {
+    id: c.competitorId,
+    $ref: `${CORE_BASE}/sports/racing/leagues/${getLeagueSlug(sport)}/athletes/${c.competitorId}?${CORE_QUERY}`,
+    displayName: c.name,
+    shortDisplayName: c.shortName || c.name,
+    abbreviation: c.abbreviation,
+    displayNumber: c.vehicleNumber || undefined,
+    jersey: c.vehicleNumber || undefined,
+  },
+  vehicle: {
+    number: c.vehicleNumber || undefined,
+    team: c.teamName || undefined,
+    manufacturer: c.manufacturer || undefined,
+  },
+  order: c.finishPosition || 0,
+  startOrder: c.startPosition || 0,
+  startPosition: c.startPosition || 0,
+  winner: c.winner || false,
+  status: { type: { description: c.statusText || "", shortDetail: c.statusText || "" } },
+});
+
+const buildSyntheticEvent = (bundle: RacingEventBundle, sport: Sport): any => ({
+  id: bundle.eventId,
+  name: bundle.name,
+  shortName: bundle.shortName,
+  date: bundle.date,
+  endDate: bundle.endDate,
+  competitions: (bundle.sessions || []).map((session: RacingSessionResult) => ({
+    id: session.id,
+    date: session.date || bundle.date,
+    type: { text: session.name, abbreviation: session.shortName || session.name },
+    status: { type: { state: internalStatusToEspnState(session.status) } },
+    competitors: (session.competitors || []).map((c: RacingCompetitorResult) =>
+      buildSyntheticCompetitor(c, sport),
+    ),
+  })),
+});
+
+const partitionInternalBundlesBySeason = (
+  eventsById: Record<string, RacingEventBundle>,
+): Map<number, Record<string, RacingEventBundle>> => {
+  const byYear = new Map<number, Record<string, RacingEventBundle>>();
+  Object.entries(eventsById).forEach(([id, bundle]) => {
+    const year = new Date(bundle.date).getFullYear();
+    if (!Number.isFinite(year) || year < 2000) return;
+    if (!byYear.has(year)) byYear.set(year, {});
+    byYear.get(year)![id] = bundle;
+  });
+  return byYear;
+};
+
+const buildSeasonSnapshotFromInternalBundles = (
+  sport: Sport,
+  eventsById: Record<string, RacingEventBundle>,
+  calendar: RacingCalendarPayload | null,
+): SeasonDataSnapshot | null => {
+  const bundles = Object.values(eventsById);
+  if (bundles.length === 0) return null;
+  const syntheticEvents = bundles.map((b) => buildSyntheticEvent(b, sport));
+  const seasonYear = calendar?.seasonYear
+    || new Date(bundles[0].date).getFullYear()
+    || new Date().getFullYear();
+  return {
+    sport,
+    seasonYear,
+    eventRefs: [],
+    events: syntheticEvents,
+  };
 };
 
 const extractRaceCompetition = (event: any): any | null => {
@@ -2474,6 +2606,36 @@ export const fetchRacingEventBundle = async (sport: Sport, eventId: string): Pro
   if (internalBundle) {
     const hasLiveSession = (internalBundle.sessions || []).some((session) => session.status === "in_progress");
     if (!hasLiveSession) {
+      // Compute predictions for upcoming events (race session still scheduled).
+      const hasUpcomingRace = !internalBundle.prediction
+        && internalBundle.sessions.some((s) =>
+          s.status === "scheduled"
+          && (normalizeKey(s.name).includes("race") || s.competitors.length === 0),
+        );
+
+      if (hasUpcomingRace) {
+        const snapshot = await fetchSeasonDataSnapshot(sport);
+        const currentAggregate = snapshot
+          ? buildSeasonDriverAggregate(sport, snapshot.events)
+          : new Map<string, DriverAggregateRow>();
+        const prevSnapshot = snapshot
+          ? await fetchPreviousSeasonSnapshot(sport, snapshot.seasonYear)
+          : null;
+        const prevAggregate = prevSnapshot
+          ? buildSeasonDriverAggregate(sport, prevSnapshot.events)
+          : null;
+        const completedStoreFinishes = extractFinishDataFromCompletedStore(sport);
+        const aggregate = buildCrossSeasonDriverAggregate(currentAggregate, prevAggregate, completedStoreFinishes);
+        const standings = await fetchRacingStandingsPayload(sport);
+        const prediction = buildEventPrediction(
+          sport, String(internalBundle.eventId), internalBundle.sessions, aggregate, standings,
+        );
+        const enrichedBundle: RacingEventBundle = { ...internalBundle, prediction };
+        eventCache.set(cacheKey, { fetchedAt: Date.now(), data: enrichedBundle });
+        schedulePersistRacingPayloadCaches();
+        return enrichedBundle;
+      }
+
       eventCache.set(cacheKey, { fetchedAt: Date.now(), data: internalBundle });
       schedulePersistRacingPayloadCaches();
       return internalBundle;
@@ -2600,9 +2762,48 @@ export const fetchRacingStandingsPayload = async (sport: Sport): Promise<RacingS
   await ensureInternalSportLoaded(sport);
   const internalStandings = getInternalRacingStandings(sport);
   if (internalStandings && Array.isArray(internalStandings.tables) && internalStandings.tables.length > 0) {
-    standingsCache.set(cacheKey, { fetchedAt: Date.now(), data: internalStandings });
+    // Use internal standings as base but still run the championship probability model.
+    const snapshot = await fetchSeasonDataSnapshot(sport);
+    let mergedTables = [...internalStandings.tables];
+    let championshipModel: RacingChampionshipProbabilityModel | null = null;
+
+    if (snapshot) {
+      const currentAggregate = buildSeasonDriverAggregate(sport, snapshot.events);
+      const prevSnapshot = await fetchPreviousSeasonSnapshot(sport, snapshot.seasonYear);
+      const prevAggregate = prevSnapshot ? buildSeasonDriverAggregate(sport, prevSnapshot.events) : null;
+      const completedStoreFinishes = extractFinishDataFromCompletedStore(sport);
+      const crossSeasonAggregate = buildCrossSeasonDriverAggregate(currentAggregate, prevAggregate, completedStoreFinishes);
+
+      if (typeof console !== "undefined") {
+        console.warn(
+          `[racing] ${sport} standings pipeline (internal DB): snapshot yr=${snapshot.seasonYear}, `
+          + `prevSnapshot yr=${prevSnapshot?.seasonYear ?? "none"} events=${prevSnapshot?.events?.length ?? 0}, `
+          + `currentAgg=${currentAggregate.size} prevAgg=${prevAggregate?.size ?? 0} crossAgg=${crossSeasonAggregate.size}`,
+        );
+      }
+
+      championshipModel = computeRacingChampionshipProbabilities(sport, snapshot, prevSnapshot, crossSeasonAggregate, mergedTables);
+      if (championshipModel) {
+        mergedTables = applyRacingChampionshipProbabilities(sport, mergedTables, championshipModel);
+      }
+    }
+
+    const titleModelNote = championshipModel
+      ? `Title model: ${championshipModel.remainingRaces} races`
+        + (championshipModel.remainingSprints > 0 ? ` + ${championshipModel.remainingSprints} sprints` : "")
+        + ` remaining, ${championshipModel.simulations.toLocaleString()} Monte Carlo simulations.`
+      : "";
+    const enrichedPayload: RacingStandingsPayload = {
+      sport,
+      updatedAt: internalStandings.updatedAt || new Date().toISOString(),
+      note: internalStandings.note
+        ? `${internalStandings.note}${titleModelNote ? ` ${titleModelNote}` : ""}`
+        : titleModelNote || undefined,
+      tables: mergedTables,
+    };
+    standingsCache.set(cacheKey, { fetchedAt: Date.now(), data: enrichedPayload });
     schedulePersistRacingPayloadCaches();
-    return internalStandings;
+    return enrichedPayload;
   }
 
   const root = await fetchJsonSafe(buildCoreLeagueUrl(sport, "standings"));

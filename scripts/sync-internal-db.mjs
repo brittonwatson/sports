@@ -555,8 +555,8 @@ const toRacingSessionStatus = (state) => {
 };
 
 const normalizeRacingSessionType = (name) => {
-  const text = String(name || "").toLowerCase();
-  if (text.includes("qualifying") || text.includes("shootout")) return "qualifying";
+  const text = String(name || "").toLowerCase().trim();
+  if (text.includes("qualifying") || text.includes("shootout") || text === "qual") return "qualifying";
   if (text.includes("practice") || text.startsWith("fp") || text.includes("warmup")) return "practice";
   if (text.includes("race") || text === "sprint") return "race";
   return "other";
@@ -682,6 +682,7 @@ const buildRacingSessionsFromEvent = (event) => {
         id: String(competition?.id || `${event?.id || "event"}-${competitionIndex + 1}`),
         name: String(
           competition?.type?.text
+          || competition?.type?.abbreviation
           || competition?.name
           || competition?.shortName
           || event?.name
