@@ -2860,6 +2860,7 @@ export const fetchRacingStandingsPayload = async (sport: Sport): Promise<RacingS
     const snapshot = await fetchSeasonDataSnapshot(sport);
     let mergedTables = [...internalStandings.tables];
     let championshipModel: RacingChampionshipProbabilityModel | null = null;
+    let preSeasonData: RacingPreSeasonData | null = null;
 
     if (snapshot) {
       const currentAggregate = buildSeasonDriverAggregate(sport, snapshot.events);
@@ -2870,7 +2871,7 @@ export const fetchRacingStandingsPayload = async (sport: Sport): Promise<RacingS
 
       // Detect pre-season: no completed sessions with competitors yet.
       const preSeasonActive = isRacingPreSeason(snapshot, currentAggregate);
-      const preSeasonData = preSeasonActive ? getInternalRacingPreSeason(sport) : null;
+      preSeasonData = preSeasonActive ? getInternalRacingPreSeason(sport) : null;
 
       if (typeof console !== "undefined") {
         console.warn(
