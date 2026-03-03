@@ -8,6 +8,7 @@ import {
   RacingStandingsPayload,
   RacingEventBundle,
   RacingDriverSeasonResults,
+  RacingPreSeasonData,
 } from "../types";
 
 interface InternalSportSnapshot {
@@ -23,6 +24,7 @@ interface InternalSportSnapshot {
   racingStandings?: RacingStandingsPayload;
   racingEventsById?: Record<string, RacingEventBundle>;
   racingDriverSeasons?: Record<string, RacingDriverSeasonResults>;
+  racingPreSeason?: RacingPreSeasonData;
 }
 
 export interface InternalLiveScoringTeamProfile {
@@ -50,6 +52,7 @@ interface InternalRuntimeDatabase {
   racingStandingsBySport: Partial<Record<Sport, RacingStandingsPayload>>;
   racingEventsBySport: Partial<Record<Sport, Record<string, RacingEventBundle>>>;
   racingDriverSeasonsBySport: Partial<Record<Sport, Record<string, RacingDriverSeasonResults>>>;
+  racingPreSeasonBySport: Partial<Record<Sport, RacingPreSeasonData>>;
 }
 
 const runtimeDb: InternalRuntimeDatabase = {
@@ -65,6 +68,7 @@ const runtimeDb: InternalRuntimeDatabase = {
   racingStandingsBySport: {},
   racingEventsBySport: {},
   racingDriverSeasonsBySport: {},
+  racingPreSeasonBySport: {},
 };
 
 const loadedSports = new Set<Sport>();
@@ -208,6 +212,12 @@ const hydrateSportSnapshot = (sport: Sport, snapshot: InternalSportSnapshot): vo
     runtimeDb.racingDriverSeasonsBySport[sport] = snapshot.racingDriverSeasons;
   } else {
     delete runtimeDb.racingDriverSeasonsBySport[sport];
+  }
+
+  if (snapshot.racingPreSeason && Array.isArray(snapshot.racingPreSeason.entries)) {
+    runtimeDb.racingPreSeasonBySport[sport] = snapshot.racingPreSeason;
+  } else {
+    delete runtimeDb.racingPreSeasonBySport[sport];
   }
 };
 
@@ -437,6 +447,12 @@ export const getInternalRacingDriverSeason = (
   const drivers = runtimeDb.racingDriverSeasonsBySport[sport];
   if (!drivers) return null;
   return drivers[String(driverId)] || null;
+};
+
+export const getInternalRacingPreSeason = (
+  sport: Sport,
+): RacingPreSeasonData | null => {
+  return runtimeDb.racingPreSeasonBySport[sport] || null;
 };
 
 export const getInternalLiveScoringTeamProfile = (

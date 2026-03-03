@@ -14,6 +14,7 @@ import {
   RacingStandingsPayload,
   RacingStandingsTable,
   RacingStatValue,
+  RacingPreSeasonData,
   Sport,
 } from "../types";
 import { ESPN_ENDPOINTS } from "./constants";
@@ -23,6 +24,7 @@ import {
   getInternalRacingDriverSeason,
   getInternalRacingEventBundle,
   getInternalRacingEventsMap,
+  getInternalRacingPreSeason,
   getInternalRacingStandings,
 } from "./internalDbService";
 import { extractNumber, fetchWithRetry } from "./utils";
@@ -1404,6 +1406,73 @@ const buildCrossSeasonDriverAggregate = (
   return merged;
 };
 
+// ---------------------------------------------------------------------------
+// Pre-season detection & testing adjustment
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns true when the current season snapshot exists but no session
+ * (including FP1) has completed with competitor data yet.  Once any
+ * session finishes (even free practice), this flips to false and the
+ * model falls back to 2025-backfill mode automatically.
+ */
+const isRacingPreSeason = (
+  snapshot: SeasonDataSnapshot | null,
+  currentAggregate: Map<string, DriverAggregateRow>,
+): boolean => {
+  if (!snapshot || snapshot.events.length === 0) return false;
+
+  for (const row of currentAggregate.values()) {
+    if (row.starts > 0) return false;
+  }
+
+  for (const event of snapshot.events) {
+    const competitions = Array.isArray(event?.competitions) ? event.competitions : [];
+    for (const comp of competitions) {
+      const state = String(comp?.status?.type?.state || "").toLowerCase();
+      if (state === "post" || state === "in") {
+        const competitors = Array.isArray(comp?.competitors) ? comp.competitors : [];
+        if (competitors.length > 2) return false;
+      }
+    }
+  }
+
+  return true;
+};
+
+/**
+ * Adjusts a driver's expected finish position using pre-season testing
+ * data.  When the driver has 2025 backfill finishes the adjustment
+ * blends 75 % historical + 25 % testing.  When no historical data
+ * exists the testing rank becomes the primary signal.
+ */
+const applyPreSeasonTestingAdjustment = (
+  preSeasonData: RacingPreSeasonData,
+  driverId: string,
+  baseExpectedFinish: number,
+  baseFinishStdDev: number,
+  hasFinishData: boolean,
+  starterCount: number,
+): { expectedFinish: number; finishStdDev: number } => {
+  const entry = preSeasonData.entries.find((e) => e.competitorId === driverId);
+  if (!entry) return { expectedFinish: baseExpectedFinish, finishStdDev: baseFinishStdDev };
+
+  // Testing rank → expected finish: rank 1 → ~P2.0, rank 11 → ~P10.4
+  const testExpectedFinish = 1.0 + (entry.testingRank / starterCount) * (starterCount * 0.85);
+
+  if (!hasFinishData) {
+    // No historical backfill — testing rank is the primary signal.
+    return { expectedFinish: testExpectedFinish, finishStdDev: starterCount * 0.20 };
+  }
+
+  // Blend 75 % historical + 25 % testing.
+  const TESTING_BLEND_WEIGHT = 0.25;
+  return {
+    expectedFinish: (1 - TESTING_BLEND_WEIGHT) * baseExpectedFinish + TESTING_BLEND_WEIGHT * testExpectedFinish,
+    finishStdDev: baseFinishStdDev,
+  };
+};
+
 const buildDerivedStandingsTable = async (
   sport: Sport,
   aggregate: Map<string, DriverAggregateRow>,
@@ -2100,6 +2169,7 @@ const computeRacingChampionshipProbabilities = (
   prevSnapshot: SeasonDataSnapshot | null,
   aggregate: Map<string, DriverAggregateRow>,
   tables: RacingStandingsTable[],
+  preSeasonData: RacingPreSeasonData | null = null,
 ): RacingChampionshipProbabilityModel | null => {
   const scoring = SERIES_SCORING_RULES[sport];
   if (!scoring) return null;
@@ -2117,6 +2187,19 @@ const computeRacingChampionshipProbabilities = (
     });
     prevMeta.numberByDriverId.forEach((value, key) => {
       if (!numberByDriverId.has(key)) numberByDriverId.set(key, value);
+    });
+  }
+
+  // Pre-season testing data provides the definitive 2026 team/number
+  // mapping, overriding any stale 2025 associations.
+  if (preSeasonData) {
+    preSeasonData.entries.forEach((e) => {
+      if (e.competitorId && e.teamName) {
+        teamKeyByDriverId.set(e.competitorId, normalizeNameKey(e.teamName));
+      }
+      if (e.competitorId && e.vehicleNumber) {
+        numberByDriverId.set(e.competitorId, e.vehicleNumber);
+      }
     });
   }
 
@@ -2200,6 +2283,17 @@ const computeRacingChampionshipProbabilities = (
       // Wide variance for no-data drivers, but capped lower than before
       // so unknowns can't randomly dominate the simulations.
       finishStdDev = starterCount * 0.22;
+    }
+
+    // Pre-season testing adjustment: blend testing pace ranking into
+    // the expected finish estimate when pre-season data is available.
+    if (preSeasonData) {
+      const adj = applyPreSeasonTestingAdjustment(
+        preSeasonData, String(entry.competitorId),
+        expectedFinish, finishStdDev, finishes.length > 0, starterCount,
+      );
+      expectedFinish = adj.expectedFinish;
+      finishStdDev = adj.finishStdDev;
     }
 
     return {
@@ -2774,22 +2868,30 @@ export const fetchRacingStandingsPayload = async (sport: Sport): Promise<RacingS
       const completedStoreFinishes = extractFinishDataFromCompletedStore(sport);
       const crossSeasonAggregate = buildCrossSeasonDriverAggregate(currentAggregate, prevAggregate, completedStoreFinishes);
 
+      // Detect pre-season: no completed sessions with competitors yet.
+      const preSeasonActive = isRacingPreSeason(snapshot, currentAggregate);
+      const preSeasonData = preSeasonActive ? getInternalRacingPreSeason(sport) : null;
+
       if (typeof console !== "undefined") {
         console.warn(
           `[racing] ${sport} standings pipeline (internal DB): snapshot yr=${snapshot.seasonYear}, `
           + `prevSnapshot yr=${prevSnapshot?.seasonYear ?? "none"} events=${prevSnapshot?.events?.length ?? 0}, `
-          + `currentAgg=${currentAggregate.size} prevAgg=${prevAggregate?.size ?? 0} crossAgg=${crossSeasonAggregate.size}`,
+          + `currentAgg=${currentAggregate.size} prevAgg=${prevAggregate?.size ?? 0} crossAgg=${crossSeasonAggregate.size}`
+          + (preSeasonData ? ` | PRE-SEASON mode (testing: ${preSeasonData.testLocation})` : ""),
         );
       }
 
-      championshipModel = computeRacingChampionshipProbabilities(sport, snapshot, prevSnapshot, crossSeasonAggregate, mergedTables);
+      championshipModel = computeRacingChampionshipProbabilities(sport, snapshot, prevSnapshot, crossSeasonAggregate, mergedTables, preSeasonData);
       if (championshipModel) {
         mergedTables = applyRacingChampionshipProbabilities(sport, mergedTables, championshipModel);
       }
     }
 
+    const preSeasonNoteStr = preSeasonData
+      ? `Pre-season: ${preSeasonData.testLocation} testing (${preSeasonData.testDates}) blended with previous season. `
+      : "";
     const titleModelNote = championshipModel
-      ? `Title model: ${championshipModel.remainingRaces} races`
+      ? `${preSeasonNoteStr}Title model: ${championshipModel.remainingRaces} races`
         + (championshipModel.remainingSprints > 0 ? ` + ${championshipModel.remainingSprints} sprints` : "")
         + ` remaining, ${championshipModel.simulations.toLocaleString()} Monte Carlo simulations.`
       : "";
@@ -2860,6 +2962,9 @@ export const fetchRacingStandingsPayload = async (sport: Sport): Promise<RacingS
     const completedStoreFinishes = extractFinishDataFromCompletedStore(sport);
     const crossSeasonAggregate = buildCrossSeasonDriverAggregate(currentAggregate, prevAggregate, completedStoreFinishes);
 
+    const preSeasonActive2 = isRacingPreSeason(snapshot, currentAggregate);
+    const preSeasonData2 = preSeasonActive2 ? getInternalRacingPreSeason(sport) : null;
+
     /* diagnostic: track cross-season data availability */
     if (typeof console !== "undefined") {
       const curSize = currentAggregate.size;
@@ -2870,11 +2975,12 @@ export const fetchRacingStandingsPayload = async (sport: Sport): Promise<RacingS
       console.warn(
         `[racing] ${sport} standings pipeline: snapshot yr=${snapshot.seasonYear}, `
         + `prevSnapshot yr=${prevSnapshot?.seasonYear ?? "none"} events=${prevEvents}, `
-        + `currentAgg=${curSize} prevAgg=${prevSize} crossAgg=${crossSize} storeFinishes=${storeCount}`,
+        + `currentAgg=${curSize} prevAgg=${prevSize} crossAgg=${crossSize} storeFinishes=${storeCount}`
+        + (preSeasonData2 ? ` | PRE-SEASON mode` : ""),
       );
     }
 
-    championshipModel = computeRacingChampionshipProbabilities(sport, snapshot, prevSnapshot, crossSeasonAggregate, mergedTables);
+    championshipModel = computeRacingChampionshipProbabilities(sport, snapshot, prevSnapshot, crossSeasonAggregate, mergedTables, preSeasonData2);
     if (championshipModel) {
       mergedTables = applyRacingChampionshipProbabilities(sport, mergedTables, championshipModel);
     }

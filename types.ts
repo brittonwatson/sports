@@ -413,6 +413,26 @@ export interface RacingDriverSeasonResults {
   results: RacingDriverEventResult[];
 }
 
+export interface RacingPreSeasonTestingEntry {
+  competitorId: string;
+  name: string;
+  teamName: string;
+  vehicleNumber: string;
+  manufacturer: string;
+  testingRank: number;
+  bestLapTime?: number;
+  totalLaps?: number;
+  testingNote?: string;
+}
+
+export interface RacingPreSeasonData {
+  sport: Sport;
+  seasonYear: number;
+  testLocation: string;
+  testDates: string;
+  entries: RacingPreSeasonTestingEntry[];
+}
+
 export interface RacingEventPredictionEntry {
   rank: number;
   competitorId: string;
