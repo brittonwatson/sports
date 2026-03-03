@@ -1,6 +1,6 @@
-import React from "react";
+import React, { useState } from "react";
 import { RacingStandingsPayload, RacingStandingsTable, Sport } from "../types";
-import { AlertCircle } from "lucide-react";
+import { AlertCircle, TrendingUp } from "lucide-react";
 
 interface RacingStandingsViewProps {
   sport: Sport;
@@ -26,7 +26,7 @@ const PRIORITY_KEYS = [
   "lastFinish",
 ];
 
-const chooseColumns = (table: RacingStandingsTable): Array<{ key: string; label: string }> => {
+const chooseColumns = (table: RacingStandingsTable, showProbability: boolean): Array<{ key: string; label: string }> => {
   const present = new Map<string, string>();
   table.entries.forEach((entry) => {
     entry.stats.forEach((stat) => {
@@ -39,6 +39,10 @@ const chooseColumns = (table: RacingStandingsTable): Array<{ key: string; label:
       }
     });
   });
+
+  if (!showProbability) {
+    present.delete("championshipprobability");
+  }
 
   const ordered: Array<{ key: string; label: string }> = [];
   PRIORITY_KEYS.forEach((key) => {
@@ -65,6 +69,8 @@ export const RacingStandingsView: React.FC<RacingStandingsViewProps> = ({
   selectedDriverId,
   onDriverClick,
 }) => {
+  const [showProbability, setShowProbability] = useState(false);
+
   if (isLoading) {
     return (
       <div className="rounded-3xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-8 text-center text-slate-500 dark:text-slate-400">
@@ -81,6 +87,12 @@ export const RacingStandingsView: React.FC<RacingStandingsViewProps> = ({
     );
   }
 
+  const hasProbability = standings.tables.some((table) =>
+    table.entries.some((entry) =>
+      entry.stats.some((stat) => String(stat.key || "").toLowerCase() === "championshipprobability" && stat.value && stat.value !== "-"),
+    ),
+  );
+
   return (
     <div className="space-y-4">
       {standings.note && (
@@ -90,8 +102,25 @@ export const RacingStandingsView: React.FC<RacingStandingsViewProps> = ({
         </div>
       )}
 
+      {hasProbability && (
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={() => setShowProbability((prev) => !prev)}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold uppercase tracking-wider border transition-all ${
+              showProbability
+                ? "border-purple-400/60 bg-purple-500/15 text-purple-700 dark:text-purple-300"
+                : "border-slate-300 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300"
+            }`}
+          >
+            <TrendingUp size={12} />
+            Title %
+          </button>
+        </div>
+      )}
+
       {standings.tables.map((table) => {
-        const columns = chooseColumns(table);
+        const columns = chooseColumns(table, showProbability);
         const isDriverTable = table.category === "driver";
 
         return (

@@ -55,7 +55,7 @@ const RANKED_LEAGUES: Sport[] = ['NCAAF', 'NCAAM', 'NCAAW'];
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID?.trim() || '';
 const ENABLE_RUNTIME_SYNC = import.meta.env.VITE_ENABLE_RUNTIME_SYNC === 'true';
 const ALL_VIEW_MODES: ViewMode[] = ['LIVE', 'UPCOMING', 'SCORES', 'STANDINGS', 'BRACKET', 'RANKINGS', 'CALENDAR', 'TEAMS', 'LEAGUE_STATS'];
-const PREDICTION_MODEL_VERSION = '2026-03-02-r14';
+const PREDICTION_MODEL_VERSION = '2026-03-03-r15';
 const GAME_RENDER_BATCH = 36;
 const RACING_VIEW_BLOCKLIST: ViewMode[] = ['BRACKET', 'RANKINGS', 'TEAMS'];
 
@@ -178,7 +178,8 @@ const readNavStateFromLocation = (): NavState => {
     : null;
 
   let tab: Tab = isTab(tabParam) ? tabParam : (team ? team.league : 'HOME');
-  let view: ViewMode = isViewMode(viewParam) ? viewParam : 'LIVE';
+  const defaultView: ViewMode = (tab !== 'HOME' && tab !== 'METHODOLOGY') ? 'STANDINGS' : 'LIVE';
+  let view: ViewMode = isViewMode(viewParam) ? viewParam : defaultView;
 
   if (tab === 'METHODOLOGY') {
     view = 'LIVE';
@@ -1417,10 +1418,11 @@ export const App: React.FC = () => {
   }, [selectedTab, selectedRacingDriver?.sport]);
 
   const handleTabChange = (tab: Tab) => {
-      const isRepeatSelection = tab === selectedTab && !selectedTeam && viewMode === 'LIVE';
+      const defaultMode: ViewMode = (tab !== 'HOME' && tab !== 'METHODOLOGY') ? 'STANDINGS' : 'LIVE';
+      const isRepeatSelection = tab === selectedTab && !selectedTeam && viewMode === defaultMode;
       forceLiveRefreshOnNextLoad.current = true;
       setSelectedTab(tab);
-      setViewMode('LIVE');
+      setViewMode(defaultMode);
       setIsMenuOpen(false);
       setSelectedTeam(null);
       setNavigatedGameId(null);
@@ -1431,7 +1433,7 @@ export const App: React.FC = () => {
       window.scrollTo({ top: 0, behavior: 'smooth' });
       if (isRepeatSelection) {
           forceLiveRefreshOnNextLoad.current = false;
-          loadData(tab, 'LIVE', false, true);
+          loadData(tab, defaultMode, false, true);
       }
   };
 
