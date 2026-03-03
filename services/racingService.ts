@@ -2869,6 +2869,24 @@ export const fetchRacingStandingsPayload = async (sport: Sport): Promise<RacingS
       const completedStoreFinishes = extractFinishDataFromCompletedStore(sport);
       const crossSeasonAggregate = buildCrossSeasonDriverAggregate(currentAggregate, prevAggregate, completedStoreFinishes);
 
+      // Replace stale internal "model-series-points" table with current-season derived data.
+      // The internal DB may contain previous-season points; we rebuild from the live snapshot
+      // so only current-season results are displayed. The cross-season aggregate is still used
+      // for probability modeling (via computeRacingChampionshipProbabilities) but not for display.
+      const derivedTable = await buildDerivedStandingsTable(sport, currentAggregate);
+      if (derivedTable.entries.length > 0) {
+        const hasModelTable = mergedTables.some((t) => t.id === "model-series-points");
+        if (hasModelTable) {
+          mergedTables = mergedTables.map((t) => t.id === "model-series-points" ? derivedTable : t);
+        } else {
+          mergedTables = [derivedTable, ...mergedTables];
+        }
+      } else {
+        // No current-season race data yet — remove stale previous-season model table
+        // so only official standings (which reflect the current season) are shown.
+        mergedTables = mergedTables.filter((t) => t.id !== "model-series-points");
+      }
+
       // Detect pre-season: no completed sessions with competitors yet.
       const preSeasonActive = isRacingPreSeason(snapshot, currentAggregate);
       preSeasonData = preSeasonActive ? getInternalRacingPreSeason(sport) : null;
