@@ -1,7 +1,56 @@
 
-import React from 'react';
-import { Sport, TeamOption, RACING_LEAGUES, SeasonState } from '../../types';
+import React, { useEffect, useState } from 'react';
+import {
+  RacingCalendarEvent,
+  RacingPreSeasonData,
+  RacingStandingsEntry,
+  RacingStandingsPayload,
+  RACING_LEAGUES,
+  SeasonState,
+  Sport,
+  TeamOption,
+} from '../../types';
+import {
+  ensureInternalSportLoaded,
+  getInternalRacingCalendar,
+  getInternalRacingPreSeason,
+  getInternalRacingStandings,
+} from '../../services/internalDbService';
 import { X, Search, Star, BookOpen, Settings, CalendarOff } from 'lucide-react';
+
+type ViewMode = 'LIVE' | 'UPCOMING' | 'SCORES' | 'STANDINGS' | 'BRACKET' | 'RANKINGS' | 'CALENDAR' | 'TEAMS' | 'LEAGUE_STATS';
+
+interface RacingSeriesSummary {
+  completedEvents: number;
+  totalEvents: number;
+  leader?: {
+    name: string;
+    teamLabel?: string;
+    vehicleNumber?: string;
+    points?: string;
+    wins?: string;
+    avgFinish?: string;
+    gapToSecond?: string;
+  };
+  lastResult?: {
+    eventLabel: string;
+    winnerLabel?: string;
+    podiumLabels: string[];
+  };
+  nextEvent?: {
+    eventLabel: string;
+    date: string;
+    venue?: string;
+  };
+  preseason?: {
+    leaderLabel: string;
+    teamLabel: string;
+    vehicleNumber?: string;
+    bestLap?: string;
+    totalLaps?: number;
+    note?: string;
+  };
+}
 
 interface MenuDrawerProps {
   isOpen: boolean;
@@ -12,7 +61,8 @@ interface MenuDrawerProps {
   inactiveLeagues: Set<Sport>;
   leagueActivity: Partial<Record<Sport, { seasonState: SeasonState; hasLiveEvent: boolean; nextEventDate?: string }>>;
   selectedTab: Sport | 'HOME' | 'METHODOLOGY';
-  onNavigate: (sport: Sport | 'HOME' | 'METHODOLOGY') => void;
+  selectedViewMode: ViewMode;
+  onNavigate: (sport: Sport | 'HOME' | 'METHODOLOGY', viewMode?: ViewMode) => void;
   onTeamClick: (team: TeamOption) => void;
   onToggleFavoriteTeam: (team: TeamOption, e: React.MouseEvent) => void;
   onToggleFavoriteLeague: (sport: Sport, e: React.MouseEvent) => void;
@@ -24,13 +74,148 @@ interface MenuDrawerProps {
   setTheme: (theme: 'light' | 'dark' | 'system') => void;
 }
 
+const RACING_QUICK_VIEWS: Array<{ label: string; view: ViewMode }> = [
+  { label: 'Standings', view: 'STANDINGS' },
+  { label: 'Stats', view: 'LEAGUE_STATS' },
+  { label: 'Results', view: 'SCORES' },
+  { label: 'Calendar', view: 'CALENDAR' },
+];
+
+const getRacingDriverTable = (standings: RacingStandingsPayload | null): RacingStandingsPayload['tables'][number] | null => {
+  if (!standings || standings.tables.length === 0) return null;
+  return standings.tables.find((table) => table.category === 'driver') || standings.tables[0] || null;
+};
+
+const getDriverStat = (entry: RacingStandingsEntry | undefined, key: string): string | undefined => {
+  if (!entry) return undefined;
+  return entry.stats.find((stat) => String(stat.key || '').toLowerCase() === key.toLowerCase())?.value;
+};
+
+const parseStatNumber = (value: string | undefined): number | null => {
+  if (!value) return null;
+  const normalized = Number(String(value).replace(/,/g, '').trim());
+  return Number.isFinite(normalized) ? normalized : null;
+};
+
+const toCompetitorLabel = (value: { abbreviation?: string; shortName?: string; name?: string }): string => {
+  return value.abbreviation || value.shortName || value.name || 'TBD';
+};
+
+const formatDateTime = (value?: string): string => {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+};
+
+const formatDateOnly = (value?: string): string => {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+  });
+};
+
+const formatLapTime = (seconds?: number): string | undefined => {
+  if (!Number.isFinite(seconds) || !seconds || seconds <= 0) return undefined;
+  const totalSeconds = Number(seconds);
+  const minutes = Math.floor(totalSeconds / 60);
+  const remainder = totalSeconds - (minutes * 60);
+  return `${minutes}:${remainder.toFixed(3).padStart(6, '0')}`;
+};
+
+const buildRacingSeriesSummary = (
+  standings: RacingStandingsPayload | null,
+  preseason: RacingPreSeasonData | null,
+  events: RacingCalendarEvent[],
+): RacingSeriesSummary => {
+  const allUpcoming = events
+    .filter((event) => event.status !== 'finished')
+    .slice()
+    .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+  const allFinished = events
+    .filter((event) => event.status === 'finished')
+    .slice()
+    .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  const targetSeasonYear = allUpcoming[0]?.seasonYear || allFinished[0]?.seasonYear;
+  const seasonEvents = targetSeasonYear
+    ? events.filter((event) => event.seasonYear === targetSeasonYear)
+    : events;
+
+  const driverTable = getRacingDriverTable(standings);
+  const leader = driverTable?.entries[0];
+  const challenger = driverTable?.entries[1];
+  const leaderPoints = getDriverStat(leader, 'points');
+  const leaderWins = getDriverStat(leader, 'wins');
+  const leaderAvgFinish = getDriverStat(leader, 'avgFinish');
+  const leaderGapValue = (() => {
+    const lead = parseStatNumber(leaderPoints);
+    const second = parseStatNumber(getDriverStat(challenger, 'points'));
+    if (lead === null || second === null) return undefined;
+    return String(Math.max(0, lead - second));
+  })();
+
+  const completedEvents = seasonEvents.filter((event) => event.status === 'finished').length;
+  const totalEvents = seasonEvents.length;
+  const sortedFinished = seasonEvents
+    .filter((event) => event.status === 'finished')
+    .slice()
+    .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  const sortedUpcoming = seasonEvents
+    .filter((event) => event.status !== 'finished')
+    .slice()
+    .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+  const latestResult = sortedFinished[0];
+  const nextEvent = sortedUpcoming[0];
+  const testingLeader = preseason?.entries[0];
+
+  return {
+    completedEvents,
+    totalEvents,
+    leader: leader ? {
+      name: leader.name,
+      teamLabel: leader.teamName || leader.manufacturer,
+      vehicleNumber: leader.vehicleNumber,
+      points: leaderPoints,
+      wins: leaderWins,
+      avgFinish: leaderAvgFinish,
+      gapToSecond: leaderGapValue,
+    } : undefined,
+    lastResult: latestResult ? {
+      eventLabel: latestResult.shortName || latestResult.name,
+      winnerLabel: latestResult.topFinishers[0] ? toCompetitorLabel(latestResult.topFinishers[0]) : undefined,
+      podiumLabels: latestResult.topFinishers.slice(0, 3).map((finisher) => toCompetitorLabel(finisher)),
+    } : undefined,
+    nextEvent: nextEvent ? {
+      eventLabel: nextEvent.shortName || nextEvent.name,
+      date: nextEvent.date,
+      venue: nextEvent.venue,
+    } : undefined,
+    preseason: testingLeader ? {
+      leaderLabel: testingLeader.name,
+      teamLabel: testingLeader.teamName || testingLeader.manufacturer,
+      vehicleNumber: testingLeader.vehicleNumber,
+      bestLap: formatLapTime(testingLeader.bestLapTime),
+      totalLaps: testingLeader.totalLaps,
+      note: testingLeader.testingNote,
+    } : undefined,
+  };
+};
+
 export const MenuDrawer: React.FC<MenuDrawerProps> = ({
   isOpen, onClose, favoriteTeams, menuSports, favoriteLeagues, inactiveLeagues,
   leagueActivity,
-  selectedTab, onNavigate, onTeamClick, onToggleFavoriteTeam, onToggleFavoriteLeague,
+  selectedTab, selectedViewMode, onNavigate, onTeamClick, onToggleFavoriteTeam, onToggleFavoriteLeague,
   onOpenSettings, menuTeamResults, menuSearchTerm, setMenuSearchTerm, theme, setTheme
 }) => {
-  if (!isOpen) return null;
+  const [racingSummaries, setRacingSummaries] = useState<Partial<Record<Sport, RacingSeriesSummary>>>({});
 
   const getSeasonState = (sport: Sport): SeasonState => {
       const explicit = leagueActivity[sport]?.seasonState;
@@ -56,6 +241,33 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
   const activeOtherLeagues = nonRacingLeagues.filter(s => !favoriteLeagues.has(s) && getSeasonState(s) !== 'offseason');
   const offSeasonLeagues = nonRacingLeagues.filter(s => getSeasonState(s) === 'offseason');
   const racingLeagues = menuSports.filter(s => RACING_LEAGUES.includes(s));
+  const racingLeagueKey = racingLeagues.join('|');
+
+  useEffect(() => {
+    if (!isOpen || racingLeagues.length === 0) return;
+
+    let cancelled = false;
+    const loadRacingSummaries = async () => {
+      await Promise.allSettled(racingLeagues.map((sport) => ensureInternalSportLoaded(sport)));
+      if (cancelled) return;
+
+      const next: Partial<Record<Sport, RacingSeriesSummary>> = {};
+      racingLeagues.forEach((sport) => {
+        const calendar = getInternalRacingCalendar(sport);
+        const standings = getInternalRacingStandings(sport);
+        const preseason = getInternalRacingPreSeason(sport);
+        next[sport] = buildRacingSeriesSummary(standings, preseason, calendar?.events || []);
+      });
+      setRacingSummaries(next);
+    };
+
+    loadRacingSummaries();
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, racingLeagueKey]);
+
+  if (!isOpen) return null;
 
   const renderLeagueItem = (
       sport: Sport,
@@ -65,6 +277,10 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
       const isRacing = Boolean(opts?.isRacing);
       const isFav = favoriteLeagues.has(sport);
       const isSelected = selectedTab === sport;
+      const racingSummary = isRacing ? racingSummaries[sport] : undefined;
+      const seasonState = getSeasonState(sport);
+      const showPreseasonCard = isRacing && Boolean(racingSummary?.preseason) && (seasonState === 'preseason' || racingSummary?.completedEvents === 0);
+      const showChampionshipLeader = isRacing && Boolean(racingSummary?.leader) && (Boolean(racingSummary?.completedEvents) || !racingSummary?.nextEvent);
       
       let containerClass = "border-slate-100 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700 bg-white dark:bg-slate-900/50";
       let textClass = "text-slate-600 dark:text-slate-400";
@@ -80,45 +296,215 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
           textClass = "text-slate-800 dark:text-slate-200";
       }
 
+      const quickStatValueClass = "mt-1 text-sm font-bold text-slate-900 dark:text-white";
+      const quickStatLabelClass = "text-[9px] font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400";
+
       return (
-        <div 
-          key={sport} 
-          className={`flex items-center justify-between p-2 rounded-xl border transition-all ${containerClass}`}
+        <div
+          key={sport}
+          className={`rounded-xl border transition-all ${containerClass} ${isRacing ? 'p-3' : 'p-2'}`}
         >
-          <button
-            onClick={() => onNavigate(sport)}
-            className={`flex-1 text-left mr-2 ${textClass}`}
-          >
-            <div className="flex items-center gap-2">
-              <span className="font-bold text-xs truncate">{sport}</span>
-              {opts?.statusLabel && (
-                <span
-                  className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full border ${
-                    opts?.isLive
-                      ? 'bg-rose-500/20 text-rose-500 border-rose-500/30'
-                      : opts.statusLabel === 'Preseason'
-                        ? 'bg-cyan-500/10 text-cyan-500 border-cyan-500/30'
-                        : opts.statusLabel === 'In Season'
-                          ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/30'
-                          : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-700'
-                  }`}
-                >
-                  {opts?.isLive ? 'Live' : opts.statusLabel}
-                </span>
-              )}
-            </div>
-            {isRacing && opts?.nextEventDate && (
-              <div className="text-[10px] mt-1 text-slate-500 dark:text-slate-400 font-medium">
-                Next: {formatNextEventDate(opts.nextEventDate)}
+          <div className="flex items-start justify-between gap-2">
+            <button
+              onClick={() => onNavigate(sport)}
+              className={`flex-1 text-left ${textClass}`}
+            >
+              <div className="flex items-center gap-2">
+                <span className="font-bold text-xs truncate">{sport}</span>
+                {opts?.statusLabel && (
+                  <span
+                    className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full border ${
+                      opts?.isLive
+                        ? 'bg-rose-500/20 text-rose-500 border-rose-500/30'
+                        : opts.statusLabel === 'Preseason'
+                          ? 'bg-cyan-500/10 text-cyan-500 border-cyan-500/30'
+                          : opts.statusLabel === 'In Season'
+                            ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/30'
+                            : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-700'
+                    }`}
+                  >
+                    {opts?.isLive ? 'Live' : opts.statusLabel}
+                  </span>
+                )}
               </div>
-            )}
-          </button>
-          <button
-            onClick={(e) => onToggleFavoriteLeague(sport, e)}
-            className={`p-1.5 rounded-full transition-colors ${isFav ? 'text-slate-900 dark:text-white bg-slate-200 dark:bg-slate-700' : 'text-slate-300 dark:text-slate-700 hover:text-slate-500'}`}
-          >
-            <Star size={12} fill={isFav ? "currentColor" : "none"} />
-          </button>
+
+              {isRacing ? (
+                <div className="mt-3 space-y-2.5">
+                  {racingSummary && (
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/80 px-2.5 py-2">
+                        <div className={quickStatLabelClass}>Season</div>
+                        <div className={quickStatValueClass}>
+                          {racingSummary.totalEvents > 0 ? `${racingSummary.completedEvents}/${racingSummary.totalEvents}` : '--'}
+                        </div>
+                        <div className="mt-0.5 text-[10px] text-slate-500 dark:text-slate-400">
+                          {racingSummary.totalEvents > 0
+                            ? `${Math.max(racingSummary.totalEvents - racingSummary.completedEvents, 0)} weekends to run`
+                            : 'Schedule loading'}
+                        </div>
+                      </div>
+                      <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/80 px-2.5 py-2">
+                        <div className={quickStatLabelClass}>
+                          {showChampionshipLeader ? 'Leader' : showPreseasonCard ? 'Testing' : 'Weekend'}
+                        </div>
+                        <div className={quickStatValueClass}>
+                          {showChampionshipLeader
+                            ? `${racingSummary.leader?.points || '--'} PTS`
+                            : showPreseasonCard
+                              ? racingSummary?.preseason?.bestLap || '--'
+                              : formatDateOnly(racingSummary?.nextEvent?.date) || '--'}
+                        </div>
+                        <div className="mt-0.5 text-[10px] text-slate-500 dark:text-slate-400">
+                          {showChampionshipLeader
+                            ? racingSummary.leader?.gapToSecond
+                              ? `+${racingSummary.leader.gapToSecond} to P2`
+                              : racingSummary.leader?.wins
+                                ? `${racingSummary.leader.wins} wins`
+                                : 'Championship'
+                            : showPreseasonCard
+                              ? `${racingSummary?.preseason?.totalLaps || 0} laps`
+                              : racingSummary?.nextEvent?.venue || 'Next weekend'}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {showChampionshipLeader && racingSummary?.leader && (
+                    <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white/70 dark:bg-slate-950/40 px-2.5 py-2">
+                      <div className={quickStatLabelClass}>Points Leader</div>
+                      <div className="mt-1 text-sm font-semibold text-slate-900 dark:text-white">
+                        {racingSummary.leader.name}
+                        {racingSummary.leader.vehicleNumber ? ` #${racingSummary.leader.vehicleNumber}` : ''}
+                      </div>
+                      {racingSummary.leader.teamLabel && (
+                        <div className="mt-0.5 text-[10px] text-slate-500 dark:text-slate-400">
+                          {racingSummary.leader.teamLabel}
+                        </div>
+                      )}
+                      <div className="mt-2 flex flex-wrap gap-1.5 text-[10px] font-semibold text-slate-600 dark:text-slate-300">
+                        {racingSummary.leader.points && (
+                          <span className="rounded-full border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/70 px-2 py-1">
+                            PTS {racingSummary.leader.points}
+                          </span>
+                        )}
+                        {racingSummary.leader.wins && (
+                          <span className="rounded-full border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/70 px-2 py-1">
+                            W {racingSummary.leader.wins}
+                          </span>
+                        )}
+                        {racingSummary.leader.avgFinish && (
+                          <span className="rounded-full border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/70 px-2 py-1">
+                            AVG {racingSummary.leader.avgFinish}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {showPreseasonCard && racingSummary?.preseason ? (
+                    <div className="rounded-lg border border-cyan-200 dark:border-cyan-900/50 bg-cyan-50/80 dark:bg-cyan-950/20 px-2.5 py-2">
+                      <div className={quickStatLabelClass}>Testing Leader</div>
+                      <div className="mt-1 text-sm font-semibold text-slate-900 dark:text-white">
+                        {racingSummary.preseason.leaderLabel}
+                        {racingSummary.preseason.vehicleNumber ? ` #${racingSummary.preseason.vehicleNumber}` : ''}
+                      </div>
+                      <div className="mt-0.5 text-[10px] text-slate-500 dark:text-slate-400">
+                        {racingSummary.preseason.teamLabel}
+                      </div>
+                      <div className="mt-2 flex flex-wrap gap-1.5 text-[10px] font-semibold text-slate-700 dark:text-slate-200">
+                        {racingSummary.preseason.bestLap && (
+                          <span className="rounded-full border border-cyan-200 dark:border-cyan-800/60 bg-white/70 dark:bg-slate-950/40 px-2 py-1">
+                            BEST {racingSummary.preseason.bestLap}
+                          </span>
+                        )}
+                        {typeof racingSummary.preseason.totalLaps === 'number' && (
+                          <span className="rounded-full border border-cyan-200 dark:border-cyan-800/60 bg-white/70 dark:bg-slate-950/40 px-2 py-1">
+                            LAPS {racingSummary.preseason.totalLaps}
+                          </span>
+                        )}
+                      </div>
+                      {racingSummary.preseason.note && (
+                        <div className="mt-2 text-[10px] leading-relaxed text-slate-600 dark:text-slate-300">
+                          {racingSummary.preseason.note}
+                        </div>
+                      )}
+                    </div>
+                  ) : racingSummary?.lastResult ? (
+                    <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white/70 dark:bg-slate-950/40 px-2.5 py-2">
+                      <div className={quickStatLabelClass}>Latest Result</div>
+                      <div className="mt-1 text-sm font-semibold text-slate-900 dark:text-white">
+                        {racingSummary.lastResult.eventLabel}
+                      </div>
+                      {racingSummary.lastResult.winnerLabel && (
+                        <div className="mt-0.5 text-[10px] text-slate-500 dark:text-slate-400">
+                          Winner: {racingSummary.lastResult.winnerLabel}
+                        </div>
+                      )}
+                      {racingSummary.lastResult.podiumLabels.length > 0 && (
+                        <div className="mt-2 text-[10px] text-slate-600 dark:text-slate-300">
+                          Podium: {racingSummary.lastResult.podiumLabels.join(' • ')}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="rounded-lg border border-dashed border-slate-200 dark:border-slate-800 px-2.5 py-2 text-[10px] text-slate-500 dark:text-slate-400">
+                      Results and field stats populate as soon as the series data loads.
+                    </div>
+                  )}
+
+                  {(racingSummary?.nextEvent || opts?.nextEventDate) && (
+                    <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/60 px-2.5 py-2">
+                      <div className={quickStatLabelClass}>{opts?.isLive ? 'Current Weekend' : 'Next Event'}</div>
+                      <div className="mt-1 text-sm font-semibold text-slate-900 dark:text-white">
+                        {racingSummary?.nextEvent?.eventLabel || sport}
+                      </div>
+                      <div className="mt-0.5 text-[10px] text-slate-500 dark:text-slate-400">
+                        {formatDateTime(racingSummary?.nextEvent?.date || opts?.nextEventDate)}
+                        {(racingSummary?.nextEvent?.venue) ? ` • ${racingSummary.nextEvent.venue}` : ''}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : null}
+
+              {!isRacing && opts?.nextEventDate && (
+                <div className="text-[10px] mt-1 text-slate-500 dark:text-slate-400 font-medium">
+                  Next: {formatNextEventDate(opts.nextEventDate)}
+                </div>
+              )}
+            </button>
+            <button
+              onClick={(e) => onToggleFavoriteLeague(sport, e)}
+              className={`p-1.5 rounded-full transition-colors ${isFav ? 'text-slate-900 dark:text-white bg-slate-200 dark:bg-slate-700' : 'text-slate-300 dark:text-slate-700 hover:text-slate-500'}`}
+            >
+              <Star size={12} fill={isFav ? "currentColor" : "none"} />
+            </button>
+          </div>
+
+          {isRacing && (
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {RACING_QUICK_VIEWS.map((quickView) => {
+                const isActiveView = isSelected && selectedViewMode === quickView.view;
+                return (
+                  <button
+                    key={`${sport}-${quickView.view}`}
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onNavigate(sport, quickView.view);
+                    }}
+                    className={`rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider transition-colors ${
+                      isActiveView
+                        ? 'border-slate-400 dark:border-slate-600 bg-slate-900 dark:bg-white text-white dark:text-slate-900'
+                        : 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/70 text-slate-600 dark:text-slate-300 hover:border-slate-300 dark:hover:border-slate-600'
+                    }`}
+                  >
+                    {quickView.label}
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
       );
   };

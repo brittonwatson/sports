@@ -1417,12 +1417,18 @@ export const App: React.FC = () => {
       }
   }, [selectedTab, selectedRacingDriver?.sport]);
 
-  const handleTabChange = (tab: Tab) => {
+  const handleTabChange = (tab: Tab, requestedView?: ViewMode) => {
       const defaultMode: ViewMode = (tab !== 'HOME' && tab !== 'METHODOLOGY') ? 'STANDINGS' : 'LIVE';
-      const isRepeatSelection = tab === selectedTab && !selectedTeam && viewMode === defaultMode;
+      const resolvedView: ViewMode = (() => {
+          if (!requestedView) return defaultMode;
+          if (tab === 'HOME' || tab === 'METHODOLOGY') return defaultMode;
+          if (RACING_LEAGUES.includes(tab as Sport) && RACING_VIEW_BLOCKLIST.includes(requestedView)) return defaultMode;
+          return requestedView;
+      })();
+      const isRepeatSelection = tab === selectedTab && !selectedTeam && viewMode === resolvedView;
       forceLiveRefreshOnNextLoad.current = true;
       setSelectedTab(tab);
-      setViewMode(defaultMode);
+      setViewMode(resolvedView);
       setIsMenuOpen(false);
       setSelectedTeam(null);
       setNavigatedGameId(null);
@@ -1433,7 +1439,7 @@ export const App: React.FC = () => {
       window.scrollTo({ top: 0, behavior: 'smooth' });
       if (isRepeatSelection) {
           forceLiveRefreshOnNextLoad.current = false;
-          loadData(tab, defaultMode, false, true);
+          loadData(tab, resolvedView, false, true);
       }
   };
 
@@ -2743,6 +2749,7 @@ export const App: React.FC = () => {
         inactiveLeagues={inactiveLeagues}
         leagueActivity={leagueActivity}
         selectedTab={selectedTab}
+        selectedViewMode={viewMode}
         onNavigate={handleTabChange}
         onTeamClick={navigateToTeam}
         onToggleFavoriteTeam={toggleFavoriteTeam}
