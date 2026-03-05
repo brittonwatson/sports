@@ -2518,6 +2518,7 @@ export const App: React.FC = () => {
                                 isLoading={isLoading}
                                 selectedDriverId={selectedRacingDriver?.driverId || null}
                                 onDriverClick={handleRacingDriverClick}
+                                mode="standings"
                              />
                              {selectedRacingDriver && selectedRacingDriver.sport === (selectedTab as Sport) && (
                                 <RacingDriverSeasonPanel
@@ -2639,13 +2640,26 @@ export const App: React.FC = () => {
                      />
                  ) : viewMode === 'LEAGUE_STATS' ? (
                      RACING_LEAGUES.includes(selectedTab as Sport) ? (
-                         <RacingStandingsView
-                            sport={selectedTab as Sport}
-                            standings={racingStandings}
-                            isLoading={isLoading}
-                            selectedDriverId={selectedRacingDriver?.driverId || null}
-                            onDriverClick={handleRacingDriverClick}
-                         />
+                         <div className="space-y-6">
+                             <RacingStandingsView
+                                sport={selectedTab as Sport}
+                                standings={racingStandings}
+                                isLoading={isLoading}
+                                selectedDriverId={selectedRacingDriver?.driverId || null}
+                                onDriverClick={handleRacingDriverClick}
+                                mode="driver-stats"
+                             />
+                            {selectedRacingDriver && selectedRacingDriver.sport === (selectedTab as Sport) && (
+                               <RacingDriverSeasonPanel
+                                   data={racingDriverSeason}
+                                   isLoading={isRacingDriverLoading}
+                                   onClose={() => {
+                                       setSelectedRacingDriver(null);
+                                       setRacingDriverSeason(null);
+                                   }}
+                               />
+                            )}
+                         </div>
                      ) : (
                      <LeagueStatsView
                         groups={displayStandings}

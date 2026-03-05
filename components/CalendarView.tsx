@@ -1,8 +1,9 @@
 import React, { useMemo, useState, useEffect } from 'react';
-import { Game, RACING_LEAGUES, RacingCalendarEvent, RacingCalendarPayload, RacingCalendarSession, Sport } from '../types';
+import { Game, RACING_LEAGUES, RacingCalendarEvent, RacingCalendarPayload, RacingCalendarSession, RacingEventBundle, Sport } from '../types';
 import { fetchGamesForDate, fetchGameDatesForMonth, fetchUpcomingGames } from '../services/gameService';
-import { fetchRacingCalendarPayload } from '../services/racingService';
+import { fetchRacingCalendarPayload, fetchRacingEventBundle } from '../services/racingService';
 import { GameCard } from './GameCard';
+import { RacingEventPanel } from './RacingEventPanel';
 import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Loader2, RefreshCw, Flag, Trophy, Timer } from 'lucide-react';
 
 interface CalendarViewProps {
@@ -162,6 +163,9 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
   const [racingGamesById, setRacingGamesById] = useState<Map<string, Game>>(new Map());
   const [isRacingLoading, setIsRacingLoading] = useState(false);
   const [racingError, setRacingError] = useState<string | null>(null);
+  const [expandedCompletedEvents, setExpandedCompletedEvents] = useState<Set<string>>(new Set());
+  const [completedEventBundles, setCompletedEventBundles] = useState<Map<string, RacingEventBundle | null>>(new Map());
+  const [completedEventLoadingIds, setCompletedEventLoadingIds] = useState<Set<string>>(new Set());
 
   const racingMode = isRacingSport(sport);
   const isRacingListMode = racingMode && racingUpcomingMode === 'list';
@@ -360,6 +364,54 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
     const mapped = racingGamesById.get(event.eventId) || toFallbackRacingGame(sport, event);
     onGameSelect(mapped);
   };
+
+  const loadCompletedEventBundle = async (eventId: string) => {
+    if (!eventId) return;
+    if (completedEventBundles.get(eventId) || completedEventLoadingIds.has(eventId)) return;
+
+    setCompletedEventLoadingIds((prev) => {
+      const next = new Set(prev);
+      next.add(eventId);
+      return next;
+    });
+
+    try {
+      const bundle = await fetchRacingEventBundle(sport, eventId);
+      if (bundle) {
+        setCompletedEventBundles((prev) => {
+          const next = new Map(prev);
+          next.set(eventId, bundle);
+          return next;
+        });
+      }
+    } finally {
+      setCompletedEventLoadingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(eventId);
+        return next;
+      });
+    }
+  };
+
+  const toggleCompletedEventExpansion = (eventId: string) => {
+    const willExpand = !expandedCompletedEvents.has(eventId);
+    setExpandedCompletedEvents((prev) => {
+      const next = new Set(prev);
+      if (next.has(eventId)) next.delete(eventId);
+      else next.add(eventId);
+      return next;
+    });
+
+    if (willExpand) {
+      void loadCompletedEventBundle(eventId);
+    }
+  };
+
+  useEffect(() => {
+    setExpandedCompletedEvents(new Set());
+    setCompletedEventBundles(new Map());
+    setCompletedEventLoadingIds(new Set());
+  }, [sport]);
 
   const getDaysInMonth = (year: number, month: number) => {
     return new Date(year, month + 1, 0).getDate();
@@ -635,8 +687,11 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
             {!isRacingListMode && (
             <section className="space-y-4">
               <div className="flex items-center gap-2 text-sm font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                <Trophy size={14} /> Completed Races (Top 5)
+                <Trophy size={14} /> Completed Races
               </div>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Most recent weekends first. Expand a finished event for race, qualifying, and practice results.
+              </p>
 
               {completedRacingEvents.length === 0 ? (
                 <div className="rounded-2xl border border-dashed border-slate-300 dark:border-slate-800 px-6 py-8 text-center text-slate-500 dark:text-slate-400">
@@ -647,25 +702,37 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
                   {completedRacingEvents.map((event) => {
                     const openGame = racingGamesById.get(event.eventId) || toFallbackRacingGame(sport, event);
                     const isSelected = selectedGameId === openGame.id;
+                    const isExpanded = expandedCompletedEvents.has(event.eventId);
+                    const isBundleLoading = completedEventLoadingIds.has(event.eventId);
+                    const bundle = completedEventBundles.get(event.eventId) || null;
                     return (
-                      <button
+                      <div
                         key={event.eventId}
-                        type="button"
-                        onClick={() => openRacingEvent(event)}
                         className={`w-full text-left rounded-2xl border p-4 transition-colors ${
                           isSelected
                             ? 'border-emerald-400/60 bg-emerald-50 dark:bg-emerald-950/20 dark:border-emerald-700/60'
                             : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/40 hover:border-slate-300 dark:hover:border-slate-700'
                         }`}
                       >
-                        <div className="flex flex-wrap items-start justify-between gap-2">
-                          <div>
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <button type="button" onClick={() => openRacingEvent(event)} className="text-left flex-1 min-w-[220px]">
                             <div className="text-sm font-bold text-slate-900 dark:text-white">{event.shortName}</div>
                             <div className="text-xs text-slate-500 dark:text-slate-400 mt-1">{formatDateTime(event.date)} • {event.venue || 'Venue TBD'}</div>
+                          </button>
+                          <div className="flex items-center gap-2">
+                            <span className="text-[10px] uppercase tracking-wider rounded-full px-2 py-0.5 border border-emerald-400/50 bg-emerald-500/20 text-emerald-300">
+                              {event.statusText}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => toggleCompletedEventExpansion(event.eventId)}
+                              className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/70 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-300"
+                              aria-expanded={isExpanded}
+                            >
+                              <span>{isExpanded ? 'Hide Sessions' : 'Session Results'}</span>
+                              <ChevronRight size={13} className={`transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
+                            </button>
                           </div>
-                          <span className="text-[10px] uppercase tracking-wider rounded-full px-2 py-0.5 border border-emerald-400/50 bg-emerald-500/20 text-emerald-300">
-                            {event.statusText}
-                          </span>
                         </div>
 
                         {event.topFinishers.length > 0 ? (
@@ -692,7 +759,24 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
                             <Timer size={12} /> Finishing order is not available yet.
                           </div>
                         )}
-                      </button>
+
+                        {isExpanded && (
+                          <div className="mt-4 pt-4 border-t border-slate-200 dark:border-slate-800">
+                            {isBundleLoading ? (
+                              <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-8 text-center text-slate-500 dark:text-slate-400">
+                                <Loader2 size={20} className="mx-auto animate-spin mb-3" />
+                                Loading full session results...
+                              </div>
+                            ) : bundle ? (
+                              <RacingEventPanel event={bundle} showEventHeader={false} />
+                            ) : (
+                              <div className="rounded-2xl border border-dashed border-slate-300 dark:border-slate-800 px-6 py-8 text-center text-slate-500 dark:text-slate-400">
+                                Session results are not available for this weekend yet.
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
                     );
                   })}
                 </div>

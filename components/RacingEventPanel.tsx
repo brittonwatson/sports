@@ -7,6 +7,7 @@ interface RacingEventPanelProps {
   isLoading?: boolean;
   selectedDriverId?: string | null;
   onDriverClick?: (sport: RacingEventBundle["sport"], driverId: string, driverName: string) => void;
+  showEventHeader?: boolean;
 }
 
 type SessionColumn =
@@ -296,6 +297,7 @@ export const RacingEventPanel: React.FC<RacingEventPanelProps> = ({
   isLoading = false,
   selectedDriverId,
   onDriverClick,
+  showEventHeader = true,
 }) => {
   const sessions = useMemo(
     () => sortSessionsForDisplay(event?.sessions || []),
@@ -325,23 +327,25 @@ export const RacingEventPanel: React.FC<RacingEventPanelProps> = ({
 
   return (
     <div className="space-y-4">
-      <section className="rounded-3xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5">
-        <div className="flex flex-wrap items-start gap-3 justify-between">
-          <div>
-            <h3 className="text-lg font-display font-bold text-slate-900 dark:text-white">{event.shortName}</h3>
-            <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
-              {event.venue || "Venue TBD"}{event.location ? `, ${event.location}` : ""}
-            </p>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-              Session stats show only fields populated by the live feed.
-            </p>
+      {showEventHeader && (
+        <section className="rounded-3xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5">
+          <div className="flex flex-wrap items-start gap-3 justify-between">
+            <div>
+              <h3 className="text-lg font-display font-bold text-slate-900 dark:text-white">{event.shortName}</h3>
+              <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
+                {event.venue || "Venue TBD"}{event.location ? `, ${event.location}` : ""}
+              </p>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                Session stats show only fields populated by the live feed.
+              </p>
+            </div>
+            <div className="text-right">
+              <p className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-500">Start</p>
+              <p className="text-sm font-semibold text-slate-800 dark:text-slate-200">{formatDateTime(event.date)}</p>
+            </div>
           </div>
-          <div className="text-right">
-            <p className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-500">Start</p>
-            <p className="text-sm font-semibold text-slate-800 dark:text-slate-200">{formatDateTime(event.date)}</p>
-          </div>
-        </div>
-      </section>
+        </section>
+      )}
 
       {hasForecastableRace && event.prediction && event.prediction.entries.length > 0 && (
         <section className="rounded-3xl border border-cyan-300/50 dark:border-cyan-700/50 bg-cyan-50/70 dark:bg-cyan-950/20 p-5">
