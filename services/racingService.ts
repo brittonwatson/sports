@@ -20,6 +20,7 @@ import {
 import { ESPN_ENDPOINTS } from "./constants";
 import {
   ensureInternalSportLoaded,
+  getInternalDatabaseGeneratedAt,
   getInternalRacingCalendar,
   getInternalRacingDriverSeason,
   getInternalRacingEventBundle,
@@ -36,6 +37,10 @@ const STANDINGS_CACHE_TTL_MS = 15 * 60 * 1000;
 const CALENDAR_CACHE_TTL_MS = 15 * 60 * 1000;
 const DRIVER_SEASON_CACHE_TTL_MS = 15 * 60 * 1000;
 const SEASON_DATA_CACHE_TTL_MS = 30 * 60 * 1000;
+const HOT_RACING_CACHE_TTL_MS = 5 * 60 * 1000;
+const INTERNAL_RACING_REFRESH_MAX_AGE_MS = 2 * 60 * 60 * 1000;
+const RACING_REFRESH_LOOKBACK_MS = 48 * 60 * 60 * 1000;
+const RACING_REFRESH_LOOKAHEAD_MS = 7 * 24 * 60 * 60 * 1000;
 const COMPLETED_EVENT_STORAGE_KEY = "sports_internal_racing_completed_events_v1";
 const PERSISTED_RACING_CACHE_STORAGE_KEY = "sports_internal_racing_payload_cache_v1";
 const MAX_COMPLETED_EVENTS_PER_SPORT = 240;
@@ -176,6 +181,33 @@ const normalizeNameKey = (value: string): string =>
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
+
+const parseDateMs = (value: string | undefined): number | null => {
+  if (!value) return null;
+  const time = new Date(value).getTime();
+  return Number.isFinite(time) ? time : null;
+};
+
+const isWithinRacingRefreshWindow = (
+  value: string | undefined,
+  nowMs: number = Date.now(),
+  lookbackMs: number = RACING_REFRESH_LOOKBACK_MS,
+  lookaheadMs: number = RACING_REFRESH_LOOKAHEAD_MS,
+): boolean => {
+  const time = parseDateMs(value);
+  if (time === null) return false;
+  return time >= (nowMs - lookbackMs) && time <= (nowMs + lookaheadMs);
+};
+
+const isTimestampStale = (
+  value: string | undefined,
+  maxAgeMs: number,
+  nowMs: number = Date.now(),
+): boolean => {
+  const time = parseDateMs(value);
+  if (time === null) return true;
+  return (nowMs - time) > maxAgeMs;
+};
 
 const parseVehicleNumber = (...candidates: unknown[]): string | undefined => {
   for (const candidate of candidates) {
@@ -760,6 +792,82 @@ const sortRacingSessionsForDisplay = <T extends { status: "scheduled" | "in_prog
   });
 };
 
+const isHotRacingCompetition = (competition: any, fallbackDate?: string): boolean => {
+  const state = String(competition?.status?.type?.state || "").toLowerCase();
+  if (state === "in") return true;
+
+  const competitionDate = String(competition?.date || fallbackDate || "");
+  if (isWithinRacingRefreshWindow(competitionDate)) return true;
+
+  if (state === "post" && isWithinRacingRefreshWindow(competitionDate, Date.now(), 72 * 60 * 60 * 1000, 0)) {
+    return true;
+  }
+
+  return false;
+};
+
+const isHotRacingEvent = (event: any): boolean => {
+  const competitions = Array.isArray(event?.competitions) ? event.competitions : [];
+  if (competitions.some((competition: any) => isHotRacingCompetition(competition, String(event?.date || "")))) {
+    return true;
+  }
+  return isWithinRacingRefreshWindow(String(event?.date || ""));
+};
+
+const isHotSeasonSnapshot = (snapshot: SeasonDataSnapshot): boolean => {
+  if (!snapshot || snapshot.events.length === 0) return false;
+  return snapshot.events.some((event) => isHotRacingEvent(event));
+};
+
+const shouldPreferLiveInternalSnapshot = (
+  snapshot: SeasonDataSnapshot,
+  calendar: RacingCalendarPayload | null,
+): boolean => {
+  if (!isHotSeasonSnapshot(snapshot)) return false;
+  const updatedAt = calendar?.updatedAt || getInternalDatabaseGeneratedAt();
+  return isTimestampStale(updatedAt, INTERNAL_RACING_REFRESH_MAX_AGE_MS);
+};
+
+const isHotRacingCalendarPayload = (calendar: RacingCalendarPayload | null): boolean => {
+  if (!calendar?.events?.length) return false;
+  return calendar.events.some((event) => {
+    if (isWithinRacingRefreshWindow(event.date) || isWithinRacingRefreshWindow(event.endDate)) return true;
+    if (event.status === "in_progress") return true;
+    return event.sessions.some((session) =>
+      session.status === "in_progress"
+      || isWithinRacingRefreshWindow(session.date)
+      || (session.status === "finished" && isWithinRacingRefreshWindow(session.date, Date.now(), 72 * 60 * 60 * 1000, 0)),
+    );
+  });
+};
+
+const shouldRefreshInternalCalendar = (calendar: RacingCalendarPayload | null): boolean => {
+  if (!calendar || !isHotRacingCalendarPayload(calendar)) return false;
+  return isTimestampStale(calendar.updatedAt, INTERNAL_RACING_REFRESH_MAX_AGE_MS);
+};
+
+const isHotRacingEventBundle = (bundle: RacingEventBundle | null): boolean => {
+  if (!bundle) return false;
+
+  const hasMutableSessions = bundle.sessions.length === 0
+    || bundle.sessions.some((session) => session.status !== "finished")
+    || bundle.sessions.some((session) =>
+      isWithinRacingRefreshWindow(session.date)
+      || (session.status === "finished" && isWithinRacingRefreshWindow(session.date, Date.now(), 72 * 60 * 60 * 1000, 0)),
+    );
+  if (!hasMutableSessions && !isWithinRacingRefreshWindow(bundle.date) && !isWithinRacingRefreshWindow(bundle.endDate)) return false;
+
+  return true;
+};
+
+const shouldRefreshInternalEventBundle = (bundle: RacingEventBundle | null): boolean => {
+  if (!isHotRacingEventBundle(bundle)) return false;
+  return isTimestampStale(getInternalDatabaseGeneratedAt(), INTERNAL_RACING_REFRESH_MAX_AGE_MS);
+};
+
+const getSeasonDataCacheTtl = (snapshot: SeasonDataSnapshot): number =>
+  isHotSeasonSnapshot(snapshot) ? HOT_RACING_CACHE_TTL_MS : SEASON_DATA_CACHE_TTL_MS;
+
 const getCompetitorFinish = (competitor: any): number => {
   const order = extractNumber(competitor?.order);
   if (order > 0) return order;
@@ -928,38 +1036,6 @@ const fetchSeasonEventRefsForYear = async (sport: Sport, seasonYear: number): Pr
 const fetchSeasonDataSnapshot = async (sport: Sport): Promise<SeasonDataSnapshot | null> => {
   const nowMs = Date.now();
   const nowYear = new Date().getFullYear();
-
-  // --- Try internal DB first (avoids hundreds of ESPN API calls) ---
-  await ensureInternalSportLoaded(sport);
-  const internalEventsMap = getInternalRacingEventsMap(sport);
-  if (internalEventsMap && Object.keys(internalEventsMap).length > 0) {
-    const internalCalendar = getInternalRacingCalendar(sport);
-    const byYear = partitionInternalBundlesBySeason(internalEventsMap);
-    const internalCandidates = resolveSeasonYearCandidates();
-    for (const year of internalCandidates) {
-      const yearBundles = byYear.get(year);
-      if (!yearBundles || Object.keys(yearBundles).length === 0) continue;
-      const cacheKey = `${sport}:${year}`;
-      const cached = seasonDataCache.get(cacheKey);
-      if (cached && (Date.now() - cached.fetchedAt) < SEASON_DATA_CACHE_TTL_MS) {
-        return cached.data;
-      }
-      const snapshot = buildSeasonSnapshotFromInternalBundles(
-        sport, yearBundles,
-        year === internalCalendar?.seasonYear ? internalCalendar : null,
-      );
-      if (snapshot && snapshot.events.length > 0) {
-        snapshot.seasonYear = year;
-        seasonDataCache.set(cacheKey, { fetchedAt: Date.now(), data: snapshot });
-        return snapshot;
-      }
-    }
-  }
-
-  // --- Fall through to ESPN Core API ---
-  const candidates = resolveSeasonYearCandidates();
-  const snapshots: SeasonDataSnapshot[] = [];
-
   const scoreSnapshot = (snapshot: SeasonDataSnapshot): number => {
     const raceStates = snapshot.events.map((event: any) => {
       const raceCompetition = extractRaceCompetition(event);
@@ -992,10 +1068,45 @@ const fetchSeasonDataSnapshot = async (sport: Sport): Promise<SeasonDataSnapshot
     return score;
   };
 
+  // --- Try internal DB first (avoids hundreds of ESPN API calls) ---
+  await ensureInternalSportLoaded(sport);
+  const internalCalendar = getInternalRacingCalendar(sport);
+  const internalFallbackSnapshots: SeasonDataSnapshot[] = [];
+  const internalEventsMap = getInternalRacingEventsMap(sport);
+  if (internalEventsMap && Object.keys(internalEventsMap).length > 0) {
+    const byYear = partitionInternalBundlesBySeason(internalEventsMap);
+    const internalCandidates = resolveSeasonYearCandidates();
+    for (const year of internalCandidates) {
+      const yearBundles = byYear.get(year);
+      if (!yearBundles || Object.keys(yearBundles).length === 0) continue;
+      const cacheKey = `${sport}:${year}`;
+      const cached = seasonDataCache.get(cacheKey);
+      if (cached && (Date.now() - cached.fetchedAt) < getSeasonDataCacheTtl(cached.data)) {
+        return cached.data;
+      }
+      const snapshot = buildSeasonSnapshotFromInternalBundles(
+        sport, yearBundles,
+        year === internalCalendar?.seasonYear ? internalCalendar : null,
+      );
+      if (snapshot && snapshot.events.length > 0) {
+        snapshot.seasonYear = year;
+        internalFallbackSnapshots.push(snapshot);
+        if (!shouldPreferLiveInternalSnapshot(snapshot, year === internalCalendar?.seasonYear ? internalCalendar : null)) {
+          seasonDataCache.set(cacheKey, { fetchedAt: Date.now(), data: snapshot });
+          return snapshot;
+        }
+      }
+    }
+  }
+
+  // --- Fall through to ESPN Core API ---
+  const candidates = resolveSeasonYearCandidates();
+  const snapshots: SeasonDataSnapshot[] = [];
+
   for (const seasonYear of candidates) {
     const cacheKey = `${sport}:${seasonYear}`;
     const cached = seasonDataCache.get(cacheKey);
-    if (cached && (Date.now() - cached.fetchedAt) < SEASON_DATA_CACHE_TTL_MS) {
+    if (cached && (Date.now() - cached.fetchedAt) < getSeasonDataCacheTtl(cached.data)) {
       snapshots.push(cached.data);
       continue;
     }
@@ -1043,7 +1154,13 @@ const fetchSeasonDataSnapshot = async (sport: Sport): Promise<SeasonDataSnapshot
     snapshots.push(snapshot);
   }
 
-  if (snapshots.length === 0) return null;
+  if (snapshots.length === 0) {
+    if (internalFallbackSnapshots.length === 0) return null;
+    internalFallbackSnapshots.sort((a, b) => scoreSnapshot(b) - scoreSnapshot(a));
+    const fallback = internalFallbackSnapshots[0];
+    seasonDataCache.set(`${sport}:${fallback.seasonYear}`, { fetchedAt: Date.now(), data: fallback });
+    return fallback;
+  }
   snapshots.sort((a, b) => scoreSnapshot(b) - scoreSnapshot(a));
   return snapshots[0];
 };
@@ -2616,18 +2733,25 @@ export const fetchRacingCalendarPayload = async (sport: Sport): Promise<RacingCa
     };
   }
   loadPersistedRacingPayloadCaches();
+  await ensureInternalSportLoaded(sport);
 
   const cacheKey = `${sport}:calendar`;
+  const internalCalendar = getInternalRacingCalendar(sport);
+  const shouldHotRefresh = shouldRefreshInternalCalendar(internalCalendar);
   const cached = calendarCache.get(cacheKey);
   if (cached) {
     const ageMs = Date.now() - cached.fetchedAt;
-    if (ageMs < CALENDAR_CACHE_TTL_MS) return cached.data;
-    if (ageMs < PERSISTED_CALENDAR_MAX_AGE_MS) return cached.data;
+    const cacheTtl = isHotRacingCalendarPayload(cached.data) ? HOT_RACING_CACHE_TTL_MS : CALENDAR_CACHE_TTL_MS;
+    if (ageMs < cacheTtl) return cached.data;
+    if (!shouldHotRefresh && ageMs < PERSISTED_CALENDAR_MAX_AGE_MS) return cached.data;
   }
 
-  await ensureInternalSportLoaded(sport);
-  const internalCalendar = getInternalRacingCalendar(sport);
-  if (internalCalendar && Array.isArray(internalCalendar.events) && internalCalendar.events.length > 0) {
+  if (
+    internalCalendar
+    && Array.isArray(internalCalendar.events)
+    && internalCalendar.events.length > 0
+    && !shouldHotRefresh
+  ) {
     calendarCache.set(cacheKey, { fetchedAt: Date.now(), data: internalCalendar });
     schedulePersistRacingPayloadCaches();
     return internalCalendar;
@@ -2635,6 +2759,11 @@ export const fetchRacingCalendarPayload = async (sport: Sport): Promise<RacingCa
 
   const snapshot = await fetchSeasonDataSnapshot(sport);
   if (!snapshot) {
+    if (internalCalendar && Array.isArray(internalCalendar.events) && internalCalendar.events.length > 0) {
+      calendarCache.set(cacheKey, { fetchedAt: Date.now(), data: internalCalendar });
+      schedulePersistRacingPayloadCaches();
+      return internalCalendar;
+    }
     const payload: RacingCalendarPayload = {
       sport,
       seasonYear: new Date().getFullYear(),
@@ -2686,18 +2815,21 @@ export const fetchRacingDriverSeasonResults = async (sport: Sport, driverId: str
 export const fetchRacingEventBundle = async (sport: Sport, eventId: string): Promise<RacingEventBundle | null> => {
   if (!isRacingSport(sport) || !eventId) return null;
   loadPersistedRacingPayloadCaches();
+  await ensureInternalSportLoaded(sport);
+
   const cacheKey = `${sport}:${eventId}`;
+  const internalBundle = getInternalRacingEventBundle(sport, eventId);
+  const shouldHotRefresh = shouldRefreshInternalEventBundle(internalBundle);
   const cached = eventCache.get(cacheKey);
   if (cached) {
     const ageMs = Date.now() - cached.fetchedAt;
-    if (ageMs < EVENT_CACHE_TTL_MS) return cached.data;
+    const cacheTtl = isHotRacingEventBundle(cached.data) ? HOT_RACING_CACHE_TTL_MS : EVENT_CACHE_TTL_MS;
+    if (ageMs < cacheTtl) return cached.data;
     const hasLiveSession = (cached.data.sessions || []).some((session) => session.status === "in_progress");
-    if (!hasLiveSession && ageMs < PERSISTED_EVENT_MAX_AGE_MS) return cached.data;
+    if (!shouldHotRefresh && !hasLiveSession && ageMs < PERSISTED_EVENT_MAX_AGE_MS) return cached.data;
   }
 
-  await ensureInternalSportLoaded(sport);
-  const internalBundle = getInternalRacingEventBundle(sport, eventId);
-  if (internalBundle) {
+  if (internalBundle && !shouldHotRefresh) {
     const hasLiveSession = (internalBundle.sessions || []).some((session) => session.status === "in_progress");
     if (!hasLiveSession) {
       // Compute predictions for upcoming events (race session still scheduled).
@@ -2844,17 +2976,20 @@ export const fetchRacingStandingsPayload = async (sport: Sport): Promise<RacingS
     return { sport, updatedAt: new Date().toISOString(), tables: [] };
   }
   loadPersistedRacingPayloadCaches();
+  await ensureInternalSportLoaded(sport);
 
   const cacheKey = `${sport}:standings`;
+  const internalCalendar = getInternalRacingCalendar(sport);
+  const shouldHotRefresh = shouldRefreshInternalCalendar(internalCalendar);
+  const internalStandings = getInternalRacingStandings(sport);
   const cached = standingsCache.get(cacheKey);
   if (cached) {
     const ageMs = Date.now() - cached.fetchedAt;
-    if (ageMs < STANDINGS_CACHE_TTL_MS) return cached.data;
-    if (ageMs < PERSISTED_STANDINGS_MAX_AGE_MS) return cached.data;
+    const cacheTtl = shouldHotRefresh ? HOT_RACING_CACHE_TTL_MS : STANDINGS_CACHE_TTL_MS;
+    if (ageMs < cacheTtl) return cached.data;
+    if (!shouldHotRefresh && ageMs < PERSISTED_STANDINGS_MAX_AGE_MS) return cached.data;
   }
 
-  await ensureInternalSportLoaded(sport);
-  const internalStandings = getInternalRacingStandings(sport);
   if (internalStandings && Array.isArray(internalStandings.tables) && internalStandings.tables.length > 0) {
     // Use internal standings as base but still run the championship probability model.
     const snapshot = await fetchSeasonDataSnapshot(sport);

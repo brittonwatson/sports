@@ -2258,6 +2258,11 @@ export const App: React.FC = () => {
       selectedTab !== 'METHODOLOGY' &&
       ['LIVE', 'UPCOMING', 'SCORES', 'LEAGUE_STATS'].includes(viewMode) &&
       leagueSeasonOptions.length > 0;
+  const isRacingSeriesScheduleView =
+      selectedTab !== 'HOME' &&
+      selectedTab !== 'METHODOLOGY' &&
+      RACING_LEAGUES.includes(selectedTab as Sport) &&
+      ['LIVE', 'UPCOMING', 'SCORES', 'CALENDAR'].includes(viewMode);
 
   const renderGameList = (gamesToRender: Game[]) => (
       <div className={`grid gap-4 transition-all duration-500 ${selectedGame ? 'grid-cols-1 max-w-3xl mx-auto' : 'grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4'}`}>
@@ -2450,7 +2455,17 @@ export const App: React.FC = () => {
                                  {selectedTab === 'HOME' ? 'Live & Upcoming Action' : 
                                   viewMode === 'STANDINGS' && SOCCER_LEAGUES.includes(selectedTab as Sport) ? 'League Table' :
                                   viewMode === 'LEAGUE_STATS' ? (RACING_LEAGUES.includes(selectedTab as Sport) ? 'Driver Statistics' : 'Season Statistics') :
-                                  `${viewMode === 'LIVE' ? 'Live Games' : viewMode === 'UPCOMING' ? (RACING_LEAGUES.includes(selectedTab as Sport) ? 'Upcoming Events' : 'Scheduled Matchups') : viewMode === 'SCORES' ? (RACING_LEAGUES.includes(selectedTab as Sport) ? 'Results' : 'Final Scores') : viewMode === 'CALENDAR' ? 'Season Calendar' : viewMode === 'TEAMS' ? 'Team Directory' : viewMode.charAt(0) + viewMode.slice(1).toLowerCase()}`}
+                                  `${viewMode === 'LIVE'
+                                    ? (RACING_LEAGUES.includes(selectedTab as Sport) ? 'Weekend Tracker' : 'Live Games')
+                                    : viewMode === 'UPCOMING'
+                                      ? (RACING_LEAGUES.includes(selectedTab as Sport) ? 'Upcoming Sessions' : 'Scheduled Matchups')
+                                      : viewMode === 'SCORES'
+                                        ? (RACING_LEAGUES.includes(selectedTab as Sport) ? 'Weekend Results' : 'Final Scores')
+                                        : viewMode === 'CALENDAR'
+                                          ? 'Season Calendar'
+                                          : viewMode === 'TEAMS'
+                                            ? 'Team Directory'
+                                            : viewMode.charAt(0) + viewMode.slice(1).toLowerCase()}`}
                              </p>
                          </div>
                      </div>
@@ -2621,16 +2636,51 @@ export const App: React.FC = () => {
                             </div>
                          )}
                      </div>
-                 ) : (viewMode === 'CALENDAR' || (viewMode === 'UPCOMING' && RACING_LEAGUES.includes(selectedTab as Sport))) ? (
-                     <CalendarView 
-                        sport={selectedTab as Sport}
-                        onGameSelect={handleGameToggle}
-                        selectedGameId={selectedGame?.id}
-                        onTeamClick={handleTeamClick}
-                        isGameFollowed={isGameFollowed}
-                        onToggleFollowGame={toggleFollowGame}
-                        racingUpcomingMode={viewMode === 'UPCOMING' ? 'list' : 'calendar'}
-                     />
+                 ) : isRacingSeriesScheduleView ? (
+                     <div className="space-y-6">
+                         <CalendarView 
+                            sport={selectedTab as Sport}
+                            onGameSelect={handleGameToggle}
+                            selectedGameId={selectedGame?.id}
+                            onTeamClick={handleTeamClick}
+                            isGameFollowed={isGameFollowed}
+                            onToggleFollowGame={toggleFollowGame}
+                            racingDisplayMode={
+                                viewMode === 'LIVE'
+                                    ? 'live'
+                                    : viewMode === 'UPCOMING'
+                                        ? 'upcoming'
+                                        : viewMode === 'SCORES'
+                                            ? 'results'
+                                            : 'calendar'
+                            }
+                         />
+                         {selectedGame && (
+                            <div id={`game-card-${selectedGame.id}`} className="max-w-6xl mx-auto space-y-4 animate-fade-in">
+                                <div className="flex items-center gap-3">
+                                    <div className="h-px bg-slate-200 dark:bg-slate-800 flex-1"></div>
+                                    <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Weekend Detail</h3>
+                                    <div className="h-px bg-slate-200 dark:bg-slate-800 flex-1"></div>
+                                </div>
+                                <RacingEventPanel
+                                    event={racingEventBundle}
+                                    isLoading={isPredicting}
+                                    selectedDriverId={selectedRacingDriver?.driverId || null}
+                                    onDriverClick={handleRacingDriverClick}
+                                />
+                                {selectedRacingDriver && selectedRacingDriver.sport === (selectedTab as Sport) && (
+                                   <RacingDriverSeasonPanel
+                                       data={racingDriverSeason}
+                                       isLoading={isRacingDriverLoading}
+                                       onClose={() => {
+                                           setSelectedRacingDriver(null);
+                                           setRacingDriverSeason(null);
+                                       }}
+                                   />
+                                )}
+                            </div>
+                         )}
+                     </div>
                  ) : viewMode === 'TEAMS' ? (
                      <TeamsListView 
                         groups={standings}
